@@ -14,17 +14,22 @@ VALID_ROLES = {"HR_ADMIN", "EMPLOYEE", "CANDIDATE"}
 
 
 class DevLoginRequest(BaseModel):
+    """Request body for the dev-only login endpoint."""
+
     role: str
     email: EmailStr | None = None
     name: str | None = None
 
 
 class DevLoginResponse(BaseModel):
+    """Response body describing the authenticated user."""
+
     user: UserContext
 
 
 @router.get("/me", response_model=DevLoginResponse)
 def me(user: UserContext = Depends(get_current_user)) -> DevLoginResponse:
+    """Return the identity of the currently authenticated user."""
     return DevLoginResponse(user=user)
 
 
@@ -55,6 +60,7 @@ def logout(
     response: Response,
     provider: AuthProvider = Depends(get_auth_provider),
 ) -> dict[str, bool]:
+    """Clear the dev session cookie, if the active provider is the dev stub."""
     if isinstance(provider, DevStubProvider):
         provider.clear_session(response)
     return {"ok": True}

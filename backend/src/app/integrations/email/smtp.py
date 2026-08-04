@@ -11,6 +11,7 @@ class SmtpEmailProvider(EmailProvider):
     """SMTP delivery — points at Mailpit (localhost:1025) in dev, SMTP/SES in prod."""
 
     def __init__(self) -> None:
+        """Load SMTP/email settings from app configuration."""
         self._settings = get_settings()
 
     def send(
@@ -21,6 +22,7 @@ class SmtpEmailProvider(EmailProvider):
         body: str,
         html: str | None = None,
     ) -> None:
+        """Send an email over SMTP, logging in first if credentials are configured."""
         message = EmailMessage()
         message["From"] = self._settings.email_from
         message["To"] = to_email

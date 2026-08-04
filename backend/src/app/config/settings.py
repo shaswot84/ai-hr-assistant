@@ -50,9 +50,11 @@ class Settings(BaseSettings):
 
     @property
     def keycloak_issuer(self) -> str:
+        """Keycloak OIDC issuer URL, derived from url + realm."""
         return f"{self.keycloak_url}/realms/{self.keycloak_realm}"
 
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return a cached, process-wide Settings instance."""
     return Settings()

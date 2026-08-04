@@ -10,6 +10,7 @@ from app.domain.recruitment import Vacancy
 
 
 def seed() -> None:
+    """Idempotently seed the database with a demo manager and sample vacancy."""
     init_db()
     db = SessionLocal()
     try:

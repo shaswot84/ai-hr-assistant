@@ -6,6 +6,15 @@ import { api } from "@/lib/api";
 import type { CoarseRole, UserContext } from "@/lib/types";
 import { Header } from "@/components/header";
 
+/**
+ * Client-side auth guard that wraps a role's pages. On mount it calls the
+ * `/api/auth/me` endpoint to resolve the current user; if the user's coarse
+ * role is not in `allowedRoles` (or the request fails), it redirects to
+ * /login. Renders the Header plus a centered main column once authorized.
+ *
+ * @param props.allowedRoles Roles permitted to view the wrapped children.
+ * @param props.children Page content rendered inside the guard.
+ */
 export function PortalGuard({
   allowedRoles,
   children,
@@ -23,6 +32,7 @@ export function PortalGuard({
       .me()
       .then((res) => {
         if (cancelled) return;
+        // Role-based redirect: user authenticated but with the wrong role.
         if (!allowedRoles.includes(res.user.coarse_role)) {
           router.replace("/login");
           return;
@@ -31,6 +41,7 @@ export function PortalGuard({
         setChecking(false);
       })
       .catch(() => {
+        // Unauthenticated (or backend unreachable) → bounce to the login page.
         if (!cancelled) router.replace("/login");
       });
     return () => {

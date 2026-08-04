@@ -13,6 +13,7 @@ class ObjectStore:
     """S3-compatible object store (MinIO in dev). Authoritative bytes for resumes."""
 
     def __init__(self) -> None:
+        """Configure the MinIO client and target bucket from app settings."""
         settings = get_settings()
         self._client = Minio(
             settings.minio_endpoint,
@@ -23,6 +24,7 @@ class ObjectStore:
         self._bucket = settings.minio_bucket
 
     def ensure_bucket(self) -> None:
+        """Create the configured bucket if it does not already exist."""
         if not self._client.bucket_exists(self._bucket):
             self._client.make_bucket(self._bucket)
 

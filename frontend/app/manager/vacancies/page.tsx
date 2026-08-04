@@ -7,6 +7,11 @@ import { StatusBadge, formatDate } from "@/components/status";
 import { api } from "@/lib/api";
 import type { Vacancy } from "@/lib/types";
 
+/**
+ * Manager vacancies list: shows all vacancies with their status and a link to
+ * create a new one. Each row links to its detail page. Wrapped in the HR_ADMIN
+ * auth guard.
+ */
 export default function VacanciesListPage() {
   const [vacancies, setVacancies] = useState<Vacancy[] | null>(null);
   const [error, setError] = useState<string | null>(null);

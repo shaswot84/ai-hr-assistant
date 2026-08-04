@@ -11,6 +11,11 @@ const ROLES = [
   { value: "EMPLOYEE", label: "Employee", email: "employee@example.com" },
 ] as const;
 
+/**
+ * Dev login page. Lets the user pick a persona (role) or type an email, then
+ * calls the dev-stub auth endpoint. Replaces the Keycloak login flow during
+ * local development.
+ */
 export default function LoginPage() {
   const router = useRouter();
   const [role, setRole] = useState<(typeof ROLES)[number]>(
@@ -20,11 +25,13 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  /** Logs in via the dev endpoint and routes the user to their role's portal. */
   async function login() {
     setSubmitting(true);
     setError(null);
     try {
       const res = await api.devLogin(role.value, email, role.label);
+      // Managers go to the manager portal; candidates/employees to the candidate portal.
       router.push(res.user.coarse_role === "HR_ADMIN" ? "/manager" : "/candidate");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
@@ -32,6 +39,7 @@ export default function LoginPage() {
     }
   }
 
+  // Portal destination shown next to each role option on the login card.
   const destinations: Record<string, string> = {
     CANDIDATE: "/candidate",
     HR_ADMIN: "/manager",

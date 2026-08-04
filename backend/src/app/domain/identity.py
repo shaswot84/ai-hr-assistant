@@ -10,6 +10,8 @@ from app.db.base import Base
 
 
 class Person(Base):
+    """Core human identity record shared by employees and candidates."""
+
     __tablename__ = "person"
 
     person_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -33,6 +35,8 @@ class ApplicationUser(Base):
 
 
 class Department(Base):
+    """Organizational department a vacancy can belong to."""
+
     __tablename__ = "department"
 
     department_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -40,6 +44,8 @@ class Department(Base):
 
 
 class Candidate(Base):
+    """A person in the recruitment pipeline, not yet hired."""
+
     __tablename__ = "candidate"
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -48,6 +54,8 @@ class Candidate(Base):
 
 
 class Employee(Base):
+    """A hired person with an employee number (manager authority is derived elsewhere)."""
+
     __tablename__ = "employee"
 
     employee_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

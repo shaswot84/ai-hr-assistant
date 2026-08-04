@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 
 class VacancyCreate(BaseModel):
+    """Request payload for creating a vacancy."""
+
     title: str = Field(min_length=1, max_length=150)
     department_name: str = Field(min_length=1, max_length=100)
     description: str | None = None
@@ -16,6 +18,8 @@ class VacancyCreate(BaseModel):
 
 
 class VacancyOut(BaseModel):
+    """API representation of a vacancy."""
+
     vacancy_id: uuid.UUID
     title: str
     department_name: str | None = None
@@ -30,6 +34,8 @@ class VacancyOut(BaseModel):
 
 
 class EvaluationOut(BaseModel):
+    """API representation of an AI resume evaluation."""
+
     score: int
     overview: str
     model: str | None
@@ -37,6 +43,8 @@ class EvaluationOut(BaseModel):
 
 
 class ApplicationOut(BaseModel):
+    """API representation of a job application (with optional evaluation)."""
+
     application_id: uuid.UUID
     vacancy_id: uuid.UUID
     vacancy_title: str | None = None
@@ -47,9 +55,13 @@ class ApplicationOut(BaseModel):
 
 
 class ApplicationDetailOut(ApplicationOut):
+    """Application response extended with candidate contact details (manager view)."""
+
     candidate_name: str | None = None
     candidate_email: str | None = None
 
 
 class DecisionRequest(BaseModel):
+    """Request payload for a manager's application decision."""
+
     action: str  # "approve" | "reject"

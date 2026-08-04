@@ -26,12 +26,15 @@ class DevStubProvider(AuthProvider):
     name = "dev_stub"
 
     def __init__(self) -> None:
+        """Load app settings used to configure the stub provider."""
         self._settings = get_settings()
 
     def _subject_to_email(self, subject: str) -> str:
+        """Map a dev subject id to a synthetic email address."""
         return f"{subject}@example.com"
 
     def authenticate(self, request: Any) -> UserContext | None:
+        """Resolve identity from dev headers or the session cookie, or None if absent/invalid."""
         headers: Headers = getattr(request, "headers", Headers())
         cookie = getattr(request, "cookies", {})
         subject = headers.get("x-dev-subject")
@@ -41,6 +44,7 @@ class DevStubProvider(AuthProvider):
         if not subject or not role:
             raw = cookie.get(DEV_SESSION_COOKIE)
             if raw:
+                # session cookie serializes subject|role|email|name (see set_session)
                 parts = raw.split("|")
                 subject = parts[0]
                 role = parts[1]
@@ -66,13 +70,17 @@ class DevStubProvider(AuthProvider):
         )
 
     def clear_session(self, response: Response) -> None:
+        """Clear the dev session cookie (dev logout)."""
         response.delete_cookie(DEV_SESSION_COOKIE, path="/")
 
     def build_login_url(self, redirect_uri: str) -> str | None:
+        """No IdP redirect flow exists for the stub, so no login URL is returned."""
         return None
 
     def exchange_code(self, code: str, redirect_uri: str) -> UserContext:
+        """Not supported by the stub provider; raises because there is no code flow."""
         raise NotImplementedError("Dev stub has no authorization code flow.")
 
     def build_logout_url(self, redirect_uri: str) -> str | None:
+        """No IdP logout flow exists for the stub, so no logout URL is returned."""
         return None

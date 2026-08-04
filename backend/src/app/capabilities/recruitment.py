@@ -17,7 +17,7 @@ VALID_APPLICATION_STATUSES = {"APPLIED", "SHORTLISTED", "REJECTED", "WITHDRAWN"}
 
 
 class PermissionError_(Exception):
-    pass
+    """Raised when a caller lacks the authority to perform a recruitment operation."""
 
 
 class RecruitmentService:
@@ -28,6 +28,7 @@ class RecruitmentService:
     """
 
     def __init__(self, db: Session) -> None:
+        """Bind the service to a DB session and build its repositories."""
         self._db = db
         self._vacancies = VacancyRepo(db)
         self._applications = ApplicationRepo(db)
@@ -47,6 +48,7 @@ class RecruitmentService:
         opening_date: date | None,
         closing_date: date | None,
     ) -> Vacancy:
+        """Create an open vacancy (HR_ADMIN only), auto-creating the department if needed."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can create vacancies.")
         employee = self._identity.get_employee(actor)
@@ -70,11 +72,13 @@ class RecruitmentService:
         return vacancy
 
     def list_vacancies(self, actor: UserContext) -> list[Vacancy]:
+        """List vacancies; candidates see only open ones, others see everything."""
         if actor.coarse_role == "CANDIDATE":
             return self._vacancies.list_open()
         return self._vacancies.list_all()
 
     def get_vacancy(self, vacancy_id: uuid.UUID) -> Vacancy | None:
+        """Fetch a single vacancy by id, or None if it does not exist."""
         return self._vacancies.get(vacancy_id)
 
     # ---- applications ------------------------------------------------
@@ -86,6 +90,10 @@ class RecruitmentService:
         vacancy_id: uuid.UUID,
         cv_object_key: str,
     ) -> Application:
+        """Create an application for a candidate on an open vacancy they have not already applied to.
+
+        Enqueues an AI-evaluation outbox job in the same transaction as the application row.
+        """
         if actor.coarse_role != "CANDIDATE":
             raise PermissionError_("Only candidates can apply.")
         candidate = self._identity.get_candidate(actor)
@@ -114,12 +122,14 @@ class RecruitmentService:
         return application
 
     def list_my_applications(self, actor: UserContext) -> list[Application]:
+        """List the current candidate's own applications."""
         if actor.coarse_role != "CANDIDATE":
             raise PermissionError_("Only candidates can view their applications.")
         candidate = self._identity.get_candidate(actor)
         return self._applications.list_for_candidate(candidate.candidate_id)
 
     def get_my_application(self, actor: UserContext, application_id: uuid.UUID) -> Application:
+        """Fetch one of the current candidate's applications, or raise if not theirs/not found."""
         if actor.coarse_role != "CANDIDATE":
             raise PermissionError_("Only candidates can view their applications.")
         candidate = self._identity.get_candidate(actor)
@@ -129,6 +139,7 @@ class RecruitmentService:
         return application
 
     def list_vacancy_applications(self, actor: UserContext, vacancy_id: uuid.UUID) -> list[Application]:
+        """List all applications for a vacancy (HR_ADMIN only)."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can review applications.")
         vacancy = self._vacancies.get(vacancy_id)
@@ -139,6 +150,7 @@ class RecruitmentService:
     def get_application_for_review(
         self, actor: UserContext, application_id: uuid.UUID
     ) -> Application:
+        """Fetch an application for manager review, or raise if not found."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can review applications.")
         application = self._applications.get(application_id)
@@ -153,6 +165,10 @@ class RecruitmentService:
         *,
         approve: bool,
     ) -> Application:
+        """Approve (shortlist) or reject an application and enqueue the notification email.
+
+        The status transition and the outbox email job commit in one transaction.
+        """
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can make hiring decisions.")
         application = self._applications.get(application_id)
@@ -179,11 +195,13 @@ class RecruitmentService:
         return application
 
     def latest_evaluation(self, application_id: uuid.UUID) -> ApplicationEvaluation | None:
+        """Return the most recent evaluation for an application, or None if not yet evaluated."""
         return self._applications.latest_evaluation(application_id)
 
     # ---- helpers -----------------------------------------------------
 
     def _candidate_email(self, application: Application) -> str:
+        """Resolve the candidate's email address for an application."""
         candidate = self._identity.get_candidate_for_application(application)
         if candidate is None:
             return ""
@@ -193,6 +211,7 @@ class RecruitmentService:
     def _build_email_payload(
         self, application: Application, *, approve: bool
     ) -> tuple[str, str, str]:
+        """Build the outbox job type, subject, and body for an approve/reject notification."""
         vacancy = application.vacancy
         title = vacancy.title if vacancy else "the position"
         if approve:
@@ -216,6 +235,7 @@ class RecruitmentService:
         )
 
     def _get_or_create_department(self, name: str):
+        """Return the department matching `name`, creating it if it does not yet exist."""
         stmt = select(Department).where(Department.name == name.strip())
         dept = self._db.scalar(stmt)
         if dept is not None:

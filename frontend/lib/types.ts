@@ -1,5 +1,10 @@
+/**
+ * Coarse Keycloak role assigned to a user. Manager/recruiter authority is
+ * derived server-side; only these three roles reach the frontend.
+ */
 export type CoarseRole = "HR_ADMIN" | "EMPLOYEE" | "CANDIDATE";
 
+/** Identity + coarse role of the signed-in user, returned by the auth endpoints. */
 export interface UserContext {
   subject: string;
   email: string;
@@ -7,6 +12,7 @@ export interface UserContext {
   coarse_role: CoarseRole;
 }
 
+/** A job posting; shown to candidates (OPEN only) and managed by HR_ADMINs. */
 export interface Vacancy {
   vacancy_id: string;
   title: string;
@@ -19,6 +25,7 @@ export interface Vacancy {
   created_at: string;
 }
 
+/** Advisory AI result for a resume; stored separately from authoritative application state. */
 export interface Evaluation {
   score: number;
   overview: string;
@@ -26,6 +33,7 @@ export interface Evaluation {
   evaluated_at: string;
 }
 
+/** A candidate's application to a vacancy, including the AI evaluation if present. */
 export interface Application {
   application_id: string;
   vacancy_id: string;
@@ -36,6 +44,7 @@ export interface Application {
   evaluation: Evaluation | null;
 }
 
+/** Application plus candidate identity; used on manager-facing detail pages. */
 export interface ApplicationDetail extends Application {
   candidate_name: string | null;
   candidate_email: string | null;

@@ -7,6 +7,11 @@ import { api } from "@/lib/api";
 
 const EMPLOYMENT_TYPES = ["FULL_TIME", "PART_TIME", "CONTRACT", "INTERNSHIP"];
 
+/**
+ * Manager "Create vacancy" form: collects title, department, employment type,
+ * description, and open/close dates, then creates the vacancy via the API and
+ * redirects to its detail page. Wrapped in the HR_ADMIN auth guard.
+ */
 export default function CreateVacancyPage() {
   const router = useRouter();
   const [form, setForm] = useState({
@@ -20,10 +25,12 @@ export default function CreateVacancyPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  /** Updates a single form field; typed so only valid keys can be set. */
   function set<K extends keyof typeof form>(key: K, value: string) {
     setForm((f) => ({ ...f, [key]: value }));
   }
 
+  /** Validates required fields and creates the vacancy, redirecting on success. */
   async function submit() {
     if (!form.title.trim() || !form.department_name.trim()) {
       setError("Title and department are required.");

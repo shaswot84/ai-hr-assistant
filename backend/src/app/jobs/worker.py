@@ -25,6 +25,7 @@ POLL_INTERVAL_SECONDS = 2.0
 
 
 async def process_job(db: Session, job: OutboxJob, object_store: ObjectStore, email: EmailProvider) -> None:
+    """Dispatch an outbox job to its handler based on job type."""
     if job.job_type == "EVALUATE_APPLICATION":
         await _evaluate_application(db, job, object_store)
     elif job.job_type in {"SEND_INTERVIEW_INVITATION", "SEND_APPLICATION_REJECTED"}:
@@ -34,6 +35,7 @@ async def process_job(db: Session, job: OutboxJob, object_store: ObjectStore, em
 
 
 async def _evaluate_application(db: Session, job: OutboxJob, object_store: ObjectStore) -> None:
+    """Extract resume text, score it against the vacancy, and persist an evaluation row."""
     application_id = uuid.UUID(str(job.payload["application_id"]))
     object_key = str(job.payload["cv_object_key"])
 
@@ -90,6 +92,7 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: Objec
 
 
 def _send_email(db: Session, job: OutboxJob, email: EmailProvider) -> None:
+    """Send a notification email encoded in the job payload, raising if there is no recipient."""
     payload = job.payload
     to_email = str(payload["to_email"])
     subject = str(payload["subject"])
@@ -100,6 +103,7 @@ def _send_email(db: Session, job: OutboxJob, email: EmailProvider) -> None:
 
 
 async def worker_loop() -> None:
+    """Poll the outbox continuously, claiming and processing one job at a time."""
     init_db()
     object_store = ObjectStore()
     object_store.ensure_bucket()

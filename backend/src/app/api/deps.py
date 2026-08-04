@@ -13,6 +13,7 @@ _bearer = HTTPBearer(auto_error=False)
 
 
 def get_auth_provider() -> AuthProvider:
+    """Instantiate the active AuthProvider based on app settings (keycloak or dev stub)."""
     settings = get_settings()
     if settings.auth_provider == "keycloak":
         return KeycloakProvider()
@@ -36,7 +37,10 @@ def get_current_user(
 
 
 def require_role(*roles: str):
+    """Return a FastAPI dependency that enforces that the user's coarse role is in `roles`."""
+
     def checker(user: UserContext = Depends(get_current_user)) -> UserContext:
+        """Ensure the current user holds one of the required roles, else raise 403."""
         if user.coarse_role not in roles:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         return user

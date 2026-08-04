@@ -13,11 +13,13 @@ MIN_USABLE_LENGTH = 40
 
 
 class UnsupportedFileError(Exception):
-    pass
+    """Raised when a resume is neither a PDF nor a DOCX file."""
 
 
 @dataclass
 class ExtractResult:
+    """Result of resume extraction: the extracted text plus an optional warning."""
+
     text: str
     warning: str | None = None
 
@@ -41,6 +43,7 @@ def extract_text(data: bytes, filename: str, content_type: str) -> ExtractResult
 
 
 def _extract_from_pdf(data: bytes) -> ExtractResult:
+    """Extract and normalize text from a PDF, returning a warning on low yield."""
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             pages = [page.extract_text() or "" for page in pdf.pages]
@@ -66,6 +69,7 @@ def _extract_from_pdf(data: bytes) -> ExtractResult:
 
 
 def _extract_from_docx(data: bytes) -> ExtractResult:
+    """Extract and normalize text from a DOCX, preserving tables as pipe-separated rows."""
     try:
         document = Document(io.BytesIO(data))
         lines: list[str] = []
@@ -110,6 +114,7 @@ def _iter_block_items(document: Document):
 
 
 def _normalize(text: str) -> str:
+    """Normalize line endings, trailing whitespace, and excessive blank lines."""
     text = text.replace("\r\n", "\n")
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)

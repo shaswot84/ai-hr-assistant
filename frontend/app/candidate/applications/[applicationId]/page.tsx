@@ -8,6 +8,13 @@ import { ScoreRing } from "@/components/score-ring";
 import { api } from "@/lib/api";
 import type { ApplicationDetail } from "@/lib/types";
 
+/**
+ * Candidate single-application detail page. Shows the applied vacancy, its
+ * status, the AI resume evaluation (score ring + overview) when available, and
+ * a status-specific message for shortlisted/rejected applications.
+ *
+ * @param props.params Next.js route params resolving to the application id.
+ */
 export default function MyApplicationDetailPage({
   params,
 }: {
@@ -17,6 +24,7 @@ export default function MyApplicationDetailPage({
   const [app, setApp] = useState<ApplicationDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Next.js 15+ provides params as a promise; unwrap it into state.
   useEffect(() => {
     params.then(({ applicationId }) => setApplicationId(applicationId));
   }, [params]);

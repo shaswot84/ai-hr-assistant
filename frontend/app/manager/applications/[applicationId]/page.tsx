@@ -8,6 +8,14 @@ import { ScoreRing } from "@/components/score-ring";
 import { api } from "@/lib/api";
 import type { ApplicationDetail } from "@/lib/types";
 
+/**
+ * Manager application review page. Displays a candidate's resume evaluation
+ * (or pending state), a link to view the raw resume, and — for APPLIED
+ * applications — Approve/Reject buttons that change the application status.
+ * Wrapped in the HR_ADMIN auth guard.
+ *
+ * @param props.params Next.js route params resolving to the application id.
+ */
 export default function ApplicationReviewPage({
   params,
 }: {
@@ -18,6 +26,7 @@ export default function ApplicationReviewPage({
   const [error, setError] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
 
+  // Next.js 15+ provides params as a promise; unwrap it into state.
   useEffect(() => {
     params.then(({ applicationId }) => setApplicationId(applicationId));
   }, [params]);
@@ -30,6 +39,7 @@ export default function ApplicationReviewPage({
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load application"));
   }, [applicationId]);
 
+  /** Approves (shortlists) or rejects the application, then refreshes its detail. */
   async function decide(action: "approve" | "reject") {
     if (!applicationId) return;
     setActing(true);

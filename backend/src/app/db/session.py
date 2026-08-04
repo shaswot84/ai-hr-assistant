@@ -16,6 +16,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 
 def get_db() -> Generator[Session, None, None]:
+    """Yield a database session and always close it afterward (FastAPI dependency)."""
     db = SessionLocal()
     try:
         yield db
@@ -35,6 +36,7 @@ def init_db() -> None:
 
 
 def verify_db_connection() -> bool:
+    """Probe the database with a trivial query, returning True if reachable."""
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))

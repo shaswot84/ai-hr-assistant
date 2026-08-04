@@ -42,6 +42,8 @@ Rules:
 
 @dataclass
 class ScoreResult:
+    """Structured outcome of a resume-vs-job evaluation."""
+
     score: int
     overview: str
     raw_payload: dict[str, Any]
@@ -50,6 +52,7 @@ class ScoreResult:
 
 
 def _clamp_score(value: Any) -> int:
+    """Coerce and clamp a raw score into the valid 0-100 integer range (0 on failure)."""
     try:
         return max(0, min(100, round(float(value))))
     except (TypeError, ValueError):
@@ -57,10 +60,12 @@ def _clamp_score(value: Any) -> int:
 
 
 def _str(value: Any, fallback: str = "") -> str:
+    """Return `value` if it is a string, otherwise the given fallback."""
     return value if isinstance(value, str) else fallback
 
 
 def _str_list(value: Any) -> list[str]:
+    """Return the list of strings contained in `value` (empty list for non-list inputs)."""
     if isinstance(value, list):
         return [v for v in value if isinstance(v, str)]
     return []
@@ -89,6 +94,7 @@ async def _score_with_llm(
     job_title: str,
     job_description: str,
 ) -> ScoreResult:
+    """Score the resume via the Ollama chat provider, falling back to the deterministic scorer."""
     user_prompt = USER_PROMPT.format(
         job_title=job_title,
         job_description=job_description or "Not provided.",

@@ -8,6 +8,13 @@ import { ScoreRing } from "@/components/score-ring";
 import { api } from "@/lib/api";
 import type { ApplicationDetail, Vacancy } from "@/lib/types";
 
+/**
+ * Manager vacancy detail page: shows the vacancy info plus a list of its
+ * applications with scores, linking each to the review page. Applications
+ * that fail to load default to an empty list. Wrapped in the HR_ADMIN guard.
+ *
+ * @param props.params Next.js route params resolving to the vacancy id.
+ */
 export default function ManagerVacancyDetailPage({
   params,
 }: {
@@ -18,6 +25,7 @@ export default function ManagerVacancyDetailPage({
   const [applications, setApplications] = useState<ApplicationDetail[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Next.js 15+ provides params as a promise; unwrap it into state.
   useEffect(() => {
     params.then(({ vacancyId }) => setVacancyId(vacancyId));
   }, [params]);

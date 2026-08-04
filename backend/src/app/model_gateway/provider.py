@@ -5,7 +5,7 @@ from typing import Any
 
 
 class ChatProviderError(Exception):
-    pass
+    """Raised when a chat provider cannot fulfil a completion request."""
 
 
 class ChatProvider(ABC):

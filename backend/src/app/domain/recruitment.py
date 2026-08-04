@@ -22,6 +22,8 @@ from app.db.base import Base
 
 
 class Vacancy(Base):
+    """A job opening posted by a manager for candidates to apply to."""
+
     __tablename__ = "vacancy"
 
     vacancy_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -41,6 +43,8 @@ class Vacancy(Base):
 
 
 class Application(Base):
+    """A candidate's application to a vacancy, tracking its life-cycle status."""
+
     __tablename__ = "application"
     __table_args__ = (UniqueConstraint("candidate_id", "vacancy_id"),)
 

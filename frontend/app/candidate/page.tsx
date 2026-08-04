@@ -6,6 +6,10 @@ import { VacancyCard } from "@/components/vacancy-card";
 import { api } from "@/lib/api";
 import type { Vacancy } from "@/lib/types";
 
+/**
+ * Candidate landing page: lists currently OPEN vacancies from the API and
+ * links each to its apply page. Wrapped in the candidate-only auth guard.
+ */
 export default function CandidateHomePage() {
   const [vacancies, setVacancies] = useState<Vacancy[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -17,6 +21,7 @@ export default function CandidateHomePage() {
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load vacancies"));
   }, []);
 
+  // Candidates may only see and apply to vacancies that are currently OPEN.
   const open = (vacancies ?? []).filter((v) => v.status === "OPEN");
 
   return (

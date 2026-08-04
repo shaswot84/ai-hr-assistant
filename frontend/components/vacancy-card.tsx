@@ -2,6 +2,14 @@ import Link from "next/link";
 import type { Vacancy } from "@/lib/types";
 import { StatusBadge, formatDate } from "@/components/status";
 
+/**
+ * Clickable card summarizing a vacancy (title, department, employment type,
+ * status badge, truncated description, closing date). Used in candidate and
+ * manager vacancy lists.
+ *
+ * @param props.vacancy The vacancy data to display.
+ * @param props.href Destination the whole card links to.
+ */
 export function VacancyCard({ vacancy, href }: { vacancy: Vacancy; href: string }) {
   return (
     <Link

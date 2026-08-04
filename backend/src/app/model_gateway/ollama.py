@@ -18,6 +18,7 @@ class OllamaChatProvider(ChatProvider):
     """
 
     def __init__(self) -> None:
+        """Load endpoint, model, and timeout configuration from settings."""
         self._settings = get_settings()
         self._base = self._settings.ollama_api_base
         self._base = self._base.removesuffix("/")
@@ -25,6 +26,7 @@ class OllamaChatProvider(ChatProvider):
         self._timeout = self._settings.ollama_request_timeout
 
     def is_configured(self) -> bool:
+        """Return True if a real (non-placeholder) Ollama API key is present."""
         key = self._settings.ollama_api_key
         # A placeholder value (e.g. "your-ollama-api-key") is not a real key.
         return bool(key) and not ("your-" in key or key.startswith("<"))
@@ -36,6 +38,11 @@ class OllamaChatProvider(ChatProvider):
         user_prompt: str,
         temperature: float = 0.4,
     ) -> dict[str, Any]:
+        """Call the hosted Ollama chat/completions endpoint and return parsed JSON.
+
+        Raises ChatProviderError if the key is missing, the request fails or
+        times out, or the response cannot be parsed as JSON.
+        """
         if not self.is_configured():
             raise ChatProviderError("Ollama API key is not configured.")
         url = f"{self._base}/v1/chat/completions"
@@ -73,6 +80,7 @@ class OllamaChatProvider(ChatProvider):
 
 
 def _extract_json(text: str) -> str:
+    """Return the JSON substring from a model reply, stripping code fences if any."""
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
     candidate = fenced.group(1) if fenced else text
     start = candidate.find("{")

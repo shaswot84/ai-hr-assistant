@@ -3,6 +3,11 @@
 import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 
+/**
+ * Button that toggles between light and dark theme via next-themes. It waits
+ * until after mount before rendering the real button to avoid an SSR/client
+ * hydration mismatch on the resolved theme.
+ */
 export function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
@@ -12,6 +17,7 @@ export function ThemeToggle() {
     setMounted(true);
   }, []);
 
+  // Before mount, render an empty spacer so the layout doesn't shift.
   if (!mounted) {
     return <div className="h-8 w-8" />;
   }

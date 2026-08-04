@@ -11,7 +11,7 @@ from app.domain.identity import ApplicationUser, Candidate, Employee, Person
 
 
 class IdentityError(Exception):
-    pass
+    """Raised when a UserContext cannot be resolved to the expected HR identity."""
 
 
 class IdentityService:
@@ -22,9 +22,11 @@ class IdentityService:
     """
 
     def __init__(self, db: Session) -> None:
+        """Bind the service to a DB session."""
         self._db = db
 
     def _get_or_create_person(self, user: UserContext) -> Person:
+        """Return the Person for the user's email, creating one from their profile if needed."""
         stmt = select(Person).where(Person.email == user.email)
         person = self._db.scalar(stmt)
         if person is not None:
@@ -40,6 +42,7 @@ class IdentityService:
         return person
 
     def get_or_create_user(self, user: UserContext) -> ApplicationUser:
+        """Map the auth subject to an ApplicationUser, provisioning Person + role record if new."""
         stmt = select(ApplicationUser).where(ApplicationUser.external_subject == user.subject)
         app_user = self._db.scalar(stmt)
         if app_user is not None:
@@ -60,6 +63,7 @@ class IdentityService:
         return app_user
 
     def _ensure_candidate(self, person: Person, app_user: ApplicationUser) -> None:
+        """Create a Candidate row for the person if one does not yet exist."""
         stmt = select(Candidate).where(Candidate.person_id == person.person_id)
         if self._db.scalar(stmt) is None:
             self._db.add(
@@ -68,6 +72,7 @@ class IdentityService:
             self._db.flush()
 
     def _ensure_employee(self, person: Person, app_user: ApplicationUser) -> None:
+        """Create an Employee row for the person if one does not yet exist."""
         stmt = select(Employee).where(Employee.person_id == person.person_id)
         if self._db.scalar(stmt) is None:
             self._db.add(
@@ -80,12 +85,14 @@ class IdentityService:
 
     @staticmethod
     def _employee_number(subject: str) -> str:
+        """Derive a unique, deterministic employee number from the auth subject."""
         # Dev-stub subjects are `{role}-{email}`, so a role-based prefix collides.
         # Hash the full subject so every user gets a unique number.
         digest = hashlib.sha1(subject.encode("utf-8")).hexdigest()[:8].upper()
         return f"EMP-{digest}"
 
     def get_employee(self, user: UserContext) -> Employee:
+        """Resolve the user to their Employee row, raising if they are not an employee."""
         app_user = self.get_or_create_user(user)
         stmt = select(Employee).where(Employee.person_id == app_user.person_id)
         employee = self._db.scalar(stmt)
@@ -94,6 +101,7 @@ class IdentityService:
         return employee
 
     def get_candidate(self, user: UserContext) -> Candidate:
+        """Resolve the user to their Candidate row, raising if they are not a candidate."""
         app_user = self.get_or_create_user(user)
         stmt = select(Candidate).where(Candidate.person_id == app_user.person_id)
         candidate = self._db.scalar(stmt)
@@ -102,5 +110,6 @@ class IdentityService:
         return candidate
 
     def get_candidate_for_application(self, application) -> Candidate:
+        """Return the Candidate row backing the application's candidate_id."""
         stmt = select(Candidate).where(Candidate.candidate_id == application.candidate_id)
         return self._db.scalar(stmt)

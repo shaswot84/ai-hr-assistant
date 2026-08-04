@@ -8,6 +8,11 @@ import { ScoreRing } from "@/components/score-ring";
 import { api } from "@/lib/api";
 import type { Application } from "@/lib/types";
 
+/**
+ * Candidate "My applications" page: lists the current candidate's submitted
+ * applications with their score ring (when evaluated) and status. Wrapped in
+ * the candidate-only auth guard.
+ */
 export default function MyApplicationsPage() {
   const [applications, setApplications] = useState<Application[] | null>(null);
   const [error, setError] = useState<string | null>(null);

@@ -1,3 +1,4 @@
+/** Tailwind classes per status value; unknown statuses fall back to a neutral style. */
 const STATUS_STYLES: Record<string, string> = {
   APPLIED: "border-border text-muted",
   SHORTLISTED: "border-border-strong text-foreground",
@@ -7,6 +8,12 @@ const STATUS_STYLES: Record<string, string> = {
   CLOSED: "border-border text-muted",
 };
 
+/**
+ * Pill-shaped badge that displays a status (e.g. APPLIED, OPEN) with a
+ * status-specific color and a humanized label ("Shortlisted").
+ *
+ * @param props.status The raw status string from the API.
+ */
 export function StatusBadge({ status }: { status: string }) {
   return (
     <span
@@ -17,6 +24,13 @@ export function StatusBadge({ status }: { status: string }) {
   );
 }
 
+/**
+ * Formats an ISO date string as a localized short date (e.g. "Aug 4, 2026").
+ * Returns an em-dash for missing/invalid values.
+ *
+ * @param value ISO date string, or null/undefined.
+ * @returns Formatted date string or "—".
+ */
 export function formatDate(value: string | null | undefined): string {
   if (!value) return "—";
   return new Date(value).toLocaleDateString(undefined, {

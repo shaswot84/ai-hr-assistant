@@ -7,6 +7,11 @@ import { StatusBadge, formatDate } from "@/components/status";
 import { api } from "@/lib/api";
 import type { Vacancy } from "@/lib/types";
 
+/**
+ * Manager dashboard: shows a quick "Create vacancy" action and a list of the
+ * five most recent vacancies with links to their detail pages. Wrapped in the
+ * HR_ADMIN auth guard.
+ */
 export default function ManagerHomePage() {
   const [vacancies, setVacancies] = useState<Vacancy[] | null>(null);
   const [error, setError] = useState<string | null>(null);

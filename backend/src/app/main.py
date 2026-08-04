@@ -22,6 +22,7 @@ CORS_ORIGINS = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application startup/shutdown hook: init DB tables and ensure the MinIO bucket exists."""
     init_db()
     settings = get_settings()
     if settings.minio_auto_init:
@@ -49,4 +50,5 @@ app.include_router(recruitment_router.router)
 
 @app.get("/health")
 async def health():
+    """Liveness probe returning a simple status payload."""
     return {"status": "ok"}

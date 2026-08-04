@@ -29,6 +29,7 @@ ALLOWED_RESUME_TYPES = (
 
 
 def _to_application_out(application, evaluation=None) -> ApplicationOut:
+    """Build an API response model for an application, attaching the latest evaluation if present."""
     evaluated = evaluation is not None
     return ApplicationOut(
         application_id=application.application_id,
@@ -51,6 +52,7 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
 
 
 def _svc(db=Depends(get_db)) -> RecruitmentService:
+    """FastAPI dependency that builds a RecruitmentService bound to the request's DB session."""
     return RecruitmentService(db)
 
 
@@ -62,6 +64,7 @@ def list_vacancies(
     user: UserContext = Depends(get_current_user),
     svc: RecruitmentService = Depends(_svc),
 ):
+    """List vacancies; candidates see only open ones, employees/managers see all."""
     vacancies = svc.list_vacancies(user)
     depts = {v.department_id: _department_name(svc, v.department_id) for v in vacancies}
     return [
@@ -86,6 +89,7 @@ def create_vacancy(
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
+    """Create a new vacancy (manager-only)."""
     try:
         vacancy = svc.create_vacancy(
             user,
@@ -117,6 +121,7 @@ def get_vacancy(
     user: UserContext = Depends(get_current_user),
     svc: RecruitmentService = Depends(_svc),
 ):
+    """Return a single vacancy by id, or 404 if not found."""
     vacancy = svc.get_vacancy(vacancy_id)
     if vacancy is None:
         raise HTTPException(status_code=404, detail="Vacancy not found.")
@@ -147,6 +152,7 @@ async def apply_to_vacancy(
     user: UserContext = Depends(require_role("CANDIDATE")),
     svc: RecruitmentService = Depends(_svc),
 ):
+    """Apply to a vacancy (candidate-only): validates and stores the resume, then creates the application."""
     data = await file.read()
     if len(data) == 0:
         raise HTTPException(status_code=400, detail="The uploaded resume is empty.")
@@ -179,6 +185,7 @@ def my_applications(
     user: UserContext = Depends(require_role("CANDIDATE")),
     svc: RecruitmentService = Depends(_svc),
 ):
+    """List the current candidate's applications, each with its latest evaluation."""
     applications = svc.list_my_applications(user)
     return [
         _to_application_out(a, svc.latest_evaluation(a.application_id)) for a in applications
@@ -191,6 +198,7 @@ def my_application(
     user: UserContext = Depends(require_role("CANDIDATE")),
     svc: RecruitmentService = Depends(_svc),
 ):
+    """Return one of the current candidate's applications (with evaluation) by id."""
     application = svc.get_my_application(user, application_id)
     evaluation = svc.latest_evaluation(application_id)
     out = _to_application_out(application, evaluation)
@@ -205,6 +213,7 @@ def vacancy_applications(
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
+    """List all applications for a vacancy, including candidate details (manager-only)."""
     applications = svc.list_vacancy_applications(user, vacancy_id)
     result: list[ApplicationDetailOut] = []
     for a in applications:
@@ -229,6 +238,7 @@ def application_detail(
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
+    """Return a single application for review, with its evaluation and candidate details."""
     application = svc.get_application_for_review(user, application_id)
     evaluation = svc.latest_evaluation(application_id)
     out = _to_application_out(application, evaluation)
@@ -246,6 +256,7 @@ def download_resume(
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
+    """Stream the stored resume file for an application (manager-only)."""
     application = svc.get_application_for_review(user, application_id)
     if not application.cv_object_key:
         raise HTTPException(status_code=404, detail="No resume on file.")
@@ -268,6 +279,7 @@ def decide_application(
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
+    """Approve or reject an application (manager-only)."""
     if body.action not in {"approve", "reject"}:
         raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'.")
     try:
@@ -283,6 +295,7 @@ def decide_application(
 
 
 def _department_name(svc: RecruitmentService, department_id: uuid.UUID) -> str | None:
+    """Resolve a department id to its display name, or None if it no longer exists."""
     from app.domain.identity import Department
 
     dept = svc._db.get(Department, department_id)
@@ -290,6 +303,7 @@ def _department_name(svc: RecruitmentService, department_id: uuid.UUID) -> str |
 
 
 def _candidate_display(svc: RecruitmentService, candidate) -> str | None:
+    """Return the candidate's full display name, or None if the candidate/person is unknown."""
     if candidate is None:
         return None
     from app.domain.identity import Person
@@ -299,6 +313,7 @@ def _candidate_display(svc: RecruitmentService, candidate) -> str | None:
 
 
 def _candidate_email(svc: RecruitmentService, candidate) -> str | None:
+    """Return the candidate's email address, or None if the candidate/person is unknown."""
     if candidate is None:
         return None
     from app.domain.identity import Person

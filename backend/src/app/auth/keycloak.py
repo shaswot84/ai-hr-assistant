@@ -23,6 +23,7 @@ class KeycloakProvider(AuthProvider):
     name = "keycloak"
 
     def __init__(self) -> None:
+        """Load app settings and initialize an empty JWKS cache."""
         self._settings = get_settings()
         self._jwks_cache: dict[str, Any] = {}
         self._jwks_cache_at = 0.0
@@ -30,12 +31,14 @@ class KeycloakProvider(AuthProvider):
     # -- helpers ------------------------------------------------------
 
     def _well_known(self) -> dict[str, Any]:
+        """Fetch the realm's OIDC discovery document."""
         url = f"{self._settings.keycloak_issuer}/.well-known/openid-configuration"
         resp = httpx.get(url, timeout=10.0)
         resp.raise_for_status()
         return resp.json()
 
     def _jwks(self) -> dict[str, Any]:
+        """Return the realm signing keys, refreshing the in-memory cache every 5 minutes."""
         # refresh cache every 5 minutes
         if self._jwks_cache and time.time() - self._jwks_cache_at < 300:
             return self._jwks_cache
@@ -47,6 +50,11 @@ class KeycloakProvider(AuthProvider):
         return self._jwks_cache
 
     def _decode_token(self, token: str) -> dict[str, Any]:
+        """Validate a JWT against the realm's JWKS and return its claims.
+
+        Tries every key in the JWKS set; the token is only rejected when all
+        keys fail validation.
+        """
         jwks = self._jwks()
         for key in jwks.get("keys", []):
             alg = key.get("alg", "RS256")
@@ -68,6 +76,10 @@ class KeycloakProvider(AuthProvider):
     # -- AuthProvider interface ---------------------------------------
 
     def authenticate(self, request: Any) -> UserContext | None:
+        """Validate the Bearer/X-Access-Token header and build a trusted UserContext.
+
+        Returns None (unauthenticated) if no token is present or validation fails.
+        """
         req: Request = request
         auth = req.headers.get("authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else None
@@ -98,6 +110,7 @@ class KeycloakProvider(AuthProvider):
         )
 
     def build_login_url(self, redirect_uri: str) -> str | None:
+        """Return the Keycloak authorization-code login URL for the given redirect URI."""
         return (
             f"{self._settings.keycloak_issuer}/protocol/openid-connect/auth"
             f"?response_type=code&client_id={self._settings.keycloak_client_id}"
@@ -105,6 +118,7 @@ class KeycloakProvider(AuthProvider):
         )
 
     def exchange_code(self, code: str, redirect_uri: str) -> UserContext:
+        """Exchange an authorization code for tokens, then build a UserContext from the access token."""
         resp = httpx.post(
             f"{self._settings.keycloak_issuer}/protocol/openid-connect/token",
             data={
@@ -134,6 +148,7 @@ class KeycloakProvider(AuthProvider):
         )
 
     def build_logout_url(self, redirect_uri: str) -> str | None:
+        """Return the Keycloak logout URL that redirects back to the given URI."""
         return (
             f"{self._settings.keycloak_issuer}/protocol/openid-connect/logout"
             f"?client_id={self._settings.keycloak_client_id}&redirect_uri={redirect_uri}"

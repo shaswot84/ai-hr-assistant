@@ -9,16 +9,25 @@ import type { Vacancy } from "@/lib/types";
 
 const ACCEPTED_EXT = [".pdf", ".docx"];
 
+/** Whether the chosen file is one of the accepted resume formats (.pdf/.docx). */
 function isAcceptedFile(file: File): boolean {
   return ACCEPTED_EXT.some((ext) => file.name.toLowerCase().endsWith(ext));
 }
 
+/** Formats a byte count as a compact human-readable string (B / KB / MB). */
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Candidate vacancy detail page: shows the vacancy description and, when the
+ * vacancy is OPEN, an upload form to apply with a resume. Validates the file
+ * extension client-side before submitting.
+ *
+ * @param props.params Next.js route params resolving to the vacancy id.
+ */
 export default function CandidateVacancyDetailPage({
   params,
 }: {
@@ -31,6 +40,7 @@ export default function CandidateVacancyDetailPage({
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
+  // Next.js 15+ provides params as a promise; unwrap it into state.
   useEffect(() => {
     params.then(({ vacancyId }) => setVacancyId(vacancyId));
   }, [params]);
@@ -43,6 +53,7 @@ export default function CandidateVacancyDetailPage({
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load vacancy"));
   }, [vacancyId]);
 
+  /** Submits the selected resume for this vacancy via the API, then shows the result. */
   async function apply() {
     if (!file || !vacancyId) return;
     setSubmitting(true);
