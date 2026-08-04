@@ -1,3 +1,12 @@
+"""Read-only hybrid retrieval over indexed knowledge.
+
+Raw SQL is used deliberately: the retrieval legs mix full-text ranking
+(``ts_rank``) and pgvector operators (``<=>``) that the ORM does not express
+naturally. Chunk rows are joined to their document, version, and the latest
+ingestion job so provenance (parser/chunking/embedding) rides along with
+every hit.
+"""
+
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -9,13 +18,21 @@ from app.knowledge.models import DocumentCategory
 
 
 def vector_to_text(vector: list[float]) -> str:
-    """Render a vector in PostgreSQL's text format, e.g. ``[1.5,2,0]``."""
+    """Render a vector in PostgreSQL's text format, e.g. ``[1.5,2,0]``.
+
+    asyncpg cannot bind a Python ``list[float]`` directly to a ``vector``
+    parameter, so we cast the text form: ``(:query_embedding)::vector``.
+    """
     return "[" + ",".join(str(x) for x in vector) + "]"
 
 
 @dataclass(frozen=True)
 class RetrievalHit:
-    """A raw row returned by a retrieval leg before fusion."""
+    """A raw row returned by a retrieval leg before fusion.
+
+    ``score`` means different things per leg (BM25 rank vs. cosine
+    similarity); the caller fuses these, so the legs never compare scores.
+    """
 
     chunk_id: UUID
     document_id: UUID
@@ -34,6 +51,8 @@ class RetrievalHit:
         return str(self.chunk_id)
 
 
+# Shared FROM/JOIN clause: chunk → version → document, plus the ingestion job
+# that produced the version (its status gates what is served).
 _JOINS = """
     FROM document_chunk c
     JOIN document_version v ON v.document_version_id = c.document_version_id
@@ -41,6 +60,7 @@ _JOINS = """
     JOIN ingestion_job j ON j.document_version_id = v.document_version_id
 """
 
+# Columns common to both retrieval legs (metadata + provenance, no score).
 _SELECT_COLS = """
     SELECT
         c.chunk_id,
@@ -80,6 +100,7 @@ class HybridRetrievalRepository:
         category: DocumentCategory | None = None,
         document_type: str | None = None,
     ) -> list[RetrievalHit]:
+        """Lexical leg: PostgreSQL Full-Text Search (BM25 via ``ts_rank``)."""
         sql = text(
             _SELECT_COLS
             + f""", ts_rank(to_tsvector('english', c.processed_content),
@@ -111,6 +132,11 @@ class HybridRetrievalRepository:
         category: DocumentCategory | None = None,
         document_type: str | None = None,
     ) -> list[RetrievalHit]:
+        """Semantic leg: pgvector cosine-distance search (``<=>``).
+
+        Score is converted from distance to similarity (``1 - distance``) so
+        higher is better, matching the BM25 leg's ordering.
+        """
         sql = text(
             _SELECT_COLS
             + f""", 1 - (c.embedding <=> (:query_embedding)::vector) AS score
@@ -132,6 +158,7 @@ class HybridRetrievalRepository:
         return await self._fetch(sql, params)
 
     async def _fetch(self, sql: object, params: dict) -> list[RetrievalHit]:
+        """Execute a leg's SQL and map rows to ``RetrievalHit`` objects."""
         result = await self._session.execute(sql, params)
         hits: list[RetrievalHit] = []
         for row in result.mappings():
@@ -165,6 +192,7 @@ class HybridRetrievalRepository:
     def _filter_clause(
         category: DocumentCategory | None, document_type: str | None
     ) -> str:
+        """Build the optional WHERE fragment for metadata filters."""
         clauses: list[str] = []
         if category is not None:
             clauses.append("d.category = :category")
@@ -176,6 +204,7 @@ class HybridRetrievalRepository:
     def _add_filter_params(
         params: dict, category: DocumentCategory | None, document_type: str | None
     ) -> None:
+        """Register the bound params for the metadata filters, if present."""
         if category is not None:
             params["category"] = category.value
         if document_type:

@@ -1,3 +1,5 @@
+"""Unit tests for the KnowledgeService orchestrator using fakes."""
+
 import uuid
 
 import pytest
@@ -11,6 +13,7 @@ from app.model_gateway.interfaces import Embedder, Reranker
 
 
 def make_hit(chunk_id: str, content: str, category: str = "POLICY") -> RetrievalHit:
+    """Build a RetrievalHit with a deterministic chunk id."""
     return RetrievalHit(
         chunk_id=uuid.uuid5(uuid.NAMESPACE_URL, chunk_id),
         document_id=uuid.uuid4(),
@@ -26,6 +29,8 @@ def make_hit(chunk_id: str, content: str, category: str = "POLICY") -> Retrieval
 
 
 class FakeRepository:
+    """Stands in for HybridRetrievalRepository; records filter kwargs."""
+
     def __init__(self, bm25_hits: list[RetrievalHit], vector_hits: list[RetrievalHit]) -> None:
         self._bm25_hits = bm25_hits
         self._vector_hits = vector_hits
@@ -41,6 +46,8 @@ class FakeRepository:
 
 
 class FakeEmbedder(Embedder):
+    """Deterministic embedder returning a constant vector."""
+
     model = "fake"
     version = "1"
     dimension = 4
@@ -50,6 +57,8 @@ class FakeEmbedder(Embedder):
 
 
 class ScoredReranker(Reranker):
+    """Ranks pairs by their position (higher position = higher score)."""
+
     model = "fake-reranker"
 
     async def rerank(self, query, pairs):
@@ -58,6 +67,7 @@ class ScoredReranker(Reranker):
 
 @pytest.mark.asyncio
 async def test_service_returns_grounded_result():
+    """End-to-end orchestration: evidence, citations, and scores returned."""
     repo = FakeRepository(
         bm25_hits=[make_hit("a", "Annual leave accrues."), make_hit("b", "Sick leave policy.")],
         vector_hits=[make_hit("a", "Annual leave accrues."), make_hit("c", "Remote work policy.")],
@@ -76,6 +86,7 @@ async def test_service_returns_grounded_result():
 
 @pytest.mark.asyncio
 async def test_service_applies_reranker_ordering():
+    """With a real reranker, chunks are reordered by reranker score."""
     repo = FakeRepository(
         bm25_hits=[make_hit("a", "Annual leave."), make_hit("b", "Sick leave."), make_hit("c", "Remote.")],
         vector_hits=[make_hit("b", "Sick leave.")],
@@ -93,6 +104,7 @@ async def test_service_applies_reranker_ordering():
 
 @pytest.mark.asyncio
 async def test_service_low_confidence_gate():
+    """Weak evidence below the threshold is flagged as low confidence."""
     repo = FakeRepository(
         bm25_hits=[make_hit("only", "Unrelated snippet about parking.")],
         vector_hits=[],
@@ -108,6 +120,7 @@ async def test_service_low_confidence_gate():
 
 @pytest.mark.asyncio
 async def test_service_forwards_metadata_filters():
+    """Category/document_type/current_only are passed to both retrieval legs."""
     repo = FakeRepository(
         bm25_hits=[make_hit("a", "x", category="POLICY")],
         vector_hits=[make_hit("a", "x", category="POLICY")],
@@ -126,6 +139,7 @@ async def test_service_forwards_metadata_filters():
 
 @pytest.mark.asyncio
 async def test_service_empty_retrieval():
+    """No hits yields empty result, zero confidence, and low-confidence flag."""
     service = KnowledgeService(FakeRepository([], []), FakeEmbedder())
 
     result = await service.retrieve("nothing")

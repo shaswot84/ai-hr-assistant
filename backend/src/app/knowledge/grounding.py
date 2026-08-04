@@ -1,3 +1,5 @@
+"""Grounding: turns retrieved chunks into the LLM prompt context + citations."""
+
 from collections.abc import Iterable
 
 from app.knowledge.contracts import Citation, RetrievedChunk

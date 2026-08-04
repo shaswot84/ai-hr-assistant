@@ -1,3 +1,9 @@
+"""Async Alembic environment.
+
+Configures Alembic to run against the app's async SQLAlchemy engine and to
+use the ORM ``Base.metadata`` as the migration target.
+"""
+
 import asyncio
 from logging.config import fileConfig
 
@@ -11,15 +17,18 @@ import app.knowledge.models  # noqa: F401  (register tables on Base.metadata)
 
 config = context.config
 
+# Wire the runtime DATABASE_URL into alembic's config if set.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 config.set_main_option("sqlalchemy.url", get_settings().database.url)
 
+# Alembic generates migrations against the declared ORM tables.
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
+    """Generate SQL without a DB connection (``--sql`` mode)."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -33,6 +42,7 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection) -> None:
+    """Run migrations against a live connection."""
     context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():
@@ -40,9 +50,11 @@ def do_run_migrations(connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    """Create an async engine from config and run migrations on it."""
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
+        # No pooling: migrations create their own connection and dispose it.
         poolclass=pool.NullPool,
     )
 
@@ -53,6 +65,7 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
+    """Run migrations in online mode (the default)."""
     asyncio.run(run_async_migrations())
 
 

@@ -1,3 +1,5 @@
+"""Unit tests for Reciprocal Rank Fusion."""
+
 import pytest
 
 from app.config.settings import RetrievalSettings

@@ -1,3 +1,5 @@
+"""Rank fusion: merge multiple ranked lists into one consensus ranking."""
+
 from collections import defaultdict
 from collections.abc import Iterable
 

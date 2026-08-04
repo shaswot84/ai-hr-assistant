@@ -1,3 +1,9 @@
+"""Knowledge-side reranker wiring.
+
+``PassThroughReranker`` is the model-free fallback used when reranking is
+disabled; real models live in ``app.model_gateway``.
+"""
+
 from app.model_gateway.interfaces import Reranker
 
 

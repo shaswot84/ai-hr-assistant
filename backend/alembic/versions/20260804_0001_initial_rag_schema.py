@@ -21,8 +21,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # pgvector extension powers the document_chunk.embedding column + HNSW index.
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
+    # PostgreSQL-native ENUM types shared by the ORM models.
     document_category = sa.Enum(
         "POLICY", "PROCEDURE", "GUIDELINE", "FORM",
         "TEMPLATE", "TRAINING_MATERIAL", "OTHER",
@@ -92,6 +94,7 @@ def upgrade() -> None:
         sa.Column("page_number", sa.Integer(), nullable=True),
         sa.Column("section_title", sa.String(length=500), nullable=True),
         sa.Column("token_count", sa.Integer(), nullable=True),
+        # Embedding vector width comes from the configured embedding model.
         sa.Column("embedding", Vector(get_settings().embedding.dimension), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["document_version_id"], ["document_version.document_version_id"]),
@@ -131,6 +134,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Drop tables and indexes in reverse dependency order, then the ENUMs
+    and the vector extension."""
     op.drop_table("ingestion_job")
     op.drop_index("ix_document_chunk_fts", table_name="document_chunk")
     op.drop_index("ix_document_chunk_embedding_hnsw", table_name="document_chunk")

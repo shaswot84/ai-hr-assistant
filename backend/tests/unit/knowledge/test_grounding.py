@@ -1,3 +1,5 @@
+"""Unit tests for the grounding/citation context builder."""
+
 import uuid
 
 from app.knowledge.contracts import RetrievedChunk
@@ -5,6 +7,7 @@ from app.knowledge.grounding import GroundingContextBuilder
 
 
 def make_chunk(text: str, title: str = "Leave Policy", section: str | None = "Annual Leave", page: int | None = 3) -> RetrievedChunk:
+    """Build a chunk with configurable location metadata."""
     return RetrievedChunk(
         chunk_id=uuid.uuid4(),
         document_id=uuid.uuid4(),

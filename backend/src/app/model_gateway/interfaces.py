@@ -1,3 +1,10 @@
+"""Model Gateway interfaces: the abstraction for all AI model access.
+
+Concrete adapters (Ollama, sentence-transformers, cloud providers, ...) live
+in this package and implement these interfaces, keeping the rest of the app
+decoupled from where models actually run.
+"""
+
 import abc
 
 

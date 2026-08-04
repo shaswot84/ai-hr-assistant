@@ -1,3 +1,5 @@
+"""Ollama-backed embedding adapter for the Model Gateway."""
+
 import math
 
 import httpx
@@ -6,9 +8,14 @@ from app.model_gateway.interfaces import Embedder
 
 
 def l2_normalize(vector: list[float]) -> list[float]:
+    """Scale a vector to unit length.
+
+    Normalized embeddings make cosine similarity equivalent to the inner
+    product, matching how the pgvector HNSW index is queried.
+    """
     norm = math.sqrt(sum(x * x for x in vector))
     if norm == 0.0:
-        return vector
+        return vector  # avoid division by zero for all-zero vectors
     return [x / norm for x in vector]
 
 

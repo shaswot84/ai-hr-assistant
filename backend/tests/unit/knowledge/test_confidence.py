@@ -1,3 +1,5 @@
+"""Unit tests for confidence estimation and the low-confidence gate."""
+
 import uuid
 
 from app.config.settings import RetrievalSettings
@@ -6,6 +8,7 @@ from app.knowledge.contracts import RetrievedChunk
 
 
 def make_chunk(retrieval_score: float = 0.5, reranker_score: float | None = None) -> RetrievedChunk:
+    """Build a minimal RetrievedChunk with the scores under test."""
     return RetrievedChunk(
         chunk_id=uuid.uuid4(),
         document_id=uuid.uuid4(),

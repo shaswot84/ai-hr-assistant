@@ -1,10 +1,15 @@
 .PHONY: dev test lint
 
+PYTHON   := backend/.venv/bin/python
+PYTEST   := backend/.venv/bin/pytest
+RUFF     := backend/.venv/bin/ruff
+UVICORN  := backend/.venv/bin/uvicorn
+
 dev:
-	uvicorn backend.src.app.main:app --reload
+	cd backend && .venv/bin/uvicorn app.main:app --reload
 
 test:
-	pytest backend/tests
+	$(PYTEST) backend/tests
 
 lint:
-	ruff check backend/src
+	$(RUFF) check backend/src

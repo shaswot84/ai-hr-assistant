@@ -1,3 +1,9 @@
+"""Shared data contracts across the knowledge domain.
+
+These dataclasses are the interface boundary between the ingestion pipeline,
+the Knowledge Service, and the agent — keeping them decoupled.
+"""
+
 from dataclasses import dataclass, field
 from uuid import UUID
 

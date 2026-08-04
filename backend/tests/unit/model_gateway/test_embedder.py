@@ -1,3 +1,5 @@
+"""Unit tests for OllamaEmbedder using an httpx MockTransport."""
+
 import httpx
 import pytest
 
@@ -5,6 +7,7 @@ from app.model_gateway.embedder import OllamaEmbedder, l2_normalize
 
 
 def test_l2_normalize():
+    """Unit vectors should stay unit; zero vectors must not crash."""
     vec = [3.0, 4.0]
     norm = l2_normalize(vec)
     assert norm[0] == pytest.approx(0.6)
@@ -14,6 +17,7 @@ def test_l2_normalize():
 
 @pytest.mark.asyncio
 async def test_embed_posts_expected_payload_and_normalizes():
+    """Verifies the request body/URL and L2-normalized output."""
     captured = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -24,6 +28,7 @@ async def test_embed_posts_expected_payload_and_normalizes():
             json={"model": "nomic-embed-text", "embeddings": [[3.0, 4.0], [1.0, 0.0]]},
         )
 
+    # base_url is needed so the relative /api/embed path resolves.
     client = httpx.AsyncClient(
         base_url="http://ollama:11434", transport=httpx.MockTransport(handler)
     )
@@ -45,6 +50,8 @@ async def test_embed_posts_expected_payload_and_normalizes():
 
 @pytest.mark.asyncio
 async def test_embed_applies_task_prefix():
+    """The ``search_query: `` prefix is prepended to each input text."""
+
     async def handler(request: httpx.Request) -> httpx.Response:
         import json
 
@@ -66,6 +73,8 @@ async def test_embed_applies_task_prefix():
 
 @pytest.mark.asyncio
 async def test_embed_raises_on_error_status():
+    """Non-2xx responses raise HTTPStatusError instead of returning garbage."""
+
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"error": "model not found"})
 

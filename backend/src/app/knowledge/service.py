@@ -1,3 +1,10 @@
+"""Knowledge Service: the read-side retrieval orchestrator.
+
+This is the single entry point the agent uses to query the knowledge base.
+It never touches pgvector/FTS/MinIO directly — it only talks to the
+repository (PostgreSQL) and the Model Gateway (embedding + reranking).
+"""
+
 import asyncio
 from uuid import UUID
 
@@ -33,6 +40,7 @@ class KnowledgeService:
         self._repository = repository
         self._embedder = embedder
         self._settings = settings or RetrievalSettings()
+        # Default to pass-through reranking when none is provided.
         self._reranker = reranker or PassThroughReranker()
         self._grounding = grounding_builder or GroundingContextBuilder(
             max_chunks=self._settings.rerank_top_n
@@ -51,6 +59,16 @@ class KnowledgeService:
         current_only: bool = CURRENT_ONLY,
         top_k: int | None = None,
     ) -> KnowledgeResult:
+        """Run the full retrieval pipeline for a query and return evidence.
+
+        Steps:
+        1. Embed the query (Model Gateway).
+        2. Run BM25 and vector legs in parallel.
+        3. Fuse both ranked lists with RRF.
+        4. Rerank the fused candidates.
+        5. Estimate confidence and apply the low-confidence gate.
+        6. Build grounded context + citations.
+        """
         top_k = top_k or self._settings.top_k
         query_embedding = (await self._embedder.embed([query]))[0]
 
@@ -67,6 +85,7 @@ class KnowledgeService:
             ),
         )
 
+        # De-duplicate by chunk id so a chunk present in both legs is one row.
         hits_by_id = {hit.chunk_id: hit for hit in (*bm25_hits, *vector_hits)}
 
         fused = reciprocal_rank_fusion(
@@ -97,6 +116,7 @@ class KnowledgeService:
     def _to_retrieved_chunks(
         fused: list[tuple[str, float]], hits_by_id: dict[UUID, RetrievalHit]
     ) -> list[RetrievedChunk]:
+        """Convert fused (chunk_id, rrf_score) pairs into chunks."""
         chunks: list[RetrievedChunk] = []
         for key, score in fused:
             hit = hits_by_id.get(UUID(key))
@@ -120,6 +140,7 @@ class KnowledgeService:
         return chunks
 
     async def _rerank(self, query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+        """Attach reranker scores and, unless pass-through, reorder by them."""
         if not chunks:
             return chunks
         pairs = [(query, chunk.text) for chunk in chunks]
@@ -144,6 +165,7 @@ class KnowledgeService:
             for c, score in zip(chunks, scores, strict=True)
         ]
 
+        # Pass-through reranker keeps RRF order; a real model reorders.
         if self._reranker.model != "passthrough":
             reranked.sort(key=lambda c: c.reranker_score or 0.0, reverse=True)
         return reranked

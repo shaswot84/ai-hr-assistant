@@ -1,3 +1,13 @@
+"""SQLAlchemy models for the knowledge/retrieval domain.
+
+Tables: ``document`` → ``document_version`` → ``document_chunk``, plus
+``ingestion_job`` tracking the pipeline that produced each version.
+
+The agent and Knowledge Service never write here directly — the ingestion
+pipeline owns these rows and marks a version INDEXED only when it is ready
+to be served (see ``HybridRetrievalRepository``).
+"""
+
 import enum
 import uuid
 from datetime import datetime
@@ -20,10 +30,13 @@ from sqlalchemy.sql import func
 from app.config.settings import get_settings
 from app.db.base import Base
 
+# Read once so the embedding column width matches the configured model.
 _EMBEDDING_DIM = get_settings().embedding.dimension
 
 
 class DocumentCategory(enum.Enum):
+    """Coarse HR document taxonomy used for retrieval metadata filters."""
+
     POLICY = "POLICY"
     PROCEDURE = "PROCEDURE"
     GUIDELINE = "GUIDELINE"
@@ -34,6 +47,8 @@ class DocumentCategory(enum.Enum):
 
 
 class IngestionStatus(enum.Enum):
+    """Lifecycle of an ingestion job; only ``INDEXED`` rows are served."""
+
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
     INDEXED = "INDEXED"
@@ -41,6 +56,8 @@ class IngestionStatus(enum.Enum):
 
 
 class FailureReason(enum.Enum):
+    """Why an ingestion job failed (stored for observability)."""
+
     PARSING_ERROR = "PARSING_ERROR"
     CHUNKING_ERROR = "CHUNKING_ERROR"
     EMBEDDING_ERROR = "EMBEDDING_ERROR"
@@ -54,6 +71,8 @@ def _uuid() -> uuid.UUID:
 
 
 class Document(Base):
+    """Top-level knowledge document (e.g. "Leave Policy")."""
+
     __tablename__ = "document"
 
     document_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
@@ -78,6 +97,12 @@ class Document(Base):
 
 
 class DocumentVersion(Base):
+    """An immutable snapshot of a document at a point in time.
+
+    The authoritative bytes live in MinIO (``object_key``); only the current
+    version is served by default.
+    """
+
     __tablename__ = "document_version"
 
     document_version_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
@@ -110,6 +135,8 @@ class DocumentVersion(Base):
 
 
 class DocumentChunk(Base):
+    """A retrievable text unit of a version, with its embedding."""
+
     __tablename__ = "document_chunk"
 
     chunk_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
@@ -117,7 +144,9 @@ class DocumentChunk(Base):
         ForeignKey("document_version.document_version_id"), nullable=False, index=True
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Raw extracted text as written in the source document.
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Normalized text actually used for FTS indexing and embedding.
     processed_content: Mapped[str] = mapped_column(Text, nullable=False)
     original_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     overlap_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -125,6 +154,7 @@ class DocumentChunk(Base):
     page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     section_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # pgvector column: float vector sized to the embedding model's dimension.
     embedding: Mapped[list[float] | None] = mapped_column(Vector(_EMBEDDING_DIM), nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
@@ -137,6 +167,12 @@ class DocumentChunk(Base):
 
 
 class IngestionJob(Base):
+    """Tracks the ingestion pipeline run that produced a version's chunks.
+
+    Provenance fields (parser/chunking/embedding model) support explainability
+    and rebuilding derived indexes without touching authoritative documents.
+    """
+
     __tablename__ = "ingestion_job"
 
     ingestion_job_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)

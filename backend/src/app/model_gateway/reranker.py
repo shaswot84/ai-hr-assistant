@@ -1,3 +1,5 @@
+"""In-process cross-encoder reranker for the Model Gateway."""
+
 import asyncio
 import math
 
@@ -5,6 +7,11 @@ from app.model_gateway.interfaces import Reranker
 
 
 def sigmoid(logit: float) -> float:
+    """Squash a raw cross-encoder logit into the [0, 1] score range.
+
+    Uses a numerically stable formulation for large positive and negative
+    inputs.
+    """
     if logit >= 0:
         z = math.exp(-logit)
         return 1.0 / (1.0 + z)

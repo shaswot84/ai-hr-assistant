@@ -1,3 +1,5 @@
+"""Confidence estimation and the low-confidence gate for retrieval."""
+
 import math
 
 from app.config.settings import RetrievalSettings

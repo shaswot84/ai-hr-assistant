@@ -1,3 +1,10 @@
+"""Integration tests for the hybrid retrieval repository.
+
+These run against a real pgvector database and are gated on
+``TEST_DATABASE_URL``; without it they skip. They verify the core contract:
+only chunks belonging to INDEXED, current versions are served.
+"""
+
 import os
 
 import pytest
@@ -18,6 +25,7 @@ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 
 
 def make_embedding(first: float = 1.0) -> list[float]:
+    """Build a valid 768-dim embedding vector for tests."""
     vec = [0.0] * 768
     vec[0] = first
     return vec
@@ -25,6 +33,7 @@ def make_embedding(first: float = 1.0) -> list[float]:
 
 @pytest.fixture
 async def db_session():
+    """Fresh schema on an ephemeral test DB; skip when no URL is provided."""
     if not TEST_DATABASE_URL:
         pytest.skip("TEST_DATABASE_URL not set; skipping pgvector integration test")
     engine = create_async_engine(TEST_DATABASE_URL)
@@ -42,6 +51,7 @@ async def db_session():
 
 @pytest.mark.asyncio
 async def test_repository_serves_only_indexed_current_chunks(db_session):
+    """INDEXED + current chunks are served; stale (non-current) are not."""
     from app.knowledge.repository import HybridRetrievalRepository
 
     doc = Document(
@@ -54,6 +64,7 @@ async def test_repository_serves_only_indexed_current_chunks(db_session):
     db_session.add(doc)
     await db_session.flush()
 
+    # Current (v1) and stale (v2, is_current=False) versions of the same doc.
     current_version = DocumentVersion(
         document_id=doc.document_id,
         version_number=1,
@@ -115,13 +126,16 @@ async def test_repository_serves_only_indexed_current_chunks(db_session):
 
     repo = HybridRetrievalRepository(db_session)
 
+    # BM25 leg: only the current version's chunk matches.
     bm25 = await repo.bm25_search("annual leave accrues", limit=10)
     assert [h.content for h in bm25] == [current_chunk.content]
 
+    # Vector leg: current chunk first; metadata (category) comes through.
     vector = await repo.vector_search(make_embedding(1.0), limit=10)
     assert vector[0].chunk_id == current_chunk.chunk_id
     assert vector[0].category == "POLICY"
 
+    # current_only=False lets stale versions through.
     with_all_versions = await repo.vector_search(make_embedding(1.0), limit=10, current_only=False)
     ids = {h.chunk_id for h in with_all_versions}
     assert current_chunk.chunk_id in ids
@@ -130,6 +144,7 @@ async def test_repository_serves_only_indexed_current_chunks(db_session):
 
 @pytest.mark.asyncio
 async def test_repository_excludes_non_indexed(db_session):
+    """Non-INDEXED versions/jobs are never returned by either leg."""
     from app.knowledge.repository import HybridRetrievalRepository
 
     doc = Document(
