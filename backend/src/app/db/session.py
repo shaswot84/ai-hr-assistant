@@ -30,6 +30,7 @@ def init_db() -> None:
         identity,  # noqa: F401  (registers identity + org models)
         outbox,  # noqa: F401  (registers outbox model)
         recruitment,  # noqa: F401  (registers recruitment models)
+        setting,  # noqa: F401  (registers app_setting model)
     )
 
     Base.metadata.create_all(bind=engine)

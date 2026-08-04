@@ -39,6 +39,8 @@ export default function CandidateVacancyDetailPage({
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [hasApplied, setHasApplied] = useState(false);
+  const [appliedStatus, setAppliedStatus] = useState<string | null>(null);
 
   // Next.js 15+ provides params as a promise; unwrap it into state.
   useEffect(() => {
@@ -51,6 +53,24 @@ export default function CandidateVacancyDetailPage({
       .getVacancy(vacancyId)
       .then(setVacancy)
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load vacancy"));
+  }, [vacancyId]);
+
+  // If the candidate already applied to this vacancy, grey out the apply UI
+  // instead of surfacing an "already applied" error on resubmission.
+  useEffect(() => {
+    if (!vacancyId) return;
+    api
+      .myApplications()
+      .then((apps) => {
+        const existing = apps.find((a) => a.vacancy_id === vacancyId);
+        if (existing) {
+          setHasApplied(true);
+          setAppliedStatus(existing.application_status);
+        }
+      })
+      .catch(() => {
+        // Ignore; the apply endpoint still guards against duplicates server-side.
+      });
   }, [vacancyId]);
 
   /** Submits the selected resume for this vacancy via the API, then shows the result. */
@@ -103,6 +123,23 @@ export default function CandidateVacancyDetailPage({
               <p className="mt-8 rounded-xl border border-border bg-surface px-4 py-3 text-sm text-muted">
                 This vacancy is not open for applications.
               </p>
+            ) : hasApplied ? (
+              <div className="mt-8 rounded-xl border border-border bg-surface px-4 py-3 text-sm">
+                <p className="font-medium">You have already applied to this vacancy.</p>
+                {appliedStatus && (
+                  <p className="mt-1 text-muted">
+                    Status: <span className="capitalize">{appliedStatus.toLowerCase().replaceAll("_", " ")}</span>.
+                    Track it in{" "}
+                    <Link
+                      href="/candidate/applications"
+                      className="underline underline-offset-4 hover:text-foreground"
+                    >
+                      My Applications
+                    </Link>
+                    .
+                  </p>
+                )}
+              </div>
             ) : (
               <div className="mt-8 rounded-xl border border-border bg-surface p-5">
                 <h2 className="text-sm font-semibold">Apply with your resume</h2>

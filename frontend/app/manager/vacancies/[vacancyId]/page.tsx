@@ -24,6 +24,7 @@ export default function ManagerVacancyDetailPage({
   const [vacancy, setVacancy] = useState<Vacancy | null>(null);
   const [applications, setApplications] = useState<ApplicationDetail[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [acting, setActing] = useState(false);
 
   // Next.js 15+ provides params as a promise; unwrap it into state.
   useEffect(() => {
@@ -45,6 +46,21 @@ export default function ManagerVacancyDetailPage({
       .then(setApplications)
       .catch(() => setApplications([]));
   }, [vacancyId]);
+
+  /** Archives the vacancy (move to CLOSED) or re-opens it, then refreshes its detail. */
+  async function toggleClosed() {
+    if (!vacancyId) return;
+    setActing(true);
+    setError(null);
+    try {
+      const updated = vacancy?.status === "OPEN" ? await api.closeVacancy(vacancyId) : await api.reopenVacancy(vacancyId);
+      setVacancy(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update vacancy");
+    } finally {
+      setActing(false);
+    }
+  }
 
   return (
     <PortalGuard allowedRoles={["HR_ADMIN"]}>
@@ -68,6 +84,23 @@ export default function ManagerVacancyDetailPage({
                 </p>
               </div>
               <StatusBadge status={vacancy.status} />
+            </div>
+
+            {error && <p className="mt-2 text-sm text-danger">{error}</p>}
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={toggleClosed}
+                disabled={acting}
+                className="rounded-full border border-border px-4 py-2 text-xs font-medium text-muted transition-colors hover:bg-surface-hover disabled:opacity-50"
+              >
+                {acting
+                  ? "Updating…"
+                  : vacancy.status === "OPEN"
+                    ? "Close vacancy"
+                    : "Reopen vacancy"}
+              </button>
             </div>
 
             {vacancy.description && (

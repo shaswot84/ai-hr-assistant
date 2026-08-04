@@ -17,6 +17,7 @@ from app.integrations.email.smtp import SmtpEmailProvider
 from app.integrations.object_store import ObjectStore
 from app.knowledge.resume_extraction import extract_text
 from app.repositories.outbox import OutboxRepo
+from app.repositories.settings import SettingRepo
 
 log = logging.getLogger("worker")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
@@ -68,11 +69,14 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: Objec
 
     vacancy = db.get(Vacancy, application.vacancy_id)
 
+    system_prompt = SettingRepo(db).get_value("resume_review_system_prompt")
+
     started = time.monotonic()
     result = await score_resume(
         resume_text=extraction.text,
         job_title=vacancy.title if vacancy else "",
         job_description=vacancy.description or "" if vacancy else "",
+        system_prompt=system_prompt,
     )
     latency_ms = int((time.monotonic() - started) * 1000)
 

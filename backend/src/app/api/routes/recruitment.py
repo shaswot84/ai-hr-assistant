@@ -14,7 +14,11 @@ from app.schemas.recruitment import (
     ApplicationDetailOut,
     ApplicationOut,
     DecisionRequest,
+    EvaluationDetail,
     EvaluationOut,
+    FeedbackSection,
+    ImprovedBullet,
+    JobMatch,
     VacancyCreate,
     VacancyOut,
 )
@@ -26,6 +30,27 @@ ALLOWED_RESUME_TYPES = (
     ".pdf",
     ".docx",
 )
+
+
+def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
+    """Build a typed EvaluationDetail from a stored raw evaluation payload, or None if absent."""
+    if not raw_payload:
+        return None
+    job_match = raw_payload.get("jobMatch")
+    return EvaluationDetail(
+        overall_score=raw_payload.get("overallScore", 0),
+        score_justification=raw_payload.get("scoreJustification", ""),
+        clarity=FeedbackSection(**raw_payload.get("clarity", {})),
+        impact=FeedbackSection(**raw_payload.get("impact", {})),
+        formatting=FeedbackSection(**raw_payload.get("formatting", {})),
+        missing_sections=raw_payload.get("missingSections", []),
+        improved_bullets=[
+            ImprovedBullet(**b)
+            for b in raw_payload.get("improvedBullets", [])
+            if isinstance(b, dict)
+        ],
+        job_match=JobMatch(**job_match) if isinstance(job_match, dict) else None,
+    )
 
 
 def _to_application_out(application, evaluation=None) -> ApplicationOut:
@@ -44,6 +69,7 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
                 overview=evaluation.overview,
                 model=evaluation.model,
                 evaluated_at=evaluation.evaluated_at,
+                detail=_to_detail(evaluation.raw_payload),
             )
             if evaluation is not None
             else None
@@ -125,6 +151,58 @@ def get_vacancy(
     vacancy = svc.get_vacancy(vacancy_id)
     if vacancy is None:
         raise HTTPException(status_code=404, detail="Vacancy not found.")
+    return VacancyOut(
+        vacancy_id=vacancy.vacancy_id,
+        title=vacancy.title,
+        department_name=_department_name(svc, vacancy.department_id),
+        description=vacancy.description,
+        employment_type=vacancy.employment_type,
+        opening_date=vacancy.opening_date,
+        closing_date=vacancy.closing_date,
+        status=vacancy.status,
+        created_at=vacancy.created_at,
+    )
+
+
+@router.post("/vacancies/{vacancy_id}/close", response_model=VacancyOut)
+def close_vacancy(
+    vacancy_id: uuid.UUID,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: RecruitmentService = Depends(_svc),
+):
+    """Archive a vacancy: move it to CLOSED while keeping its applications (manager-only)."""
+    try:
+        vacancy = svc.archive_vacancy(user, vacancy_id)
+    except PermissionError_ as err:
+        raise HTTPException(status_code=403, detail=str(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+    return VacancyOut(
+        vacancy_id=vacancy.vacancy_id,
+        title=vacancy.title,
+        department_name=_department_name(svc, vacancy.department_id),
+        description=vacancy.description,
+        employment_type=vacancy.employment_type,
+        opening_date=vacancy.opening_date,
+        closing_date=vacancy.closing_date,
+        status=vacancy.status,
+        created_at=vacancy.created_at,
+    )
+
+
+@router.post("/vacancies/{vacancy_id}/reopen", response_model=VacancyOut)
+def reopen_vacancy(
+    vacancy_id: uuid.UUID,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: RecruitmentService = Depends(_svc),
+):
+    """Re-open an archived (CLOSED) vacancy so candidates can apply again (manager-only)."""
+    try:
+        vacancy = svc.reopen_vacancy(user, vacancy_id)
+    except PermissionError_ as err:
+        raise HTTPException(status_code=403, detail=str(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
     return VacancyOut(
         vacancy_id=vacancy.vacancy_id,
         title=vacancy.title,

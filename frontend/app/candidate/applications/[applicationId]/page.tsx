@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { PortalGuard } from "@/components/portal-guard";
 import { StatusBadge, formatDate } from "@/components/status";
 import { ScoreRing } from "@/components/score-ring";
+import { EvaluationDetailView } from "@/components/evaluation-detail";
 import { api } from "@/lib/api";
 import type { ApplicationDetail } from "@/lib/types";
 
@@ -75,6 +76,12 @@ export default function MyApplicationDetailPage({
                 <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-muted">
                   {app.evaluation.overview}
                 </p>
+              </div>
+            )}
+
+            {app.evaluation?.detail && (
+              <div className="mt-4 rounded-xl border border-border bg-surface p-5">
+                <EvaluationDetailView detail={app.evaluation.detail} />
               </div>
             )}
 

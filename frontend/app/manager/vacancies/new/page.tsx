@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { PortalGuard } from "@/components/portal-guard";
+import { DatePicker } from "@/components/date-picker";
 import { api } from "@/lib/api";
 
 const EMPLOYMENT_TYPES = ["FULL_TIME", "PART_TIME", "CONTRACT", "INTERNSHIP"];
@@ -128,24 +129,20 @@ export default function CreateVacancyPage() {
               <label className="mb-1.5 block text-xs font-medium text-muted" htmlFor="open">
                 Opening date
               </label>
-              <input
-                id="open"
-                type="date"
+              <DatePicker
                 value={form.opening_date}
-                onChange={(e) => set("opening_date", e.target.value)}
-                className={inputClass}
+                onChange={(v) => set("opening_date", v)}
+                placeholder="Select opening date"
               />
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-muted" htmlFor="close">
                 Closing date
               </label>
-              <input
-                id="close"
-                type="date"
+              <DatePicker
                 value={form.closing_date}
-                onChange={(e) => set("closing_date", e.target.value)}
-                className={inputClass}
+                onChange={(v) => set("closing_date", v)}
+                placeholder="Select closing date"
               />
             </div>
           </div>

@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { api } from "@/lib/api";
 
 const ROLES = [
@@ -48,9 +47,6 @@ export default function LoginPage() {
 
   return (
     <div className="relative flex min-h-screen flex-col items-center justify-center px-4">
-      <div className="absolute right-4 top-4">
-        <ThemeToggle />
-      </div>
       <div className="animate-fade-in w-full max-w-sm">
         <h1 className="text-2xl font-semibold tracking-tight">AI HR Assistant</h1>
         <p className="mt-1 text-sm text-muted">

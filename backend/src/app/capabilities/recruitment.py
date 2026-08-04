@@ -81,6 +81,40 @@ class RecruitmentService:
         """Fetch a single vacancy by id, or None if it does not exist."""
         return self._vacancies.get(vacancy_id)
 
+    def archive_vacancy(self, actor: UserContext, vacancy_id: uuid.UUID) -> Vacancy:
+        """Move a vacancy to CLOSED (archived), keeping all of its applications.
+
+        An archived vacancy no longer accepts applications but remains visible
+        to managers with its full application history.
+        """
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can archive vacancies.")
+        vacancy = self._vacancies.get(vacancy_id)
+        if vacancy is None:
+            raise ValueError("Vacancy not found.")
+        if vacancy.status == "CLOSED":
+            return vacancy
+        vacancy.status = "CLOSED"
+        vacancy.updated_at = datetime.now(UTC)
+        self._vacancies.save(vacancy)
+        self._db.commit()
+        return vacancy
+
+    def reopen_vacancy(self, actor: UserContext, vacancy_id: uuid.UUID) -> Vacancy:
+        """Re-open an archived (CLOSED) vacancy so candidates can apply again."""
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can reopen vacancies.")
+        vacancy = self._vacancies.get(vacancy_id)
+        if vacancy is None:
+            raise ValueError("Vacancy not found.")
+        if vacancy.status == "OPEN":
+            return vacancy
+        vacancy.status = "OPEN"
+        vacancy.updated_at = datetime.now(UTC)
+        self._vacancies.save(vacancy)
+        self._db.commit()
+        return vacancy
+
     # ---- applications ------------------------------------------------
 
     def apply(

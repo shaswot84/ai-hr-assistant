@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { PortalGuard } from "@/components/portal-guard";
 import { StatusBadge, formatDate } from "@/components/status";
 import { ScoreRing } from "@/components/score-ring";
+import { EvaluationDetailView } from "@/components/evaluation-detail";
 import { api } from "@/lib/api";
 import type { ApplicationDetail } from "@/lib/types";
 
@@ -117,13 +118,21 @@ export default function ApplicationReviewPage({
               )}
             </div>
 
-            {app.evaluation?.overview && (
+            {app.evaluation?.detail ? (
               <div className="mt-4 rounded-xl border border-border bg-surface p-5">
-                <h2 className="text-xs font-medium uppercase tracking-wide text-muted">Overview</h2>
-                <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed">
-                  {app.evaluation.overview}
-                </p>
+                <EvaluationDetailView detail={app.evaluation.detail} />
               </div>
+            ) : (
+              app.evaluation?.overview && (
+                <div className="mt-4 rounded-xl border border-border bg-surface p-5">
+                  <h2 className="text-xs font-medium uppercase tracking-wide text-muted">
+                    Overview
+                  </h2>
+                  <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed">
+                    {app.evaluation.overview}
+                  </p>
+                </div>
+              )
             )}
 
             {app.application_status === "APPLIED" ? (

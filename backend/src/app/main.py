@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import auth as auth_router
 from app.api.routes import recruitment as recruitment_router
+from app.api.routes import settings as settings_router
 from app.config.settings import get_settings
 from app.db.session import init_db
 from app.integrations.object_store import ObjectStore
@@ -46,6 +47,7 @@ app.add_middleware(
 
 app.include_router(auth_router.router)
 app.include_router(recruitment_router.router)
+app.include_router(settings_router.router)
 
 
 @app.get("/health")

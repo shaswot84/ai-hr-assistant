@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { api } from "@/lib/api";
 import type { UserContext } from "@/lib/types";
 
@@ -50,6 +49,9 @@ export function Header({ user }: { user: UserContext }) {
               >
                 Vacancies
               </Link>
+              <Link href="/manager/settings" className="transition-colors hover:text-foreground">
+                Settings
+              </Link>
             </nav>
           )}
         </div>
@@ -58,7 +60,6 @@ export function Header({ user }: { user: UserContext }) {
           <span className="rounded-full border border-border px-2.5 py-0.5 text-[11px] font-medium text-muted">
             {user.coarse_role}
           </span>
-          <ThemeToggle />
           <button
             type="button"
             onClick={signOut}

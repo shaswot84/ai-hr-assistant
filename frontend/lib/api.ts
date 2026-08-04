@@ -89,6 +89,14 @@ export const api = {
   /** GET /api/vacancies/{id} — fetches a single vacancy. */
   getVacancy: (id: string) => request<Vacancy>(`/api/vacancies/${id}`),
 
+  /** POST /api/vacancies/{id}/close — archives a vacancy, keeping its applications (manager only). */
+  closeVacancy: (id: string) =>
+    request<Vacancy>(`/api/vacancies/${id}/close`, { method: "POST" }),
+
+  /** POST /api/vacancies/{id}/reopen — re-opens an archived vacancy (manager only). */
+  reopenVacancy: (id: string) =>
+    request<Vacancy>(`/api/vacancies/${id}/reopen`, { method: "POST" }),
+
   /** POST /api/vacancies — creates a new vacancy (manager only). */
   createVacancy: (body: {
     title: string;
@@ -140,4 +148,21 @@ export const api = {
 
   /** URL of the candidate's uploaded resume, opened in a new tab to download. */
   resumeUrl: (applicationId: string) => `${API_BASE_URL}/api/applications/${applicationId}/resume`,
+
+  /** GET /api/settings/resume-review-prompt — the active resume-review system prompt (manager only). */
+  getResumeReviewPrompt: () =>
+    request<{ prompt: string; is_default: boolean }>("/api/settings/resume-review-prompt"),
+
+  /** PUT /api/settings/resume-review-prompt — persists a custom resume-review system prompt (manager only). */
+  setResumeReviewPrompt: (prompt: string) =>
+    request<{ prompt: string; is_default: boolean }>("/api/settings/resume-review-prompt", {
+      method: "PUT",
+      body: JSON.stringify({ prompt }),
+    }),
+
+  /** POST /api/settings/resume-review-prompt/reset — restores the default prompt (manager only). */
+  resetResumeReviewPrompt: () =>
+    request<{ prompt: string; is_default: boolean }>("/api/settings/resume-review-prompt/reset", {
+      method: "POST",
+    }),
 };

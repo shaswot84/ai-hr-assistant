@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
 /** Geist Sans applied as a CSS variable for the whole app. */
@@ -22,11 +21,10 @@ export const metadata: Metadata = {
 };
 
 /**
- * Root layout: sets up fonts, the global theme provider, and the base page
- * shell. `suppressHydrationWarning` avoids hydration mismatches caused by the
- * theme class being applied by next-themes after mount.
+ * Root layout: sets up fonts and the base page shell. The app is light-mode
+ * only; colors are declared once in globals.css and never switch at runtime.
  *
- * @param props.children Page content rendered inside the theme provider.
+ * @param props.children Page content rendered inside the shell.
  */
 export default function RootLayout({
   children,
@@ -36,18 +34,10 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="system"
-          enableSystem
-          disableTransitionOnChange
-        >
-          {children}
-        </ThemeProvider>
+        {children}
       </body>
     </html>
   );

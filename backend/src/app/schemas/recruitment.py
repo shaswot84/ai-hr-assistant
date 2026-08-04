@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-
 from pydantic import BaseModel, Field
+from pydantic.alias_generators import to_camel
 
 
 class VacancyCreate(BaseModel):
@@ -34,12 +34,57 @@ class VacancyOut(BaseModel):
 
 
 class EvaluationOut(BaseModel):
-    """API representation of an AI resume evaluation."""
+    """API representation of a rich AI resume evaluation.
+
+    ``score``/``overview`` are the compact headline fields; ``detail`` carries
+    the full verbose review (sections, bullets, keyword matches) rendered by the
+    manager and candidate portals.
+    """
 
     score: int
     overview: str
     model: str | None
     evaluated_at: datetime
+    detail: "EvaluationDetail | None" = None
+
+
+class FeedbackSection(BaseModel):
+    """A named feedback dimension (clarity/impact/formatting) with a summary + issues."""
+
+    summary: str = ""
+    issues: list[str] = []
+
+
+class ImprovedBullet(BaseModel):
+    """A before/after resume bullet rewrite produced by the evaluator."""
+
+    original: str
+    improved: str
+    reason: str = ""
+
+
+class JobMatch(BaseModel):
+    """How well the resume matches the target job (jobMatch)."""
+
+    model_config = {"alias_generator": to_camel, "populate_by_name": True}
+
+    match_score: int = 0
+    summary: str = ""
+    matched_keywords: list[str] = []
+    missing_keywords: list[str] = []
+
+
+class EvaluationDetail(BaseModel):
+    """The full structured review returned to rich evaluation UIs."""
+
+    overall_score: int = 0
+    score_justification: str = ""
+    clarity: FeedbackSection = FeedbackSection()
+    impact: FeedbackSection = FeedbackSection()
+    formatting: FeedbackSection = FeedbackSection()
+    missing_sections: list[str] = []
+    improved_bullets: list[ImprovedBullet] = []
+    job_match: JobMatch | None = None
 
 
 class ApplicationOut(BaseModel):

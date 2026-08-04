@@ -35,6 +35,10 @@ class VacancyRepo:
         stmt = select(Vacancy).order_by(Vacancy.created_at.desc())
         return list(self._db.scalars(stmt))
 
+    def save(self, vacancy: Vacancy) -> None:
+        """Flush pending changes to an existing vacancy row."""
+        self._db.flush()
+
 
 class ApplicationRepo:
     """Data access for application and evaluation rows."""
