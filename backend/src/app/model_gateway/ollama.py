@@ -20,14 +20,14 @@ class OllamaChatProvider(ChatProvider):
     def __init__(self) -> None:
         """Load endpoint, model, and timeout configuration from settings."""
         self._settings = get_settings()
-        self._base = self._settings.ollama_api_base
+        self._base = self._settings.chat.api_base
         self._base = self._base.removesuffix("/")
-        self._model = self._settings.ollama_model
-        self._timeout = self._settings.ollama_request_timeout
+        self._model = self._settings.chat.model
+        self._timeout = self._settings.chat.request_timeout
 
     def is_configured(self) -> bool:
         """Return True if a real (non-placeholder) Ollama API key is present."""
-        key = self._settings.ollama_api_key
+        key = self._settings.chat.api_key
         # A placeholder value (e.g. "your-ollama-api-key") is not a real key.
         return bool(key) and not ("your-" in key or key.startswith("<"))
 
@@ -55,7 +55,7 @@ class OllamaChatProvider(ChatProvider):
             ],
             "response_format": {"type": "json_object"},
         }
-        headers = {"Authorization": f"Bearer {self._settings.ollama_api_key}"}
+        headers = {"Authorization": f"Bearer {self._settings.chat.api_key}"}
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 res = await client.post(url, json=payload, headers=headers)

@@ -32,7 +32,7 @@ class KeycloakProvider(AuthProvider):
 
     def _well_known(self) -> dict[str, Any]:
         """Fetch the realm's OIDC discovery document."""
-        url = f"{self._settings.keycloak_issuer}/.well-known/openid-configuration"
+        url = f"{self._settings.keycloak.issuer}/.well-known/openid-configuration"
         resp = httpx.get(url, timeout=10.0)
         resp.raise_for_status()
         return resp.json()
@@ -64,8 +64,8 @@ class KeycloakProvider(AuthProvider):
                     token,
                     public,
                     algorithms=[alg],
-                    audience=self._settings.keycloak_client_id,
-                    issuer=self._settings.keycloak_issuer,
+                    audience=self._settings.keycloak.client_id,
+                    issuer=self._settings.keycloak.issuer,
                     options={"verify_exp": True},
                 )
                 return payload  # type: ignore[no-any-return]
@@ -112,21 +112,21 @@ class KeycloakProvider(AuthProvider):
     def build_login_url(self, redirect_uri: str) -> str | None:
         """Return the Keycloak authorization-code login URL for the given redirect URI."""
         return (
-            f"{self._settings.keycloak_issuer}/protocol/openid-connect/auth"
-            f"?response_type=code&client_id={self._settings.keycloak_client_id}"
+            f"{self._settings.keycloak.issuer}/protocol/openid-connect/auth"
+            f"?response_type=code&client_id={self._settings.keycloak.client_id}"
             f"&redirect_uri={redirect_uri}&scope=openid"
         )
 
     def exchange_code(self, code: str, redirect_uri: str) -> UserContext:
         """Exchange an authorization code for tokens, then build a UserContext from the access token."""
         resp = httpx.post(
-            f"{self._settings.keycloak_issuer}/protocol/openid-connect/token",
+            f"{self._settings.keycloak.issuer}/protocol/openid-connect/token",
             data={
                 "grant_type": "authorization_code",
                 "code": code,
                 "redirect_uri": redirect_uri,
-                "client_id": self._settings.keycloak_client_id,
-                "client_secret": self._settings.keycloak_client_secret,
+                "client_id": self._settings.keycloak.client_id,
+                "client_secret": self._settings.keycloak.client_secret,
             },
             timeout=15.0,
         )
@@ -150,6 +150,6 @@ class KeycloakProvider(AuthProvider):
     def build_logout_url(self, redirect_uri: str) -> str | None:
         """Return the Keycloak logout URL that redirects back to the given URI."""
         return (
-            f"{self._settings.keycloak_issuer}/protocol/openid-connect/logout"
-            f"?client_id={self._settings.keycloak_client_id}&redirect_uri={redirect_uri}"
+            f"{self._settings.keycloak.issuer}/protocol/openid-connect/logout"
+            f"?client_id={self._settings.keycloak.client_id}&redirect_uri={redirect_uri}"
         )

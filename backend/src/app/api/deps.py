@@ -15,7 +15,7 @@ _bearer = HTTPBearer(auto_error=False)
 def get_auth_provider() -> AuthProvider:
     """Instantiate the active AuthProvider based on app settings (keycloak or dev stub)."""
     settings = get_settings()
-    if settings.auth_provider == "keycloak":
+    if settings.auth.provider == "keycloak":
         return KeycloakProvider()
     return DevStubProvider()
 

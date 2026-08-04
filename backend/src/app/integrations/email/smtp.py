@@ -24,14 +24,14 @@ class SmtpEmailProvider(EmailProvider):
     ) -> None:
         """Send an email over SMTP, logging in first if credentials are configured."""
         message = EmailMessage()
-        message["From"] = self._settings.email_from
+        message["From"] = self._settings.smtp.from_addr
         message["To"] = to_email
         message["Subject"] = subject
         message.set_content(body)
         if html:
             message.add_alternative(html, subtype="html")
 
-        with smtplib.SMTP(self._settings.smtp_host, self._settings.smtp_port, timeout=15) as smtp:
-            if self._settings.smtp_user:
-                smtp.login(self._settings.smtp_user, self._settings.smtp_password)
+        with smtplib.SMTP(self._settings.smtp.host, self._settings.smtp.port, timeout=15) as smtp:
+            if self._settings.smtp.user:
+                smtp.login(self._settings.smtp.user, self._settings.smtp.password)
             smtp.send_message(message)

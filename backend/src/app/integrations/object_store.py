@@ -16,12 +16,12 @@ class ObjectStore:
         """Configure the MinIO client and target bucket from app settings."""
         settings = get_settings()
         self._client = Minio(
-            settings.minio_endpoint,
-            access_key=settings.minio_access_key,
-            secret_key=settings.minio_secret_key,
-            secure=settings.minio_secure,
+            settings.minio.endpoint,
+            access_key=settings.minio.access_key,
+            secret_key=settings.minio.secret_key,
+            secure=settings.minio.secure,
         )
-        self._bucket = settings.minio_bucket
+        self._bucket = settings.minio.bucket
 
     def ensure_bucket(self) -> None:
         """Create the configured bucket if it does not already exist."""

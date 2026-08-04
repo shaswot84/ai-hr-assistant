@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
     """Application startup/shutdown hook: init DB tables and ensure the MinIO bucket exists."""
     init_db()
     settings = get_settings()
-    if settings.minio_auto_init:
+    if settings.minio.auto_init:
         try:
             store = ObjectStore()
             store.ensure_bucket()
