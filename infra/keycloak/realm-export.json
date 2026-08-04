@@ -1,0 +1,54 @@
+{
+  "realm": "hr-assistant",
+  "enabled": true,
+  "registrationAllowed": true,
+  "loginTheme": "keycloak",
+  "roles": {
+    "realm": [
+      { "name": "HR_ADMIN" },
+      { "name": "EMPLOYEE" },
+      { "name": "CANDIDATE" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "hr-portal",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:3000"],
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:3000/*"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "manager",
+      "enabled": true,
+      "email": "manager@example.com",
+      "firstName": "Hiring",
+      "lastName": "Manager",
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "password", "temporary": false }
+      ],
+      "realmRoles": ["HR_ADMIN", "EMPLOYEE"]
+    },
+    {
+      "username": "candidate",
+      "enabled": true,
+      "email": "candidate@example.com",
+      "firstName": "Alex",
+      "lastName": "Applicant",
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "password", "temporary": false }
+      ],
+      "realmRoles": ["CANDIDATE"]
+    }
+  ]
+}
