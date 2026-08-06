@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+
 from pydantic import BaseModel, Field
 from pydantic.alias_generators import to_camel
 
@@ -45,7 +46,7 @@ class EvaluationOut(BaseModel):
     overview: str
     model: str | None
     evaluated_at: datetime
-    detail: "EvaluationDetail | None" = None
+    detail: EvaluationDetail | None = None
 
 
 class FeedbackSection(BaseModel):

@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config.settings import get_settings
 from app.db.base import Base
-import app.knowledge.models  # noqa: F401  (register tables on Base.metadata)
+import app.domain.identity  # noqa: F401  (register identity + org tables)
+import app.domain.outbox  # noqa: F401  (register outbox table)
+import app.domain.recruitment  # noqa: F401  (register recruitment tables)
+import app.domain.setting  # noqa: F401  (register app_setting table)
+import app.knowledge.models  # noqa: F401  (register knowledge/RAG tables)
 
 config = context.config
 

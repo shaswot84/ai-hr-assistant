@@ -43,9 +43,10 @@ def _provision_user(
     if role == "CANDIDATE":
         if db.scalar(select(Candidate).where(Candidate.person_id == person.person_id)) is None:
             db.add(Candidate(person_id=person.person_id, registration_date=date.today()))
-    elif role in ("HR_ADMIN", "EMPLOYEE"):
-        if db.scalar(select(Employee).where(Employee.person_id == person.person_id)) is None:
-            db.add(
+    elif role in ("HR_ADMIN", "EMPLOYEE") and (
+        db.scalar(select(Employee).where(Employee.person_id == person.person_id)) is None
+    ):
+        db.add(
                 Employee(
                     person_id=person.person_id,
                     employee_number=employee_number or f"EMP-{uuid.uuid4().hex[:8].upper()}",
