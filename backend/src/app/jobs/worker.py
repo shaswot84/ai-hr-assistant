@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from app.db.session import SessionLocal, init_db
+from app.db.sync_session import SessionLocal, init_db
 from app.domain.outbox import OutboxJob
 from app.domain.recruitment import Application, ApplicationEvaluation, Vacancy
 from app.evaluation.scoring import score_resume
@@ -49,7 +49,6 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: Objec
 
     if not extraction.text.strip():
         # no readable text — record a note as the evaluation, don't fail the app
-        vacancy = db.get(Vacancy, application.vacancy_id)
         db.add(
             ApplicationEvaluation(
                 application_id=application_id,
@@ -119,6 +118,7 @@ async def worker_loop() -> None:
         try:
             repo = OutboxRepo(db)
             job = repo.claim_next()
+            db.commit()  # release the row lock (SELECT ... FOR UPDATE) once claimed
             if job is None:
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
                 continue
@@ -129,6 +129,7 @@ async def worker_loop() -> None:
                 log.info("Job %s %s succeeded", job.job_id, job.job_type)
             except Exception as err:  # noqa: BLE001
                 db.rollback()
+                job = db.get(OutboxJob, job.job_id)
                 repo.mark_failed(job, str(err))
                 db.commit()
                 log.error("Job %s %s failed: %s", job.job_id, job.job_type, err)

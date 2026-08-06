@@ -25,7 +25,7 @@ class ExtractResult:
 
 
 def extract_text(data: bytes, filename: str, content_type: str) -> ExtractResult:
-    """Extract text from a PDF or DOCX resume (ported from ~/projects/resume)."""
+    """Extract text from a PDF or DOCX resume."""
     lower = filename.lower()
     is_pdf = content_type == "application/pdf" or lower.endswith(".pdf")
     is_docx = (

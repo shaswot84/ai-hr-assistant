@@ -8,6 +8,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project || uv sync --frozen
 
 COPY src/ src/
+COPY alembic.ini ./
+COPY alembic/ alembic/
 
 # Activate the uv-managed virtualenv so `uvicorn`/`python` resolve on PATH.
 ENV VIRTUAL_ENV=/app/.venv \

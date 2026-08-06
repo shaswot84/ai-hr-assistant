@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.recruitment import Application, ApplicationEvaluation, Vacancy
@@ -22,17 +22,28 @@ class VacancyRepo:
         return vacancy
 
     def get(self, vacancy_id: uuid.UUID) -> Vacancy | None:
-        """Fetch a vacancy by id, or None if it does not exist."""
-        return self._db.get(Vacancy, vacancy_id)
+        """Fetch a vacancy by id, or None if it does not exist (or was deleted)."""
+        stmt = select(Vacancy).where(
+            Vacancy.vacancy_id == vacancy_id, Vacancy.deleted_at.is_(None)
+        )
+        return self._db.scalar(stmt)
 
     def list_open(self) -> list[Vacancy]:
-        """List open vacancies, newest first."""
-        stmt = select(Vacancy).where(Vacancy.status == "OPEN").order_by(Vacancy.created_at.desc())
+        """List open, non-deleted vacancies, newest first."""
+        stmt = (
+            select(Vacancy)
+            .where(Vacancy.status == "OPEN", Vacancy.deleted_at.is_(None))
+            .order_by(Vacancy.created_at.desc())
+        )
         return list(self._db.scalars(stmt))
 
     def list_all(self) -> list[Vacancy]:
-        """List all vacancies, newest first."""
-        stmt = select(Vacancy).order_by(Vacancy.created_at.desc())
+        """List all non-deleted vacancies, newest first."""
+        stmt = (
+            select(Vacancy)
+            .where(Vacancy.deleted_at.is_(None))
+            .order_by(Vacancy.created_at.desc())
+        )
         return list(self._db.scalars(stmt))
 
     def save(self, vacancy: Vacancy) -> None:
@@ -54,14 +65,18 @@ class ApplicationRepo:
         return application
 
     def get(self, application_id: uuid.UUID) -> Application | None:
-        """Fetch an application by id, or None if it does not exist."""
-        return self._db.get(Application, application_id)
+        """Fetch an application by id, or None if it does not exist (or was deleted)."""
+        stmt = select(Application).where(
+            Application.application_id == application_id, Application.deleted_at.is_(None)
+        )
+        return self._db.scalar(stmt)
 
     def get_for_candidate(self, application_id: uuid.UUID, candidate_id: uuid.UUID) -> Application | None:
         """Fetch an application by id but only if it belongs to the given candidate."""
         stmt = select(Application).where(
             Application.application_id == application_id,
             Application.candidate_id == candidate_id,
+            Application.deleted_at.is_(None),
         )
         return self._db.scalar(stmt)
 
@@ -70,6 +85,7 @@ class ApplicationRepo:
         stmt = select(Application).where(
             Application.candidate_id == candidate_id,
             Application.vacancy_id == vacancy_id,
+            Application.deleted_at.is_(None),
         )
         return self._db.scalar(stmt)
 
@@ -77,7 +93,7 @@ class ApplicationRepo:
         """List applications for a vacancy, most recently applied first."""
         stmt = (
             select(Application)
-            .where(Application.vacancy_id == vacancy_id)
+            .where(Application.vacancy_id == vacancy_id, Application.deleted_at.is_(None))
             .order_by(Application.applied_at.desc())
         )
         return list(self._db.scalars(stmt))
@@ -86,7 +102,7 @@ class ApplicationRepo:
         """List a candidate's applications, most recently applied first."""
         stmt = (
             select(Application)
-            .where(Application.candidate_id == candidate_id)
+            .where(Application.candidate_id == candidate_id, Application.deleted_at.is_(None))
             .order_by(Application.applied_at.desc())
         )
         return list(self._db.scalars(stmt))
@@ -109,12 +125,3 @@ class ApplicationRepo:
         """Persist a new evaluation row and flush."""
         self._db.add(evaluation)
         self._db.flush()
-
-    def count_by_status(self, vacancy_id: uuid.UUID | None = None) -> dict[str, int]:
-        """Count applications grouped by status, optionally scoped to one vacancy."""
-        stmt = select(Application.application_status, func.count()).group_by(
-            Application.application_status
-        )
-        if vacancy_id is not None:
-            stmt = stmt.where(Application.vacancy_id == vacancy_id)
-        return {status: count for status, count in self._db.execute(stmt)}

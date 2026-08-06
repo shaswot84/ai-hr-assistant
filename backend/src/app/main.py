@@ -10,7 +10,7 @@ from app.api.routes import auth as auth_router
 from app.api.routes import recruitment as recruitment_router
 from app.api.routes import settings as settings_router
 from app.config.settings import get_settings
-from app.db.session import init_db
+from app.db.sync_session import init_db
 from app.integrations.object_store import ObjectStore
 
 log = logging.getLogger("app")
@@ -23,7 +23,11 @@ CORS_ORIGINS = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application startup/shutdown hook: init DB tables and ensure the MinIO bucket exists."""
+    """Application startup/shutdown hook: dev-fallback table creation + ensure the MinIO bucket exists.
+
+    Real schema management is Alembic (`make migrate`), not `init_db()` —
+    see `db.sync_session.init_db` for why it's still called here.
+    """
     init_db()
     settings = get_settings()
     if settings.minio.auto_init:

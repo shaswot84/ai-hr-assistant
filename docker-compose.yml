@@ -1,6 +1,8 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    # pgvector must be available for the Knowledge Service migration
+    # (`CREATE EXTENSION vector`); plain postgres:17-alpine doesn't ship it.
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: hr
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hr-dev-password}
@@ -45,7 +47,11 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://hr:${POSTGRES_PASSWORD:-hr-dev-password}@postgres:5432/hr
+      # asyncpg driver: this is the single DATABASE_URL both the async
+      # Knowledge Service engine (db/session.py) and Alembic use directly;
+      # the sync recruitment/auth engine (db/sync_session.py) derives its
+      # own +psycopg2 URL from this one at import time.
+      DATABASE_URL: postgresql+asyncpg://hr:${POSTGRES_PASSWORD:-hr-dev-password}@postgres:5432/hr
       MINIO_ENDPOINT: minio:9000
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
@@ -66,7 +72,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://hr:${POSTGRES_PASSWORD:-hr-dev-password}@postgres:5432/hr
+      DATABASE_URL: postgresql+asyncpg://hr:${POSTGRES_PASSWORD:-hr-dev-password}@postgres:5432/hr
       MINIO_ENDPOINT: minio:9000
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"

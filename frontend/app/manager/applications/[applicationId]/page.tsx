@@ -1,183 +1,140 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import { PortalGuard } from "@/components/portal-guard";
-import { StatusBadge, formatDate } from "@/components/status";
-import { ScoreRing } from "@/components/score-ring";
-import { EvaluationDetailView } from "@/components/evaluation-detail";
-import { api } from "@/lib/api";
-import type { ApplicationDetail } from "@/lib/types";
+import { StatusBadge } from "@/components/status";
+import { EvaluationDetail } from "@/components/evaluation-detail";
+import { api, ApiError, downloadResume } from "@/lib/api";
+import type { ApplicationDetail as ApplicationDetailType } from "@/lib/types";
 
-/**
- * Manager application review page. Displays a candidate's resume evaluation
- * (or pending state), a link to view the raw resume, and — for APPLIED
- * applications — Approve/Reject buttons that change the application status.
- * Wrapped in the HR_ADMIN auth guard.
- *
- * @param props.params Next.js route params resolving to the application id.
- */
-export default function ApplicationReviewPage({
-  params,
+function DecisionButtons({
+  application,
+  onChange,
 }: {
-  params: Promise<{ applicationId: string }>;
+  application: ApplicationDetailType;
+  onChange: (a: ApplicationDetailType) => void;
 }) {
-  const [applicationId, setApplicationId] = useState<string | null>(null);
-  const [app, setApp] = useState<ApplicationDetail | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [acting, setActing] = useState(false);
 
-  // Next.js 15+ provides params as a promise; unwrap it into state.
-  useEffect(() => {
-    params.then(({ applicationId }) => setApplicationId(applicationId));
-  }, [params]);
-
-  useEffect(() => {
-    if (!applicationId) return;
-    api
-      .applicationDetail(applicationId)
-      .then(setApp)
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load application"));
-  }, [applicationId]);
-
-  /** Approves (shortlists) or rejects the application, then refreshes its detail. */
   async function decide(action: "approve" | "reject") {
-    if (!applicationId) return;
-    setActing(true);
+    setBusy(true);
     setError(null);
     try {
-      await api.decide(applicationId, action);
-      setApp(await api.applicationDetail(applicationId));
+      const updated = await api.decide(application.application_id, action);
+      onChange({ ...application, ...updated });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update application");
+      setError(err instanceof ApiError ? err.detail : "Failed to record decision.");
     } finally {
-      setActing(false);
+      setBusy(false);
+    }
+  }
+
+  if (application.application_status !== "APPLIED") {
+    return (
+      <p className="text-sm text-muted">
+        This application has already been decided (<StatusBadge status={application.application_status} />
+        ).
+      </p>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex gap-3">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => decide("approve")}
+          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          Shortlist
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => decide("reject")}
+          className="rounded-lg border border-border bg-surface px-4 py-2 text-sm font-medium transition-colors hover:bg-surface-hover disabled:opacity-50"
+        >
+          Reject
+        </button>
+      </div>
+      {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+export default function ManagerApplicationDetailPage() {
+  const params = useParams<{ applicationId: string }>();
+  const [application, setApplication] = useState<ApplicationDetailType | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    api
+      .applicationDetail(params.applicationId)
+      .then(setApplication)
+      .catch((err) => setError(err instanceof ApiError ? err.detail : "Application not found."));
+  }, [params.applicationId]);
+
+  async function handleDownload() {
+    if (!application) return;
+    setDownloading(true);
+    try {
+      await downloadResume(
+        application.application_id,
+        `${application.candidate_name ?? "resume"}.pdf`
+      );
+    } finally {
+      setDownloading(false);
     }
   }
 
   return (
     <PortalGuard allowedRoles={["HR_ADMIN"]}>
-      <div className="animate-fade-in mx-auto max-w-2xl">
-        <Link
-          href={app ? `/manager/vacancies/${app.vacancy_id}` : "/manager/vacancies"}
-          className="text-xs text-muted transition-colors hover:text-foreground"
-        >
-          ← Back to vacancy
-        </Link>
-
-        {error && !app && <p className="mt-6 text-sm text-danger">{error}</p>}
-
-        {!app && !error && <p className="mt-6 text-sm text-muted">Loading…</p>}
-
-        {app && (
-          <>
-            <div className="mt-4 flex items-start justify-between gap-4">
-              <div>
-                <h1 className="text-xl font-semibold tracking-tight">
-                  {app.candidate_name ?? "Candidate"}
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {!error && !application && <p className="text-sm text-muted">Loading…</p>}
+      {application && (
+        <div className="space-y-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-3">
+                <h1 className="text-xl font-semibold">
+                  {application.candidate_name ?? application.candidate_email ?? "Candidate"}
                 </h1>
-                <p className="mt-1 text-sm text-muted">
-                  {app.candidate_email ?? "—"} · {app.vacancy_title ?? "Vacancy"} · Applied{" "}
-                  {formatDate(app.applied_at)}
-                </p>
+                <StatusBadge status={application.application_status} />
               </div>
-              <StatusBadge status={app.application_status} />
-            </div>
-
-            <div className="mt-6 flex items-center justify-between rounded-xl border border-border bg-surface p-5">
-              <div className="flex items-center gap-5">
-                {app.evaluation && app.evaluation.score > 0 ? (
-                  <>
-                    <ScoreRing score={app.evaluation.score} />
-                    <div>
-                      <h2 className="text-sm font-semibold">AI resume evaluation</h2>
-                      <p className="mt-0.5 text-xs text-muted">
-                        Model: {app.evaluation.model ?? "fallback"} ·{" "}
-                        {formatDate(app.evaluation.evaluated_at)}
-                      </p>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex items-center gap-4">
-                    <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border border-border">
-                      <span className="text-[10px] text-muted">no score</span>
-                    </div>
-                    <p className="text-sm text-muted">Evaluation pending.</p>
-                  </div>
-                )}
-              </div>
-              {app.application_id && (
-                <a
-                  href={api.resumeUrl(app.application_id)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-full border border-border px-3.5 py-1.5 text-xs font-medium transition-colors hover:bg-surface-hover"
-                >
-                  View resume
-                </a>
-              )}
-            </div>
-
-            {app.evaluation?.detail ? (
-              <div className="mt-4 rounded-xl border border-border bg-surface p-5">
-                <EvaluationDetailView detail={app.evaluation.detail} />
-              </div>
-            ) : (
-              app.evaluation?.overview && (
-                <div className="mt-4 rounded-xl border border-border bg-surface p-5">
-                  <h2 className="text-xs font-medium uppercase tracking-wide text-muted">
-                    Overview
-                  </h2>
-                  <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed">
-                    {app.evaluation.overview}
-                  </p>
-                </div>
-              )
-            )}
-
-            {app.application_status === "APPLIED" ? (
-              <div className="mt-6 flex gap-3">
-                <button
-                  type="button"
-                  onClick={() => decide("approve")}
-                  disabled={acting}
-                  className="flex-1 rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-40"
-                >
-                  {acting ? "Updating…" : "Approve & shortlist"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => decide("reject")}
-                  disabled={acting}
-                  className="flex-1 rounded-full border border-danger/60 px-5 py-2.5 text-sm font-medium text-danger transition-colors hover:bg-surface-hover disabled:opacity-40"
-                >
-                  Reject
-                </button>
-              </div>
-            ) : (
-              <div className="mt-6 flex items-center justify-between rounded-xl border border-border bg-surface px-4 py-3">
-                <p className="text-sm text-muted">
-                  Decision made: <span className="capitalize text-foreground">{app.application_status.toLowerCase()}</span>.
-                </p>
-                <Link
-                  href="/manager"
-                  className="text-xs font-medium text-muted underline underline-offset-4 transition-colors hover:text-foreground"
-                >
-                  Back to dashboard
-                </Link>
-              </div>
-            )}
-
-            {error && <p className="mt-4 text-sm text-danger">{error}</p>}
-
-            {(app.application_status === "SHORTLISTED" || app.application_status === "REJECTED") && (
-              <p className="mt-3 text-xs text-muted">
-                The candidate has been notified by email.
+              <p className="mt-1 text-sm text-muted">
+                Applied for {application.vacancy_title ?? "this role"} ·{" "}
+                {application.candidate_email}
               </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={downloading}
+              className="rounded-lg border border-border bg-surface px-4 py-2 text-sm font-medium transition-colors hover:bg-surface-hover disabled:opacity-50"
+            >
+              {downloading ? "Downloading…" : "Download resume"}
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-border bg-surface p-5">
+            <h2 className="mb-3 text-sm font-medium">Decision</h2>
+            <DecisionButtons application={application} onChange={setApplication} />
+          </div>
+
+          <div>
+            <h2 className="mb-2 text-sm font-medium">AI resume review</h2>
+            {application.evaluation ? (
+              <EvaluationDetail evaluation={application.evaluation} />
+            ) : (
+              <p className="text-sm text-muted">Still evaluating this resume — check back shortly.</p>
             )}
-          </>
-        )}
-      </div>
+          </div>
+        </div>
+      )}
     </PortalGuard>
   );
 }

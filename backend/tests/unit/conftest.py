@@ -1,135 +1,164 @@
+"""Test setup for the auth/recruitment unit suite.
+
+Points the sync engine (`app.db.sync_session`) at a throwaway SQLite file
+instead of Postgres, so these tests need no running database. This must
+happen before any `app.*` module is imported (env vars are read once, at
+import time, via `get_settings()`), which is why it's the first thing this
+file does — pytest imports `conftest.py` before collecting test modules.
+
+Scope: only what `test_auth.py`/`test_recruitment.py` exercise (auth +
+recruitment). `app.knowledge` (pgvector-backed RAG models) is never imported
+here, so `Base.metadata` only contains the domain tables when
+`create_all()` runs — importing `app.knowledge.models` would pull in
+Postgres-only `Vector` columns that SQLite can't create.
+"""
+
 from __future__ import annotations
 
 import os
+import tempfile
 
-# Configure an in-memory SQLite backend BEFORE importing the app, since the
-# global engine is created at module import time.
-os.environ["DATABASE_URL"] = "sqlite://"
-os.environ["MINIO_ENDPOINT"] = "127.0.0.1:1"  # refuse fast; avoid DNS wait on 'minio'
-os.environ["MINIO_AUTO_INIT"] = "false"  # skip bucket setup in lifespan
-os.environ["JWT_SECRET_KEY"] = "test-secret-key"  # robust JWT for provider tests
+_db_file = tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False)  # noqa: SIM115 - lives for the whole test session
+os.environ["DATABASE_URL"] = f"sqlite:///{_db_file.name}"
 os.environ["AUTH_PROVIDER"] = "jwt"
+os.environ["JWT_SECRET_KEY"] = "test-only-secret-key"
+os.environ["MINIO_AUTO_INIT"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from app.api.deps import get_auth_provider
-from app.auth.provider import AuthProvider
+from app.auth.passwords import hash_password
 from app.contracts.auth import UserContext
 from app.db.base import Base
-from app.db.session import get_db
-from app.main import app
-
-# in-memory SQLite for tests (StaticPool so each connection sees the same DB)
-engine = create_engine(
-    "sqlite://",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
+from app.db.sync_session import SessionLocal, engine
+from app.domain import audit, outbox, recruitment, setting  # noqa: F401
+from app.domain.identity import (
+    ApplicationUser,
+    Candidate,
+    Department,
+    Designation,
+    Employee,
+    Person,
 )
-TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+from app.main import app as fastapi_app
+from app.shared.clock import get_clock
 
 
-class HeaderAuthProvider(AuthProvider):
-    """Test-only AuthProvider that reads identity from per-request headers.
-
-    Lives in the test suite (never shipped) so each TestClient can carry its
-    own role without a global dependency override colliding across fixtures.
-    """
-
-    name = "test_headers"
-
-    def authenticate(self, request) -> UserContext | None:
-        subject = request.headers.get("x-test-subject")
-        role = request.headers.get("x-test-role")
-        if not subject or not role:
-            return None
-        return UserContext(
-            subject=subject,
-            email=request.headers.get("x-test-email", f"{subject}@example.com"),
-            display_name=request.headers.get("x-test-name", subject),
-            coarse_role=role,
-        )
-
-    def build_login_url(self, redirect_uri: str) -> str | None:
-        return None
-
-    def exchange_code(self, code: str, redirect_uri: str) -> UserContext:
-        raise NotImplementedError
-
-    def build_logout_url(self, redirect_uri: str) -> str | None:
-        return None
-
-
-@pytest.fixture(autouse=True)
-def _fresh_db():
+@pytest.fixture(scope="session", autouse=True)
+def _schema():
+    """Create all domain tables once for the test session, drop them after."""
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
+    engine.dispose()
+    os.unlink(_db_file.name)
 
 
-@pytest.fixture
-def db_session():
-    session = TestingSessionLocal()
+@pytest.fixture(autouse=True)
+def _clean_tables():
+    """Truncate every table between tests so each test starts from empty."""
+    yield
+    with engine.begin() as conn:
+        for table in reversed(Base.metadata.sorted_tables):
+            conn.execute(table.delete())
+
+
+@pytest.fixture()
+def db():
+    """A sync DB session bound to the test SQLite file."""
+    session = SessionLocal()
     try:
         yield session
     finally:
         session.close()
 
 
-def _make_client():
-    def override_get_db():
-        db = TestingSessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_auth_provider] = lambda: HeaderAuthProvider()
-    with TestClient(app) as test_client:
-        yield test_client
-    app.dependency_overrides.clear()
-
-
-@pytest.fixture
+@pytest.fixture()
 def client():
-    yield from _make_client()
+    """A FastAPI TestClient (runs the app's lifespan, same DB as `db`)."""
+    with TestClient(fastapi_app) as c:
+        yield c
 
 
-@pytest.fixture
-def candidate_client():
-    c = TestClient(app)
-    app.dependency_overrides[get_db] = lambda: TestingSessionLocal()
-    app.dependency_overrides[get_auth_provider] = lambda: HeaderAuthProvider()
-    c.headers.update(
-        {
-            "x-test-subject": "cand-jwtsub",
-            "x-test-role": "CANDIDATE",
-            "x-test-email": "cand@example.com",
-            "x-test-name": "Alex Applicant",
-        }
+def _seed_person(db, *, email: str, first: str, last: str) -> Person:
+    now = get_clock().now()
+    person = Person(first_name=first, last_name=last, email=email, created_at=now, updated_at=now)
+    db.add(person)
+    db.flush()
+    return person
+
+
+def _seed_app_user(db, *, person: Person, subject: str, role: str, password: str) -> ApplicationUser:
+    now = get_clock().now()
+    app_user = ApplicationUser(
+        external_subject=subject,
+        person_id=person.person_id,
+        coarse_role=role,
+        password_hash=hash_password(password),
+        created_at=now,
+        updated_at=now,
     )
-    yield c
-    app.dependency_overrides.clear()
-    c.close()
+    db.add(app_user)
+    db.flush()
+    return app_user
 
 
-@pytest.fixture
-def manager_client():
-    c = TestClient(app)
-    app.dependency_overrides[get_db] = lambda: TestingSessionLocal()
-    app.dependency_overrides[get_auth_provider] = lambda: HeaderAuthProvider()
-    c.headers.update(
-        {
-            "x-test-subject": "mgr-jwtsub",
-            "x-test-role": "HR_ADMIN",
-            "x-test-email": "mgr@example.com",
-            "x-test-name": "Hiring Manager",
-        }
+@pytest.fixture()
+def manager_password() -> str:
+    return "manager-secret-1"
+
+
+@pytest.fixture()
+def manager_context(db, manager_password) -> UserContext:
+    """Seed a full manager identity (Person/Employee/ApplicationUser) and return its UserContext."""
+    now = get_clock().now()
+    person = _seed_person(db, email="manager@acme-hr-test.dev", first="Hiring", last="Manager")
+    dept = Department(name="Human Resources")
+    db.add(dept)
+    db.flush()
+    designation = Designation(department_id=dept.department_id, title="HR Manager")
+    db.add(designation)
+    db.flush()
+    db.add(
+        Employee(
+            person_id=person.person_id,
+            employee_code="EMP-TEST-MGR",
+            department_id=dept.department_id,
+            designation_id=designation.designation_id,
+            joining_date=get_clock().today(),
+            created_at=now,
+            updated_at=now,
+        )
     )
-    yield c
-    app.dependency_overrides.clear()
-    c.close()
+    _seed_app_user(db, person=person, subject="mgr-subject", role="HR_ADMIN", password=manager_password)
+    db.commit()
+    return UserContext(
+        subject="mgr-subject", email=person.email, display_name="Hiring Manager", coarse_role="HR_ADMIN"
+    )
+
+
+@pytest.fixture()
+def candidate_password() -> str:
+    return "candidate-secret-1"
+
+
+@pytest.fixture()
+def candidate_context(db, candidate_password) -> UserContext:
+    """Seed a full candidate identity (Person/Candidate/ApplicationUser) and return its UserContext."""
+    now = get_clock().now()
+    person = _seed_person(db, email="candidate@acme-hr-test.dev", first="Alex", last="Applicant")
+    db.add(
+        Candidate(
+            person_id=person.person_id,
+            registration_date=get_clock().today(),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    _seed_app_user(
+        db, person=person, subject="cand-subject", role="CANDIDATE", password=candidate_password
+    )
+    db.commit()
+    return UserContext(
+        subject="cand-subject", email=person.email, display_name="Alex Applicant", coarse_role="CANDIDATE"
+    )

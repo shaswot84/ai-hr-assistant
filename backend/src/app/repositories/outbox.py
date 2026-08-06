@@ -1,28 +1,42 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.outbox import OutboxJob
+from app.shared.clock import Clock, get_clock
 
 
 class OutboxRepo:
     """Data access for the transactional outbox job table."""
 
-    def __init__(self, db: Session) -> None:
-        """Bind the repository to a DB session."""
+    def __init__(self, db: Session, clock: Clock | None = None) -> None:
+        """Bind the repository to a DB session and (optionally) a Clock."""
         self._db = db
+        self._clock = clock or get_clock()
 
-    def enqueue(self, job_type: str, payload: dict, max_attempts: int = 3) -> OutboxJob:
+    def enqueue(
+        self,
+        job_type: str,
+        payload: dict,
+        *,
+        aggregate_type: str | None = None,
+        aggregate_id: uuid.UUID | None = None,
+        idempotency_key: str | None = None,
+        max_attempts: int = 3,
+    ) -> OutboxJob:
         """Create a PENDING outbox job in the current (caller-managed) transaction."""
-        now = datetime.now(UTC)
+        now = self._clock.now()
         job = OutboxJob(
             job_type=job_type,
-            status="PENDING",
+            aggregate_type=aggregate_type,
+            aggregate_id=aggregate_id,
             payload=payload,
+            idempotency_key=idempotency_key,
             max_attempts=max_attempts,
+            available_at=now,
             created_at=now,
             updated_at=now,
         )
@@ -31,30 +45,43 @@ class OutboxRepo:
         return job
 
     def claim_next(self) -> OutboxJob | None:
-        """Atomically claim the oldest pending job for processing."""
+        """Atomically claim the oldest due PENDING job for processing.
+
+        Uses ``FOR UPDATE SKIP LOCKED`` so multiple concurrent worker
+        replicas never claim (and double-process) the same job — a plain
+        SELECT-then-UPDATE has a race window between two workers reading the
+        same PENDING row before either commits its RUNNING status.
+        """
+        now = self._clock.now()
         stmt = (
             select(OutboxJob)
-            .where(OutboxJob.status == "PENDING")
+            .where(OutboxJob.status == "PENDING", OutboxJob.available_at <= now)
             .order_by(OutboxJob.created_at.asc())
             .limit(1)
+            .with_for_update(skip_locked=True)
         )
         job = self._db.scalar(stmt)
         if job is not None:
             job.status = "RUNNING"
-            job.attempts += 1
-            job.updated_at = datetime.now(UTC)
+            job.attempt_count += 1
+            job.updated_at = now
             self._db.flush()
         return job
 
     def mark_succeeded(self, job: OutboxJob) -> None:
         """Mark a job as SUCCEEDED after it completed successfully."""
+        now = self._clock.now()
         job.status = "SUCCEEDED"
-        job.updated_at = datetime.now(UTC)
+        job.processed_at = now
+        job.updated_at = now
         self._db.flush()
 
     def mark_failed(self, job: OutboxJob, error: str) -> None:
-        """Mark a job as FAILED, recording a truncated error message."""
-        job.status = "FAILED"
+        """Mark a job FAILED (or re-queue it PENDING if attempts remain), recording the error."""
+        now = self._clock.now()
         job.last_error = error[:1000]
-        job.updated_at = datetime.now(UTC)
+        job.updated_at = now
+        job.status = "PENDING" if job.attempt_count < job.max_attempts else "FAILED"
+        if job.status == "FAILED":
+            job.processed_at = now
         self._db.flush()

@@ -1,4 +1,4 @@
-.PHONY: help up down start stop restart logs ps build setup seed test lint dev
+.PHONY: help up down start stop restart logs ps build setup migrate seed test lint dev
 
 DOCKER := docker compose
 
@@ -7,7 +7,8 @@ help:
 	@echo ""
 	@echo "Quick start (fresh checkout):"
 	@echo "  make up          One-command start: copies .env if missing, builds,"
-	@echo "                   starts the full stack, and seeds demo data"
+	@echo "                   starts infra, runs Alembic migrations, starts the"
+	@echo "                   app services, and seeds demo data"
 	@echo ""
 	@echo "Run / stop:"
 	@echo "  make stop        Pause all containers (keeps them)"
@@ -20,6 +21,7 @@ help:
 	@echo ""
 	@echo "Setup / data:"
 	@echo "  make setup       Copy .env.example -> .env (only if .env missing)"
+	@echo "  make migrate     Run Alembic migrations against the running database"
 	@echo "  make seed        Seed demo manager + sample vacancy"
 	@echo ""
 	@echo "Local backend (no Docker):"
@@ -31,9 +33,12 @@ help:
 
 # ---- Quick start -------------------------------------------------------
 
-# Fresh checkout: ensure .env exists, build & start everything, then seed.
+# Fresh checkout: ensure .env exists, bring up infra, migrate, then the app services, then seed.
 up: setup
-	$(DOCKER) up -d --build
+	$(DOCKER) build
+	$(DOCKER) up -d postgres minio mailpit
+	$(MAKE) migrate
+	$(DOCKER) up -d backend worker frontend
 	@echo "Stack is up:"
 	@echo "  Frontend (candidate/manager portals): http://localhost:3000"
 	@echo "  Backend  (API docs):                  http://localhost:8000/docs"
@@ -45,6 +50,11 @@ up: setup
 # Copy .env.example to .env only if .env does not already exist.
 setup:
 	@if [ ! -f .env ]; then cp .env.example .env && echo "Created .env from .env.example"; else echo ".env already exists - keeping it"; fi
+
+# Apply Alembic migrations (the real schema-management path — not create_all()).
+migrate:
+	@echo "Running Alembic migrations..."
+	$(DOCKER) run --rm backend alembic upgrade head
 
 seed:
 	@echo "Seeding demo data (idempotent)..."

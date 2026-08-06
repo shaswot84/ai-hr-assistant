@@ -3,162 +3,142 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { PortalGuard } from "@/components/portal-guard";
-import { DatePicker } from "@/components/date-picker";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 
 const EMPLOYMENT_TYPES = ["FULL_TIME", "PART_TIME", "CONTRACT", "INTERNSHIP"];
 
-/**
- * Manager "Create vacancy" form: collects title, department, employment type,
- * description, and open/close dates, then creates the vacancy via the API and
- * redirects to its detail page. Wrapped in the HR_ADMIN auth guard.
- */
-export default function CreateVacancyPage() {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs font-medium text-muted">{label}</span>
+      <div className="mt-1">{children}</div>
+    </label>
+  );
+}
+
+const inputClass =
+  "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-foreground";
+
+export default function NewVacancyPage() {
   const router = useRouter();
-  const [form, setForm] = useState({
-    title: "",
-    department_name: "",
-    description: "",
-    employment_type: "FULL_TIME",
-    opening_date: "",
-    closing_date: "",
-  });
+  const [title, setTitle] = useState("");
+  const [departmentName, setDepartmentName] = useState("");
+  const [description, setDescription] = useState("");
+  const [employmentType, setEmploymentType] = useState("FULL_TIME");
+  const [openingDate, setOpeningDate] = useState("");
+  const [closingDate, setClosingDate] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  /** Updates a single form field; typed so only valid keys can be set. */
-  function set<K extends keyof typeof form>(key: K, value: string) {
-    setForm((f) => ({ ...f, [key]: value }));
-  }
-
-  /** Validates required fields and creates the vacancy, redirecting on success. */
-  async function submit() {
-    if (!form.title.trim() || !form.department_name.trim()) {
-      setError("Title and department are required.");
-      return;
-    }
-    setSubmitting(true);
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
     setError(null);
+    setSubmitting(true);
     try {
       const vacancy = await api.createVacancy({
-        title: form.title.trim(),
-        department_name: form.department_name.trim(),
-        description: form.description.trim() || null,
-        employment_type: form.employment_type,
-        opening_date: form.opening_date || null,
-        closing_date: form.closing_date || null,
+        title,
+        department_name: departmentName,
+        description: description || null,
+        employment_type: employmentType,
+        opening_date: openingDate || null,
+        closing_date: closingDate || null,
       });
       router.push(`/manager/vacancies/${vacancy.vacancy_id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create vacancy");
+      setError(err instanceof ApiError ? err.detail : "Failed to create vacancy.");
       setSubmitting(false);
     }
   }
 
-  const inputClass =
-    "w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none transition-colors focus:border-border-strong";
-
   return (
     <PortalGuard allowedRoles={["HR_ADMIN"]}>
-      <div className="animate-fade-in mx-auto max-w-2xl">
-        <h1 className="text-xl font-semibold tracking-tight">Create vacancy</h1>
-        <p className="mt-1 text-sm text-muted">Post a new opening for candidates to apply to.</p>
-
-        <div className="mt-6 space-y-4 rounded-xl border border-border bg-surface p-6">
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-muted" htmlFor="title">
-              Title
-            </label>
-            <input
-              id="title"
-              value={form.title}
-              onChange={(e) => set("title", e.target.value)}
-              className={inputClass}
-              placeholder="Backend Engineer"
-            />
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted" htmlFor="dept">
-                Department
-              </label>
-              <input
-                id="dept"
-                value={form.department_name}
-                onChange={(e) => set("department_name", e.target.value)}
-                className={inputClass}
-                placeholder="Engineering"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted" htmlFor="type">
-                Employment type
-              </label>
-              <select
-                id="type"
-                value={form.employment_type}
-                onChange={(e) => set("employment_type", e.target.value)}
-                className={inputClass}
-              >
-                {EMPLOYMENT_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t.replace("_", " ")}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-muted" htmlFor="desc">
-              Description
-            </label>
-            <textarea
-              id="desc"
-              value={form.description}
-              onChange={(e) => set("description", e.target.value)}
-              rows={6}
-              className={`${inputClass} resize-y`}
-              placeholder="Responsibilities, requirements, and what you are looking for."
-            />
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted" htmlFor="open">
-                Opening date
-              </label>
-              <DatePicker
-                value={form.opening_date}
-                onChange={(v) => set("opening_date", v)}
-                placeholder="Select opening date"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-muted" htmlFor="close">
-                Closing date
-              </label>
-              <DatePicker
-                value={form.closing_date}
-                onChange={(v) => set("closing_date", v)}
-                placeholder="Select closing date"
-              />
-            </div>
-          </div>
-
-          {error && <p className="text-sm text-danger">{error}</p>}
-
-          <button
-            type="button"
-            onClick={submit}
-            disabled={submitting}
-            className="w-full rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {submitting ? "Creating…" : "Create vacancy"}
-          </button>
-        </div>
+      <div className="mb-6">
+        <h1 className="text-xl font-semibold">Post a vacancy</h1>
       </div>
+
+      <form
+        onSubmit={handleSubmit}
+        className="max-w-xl space-y-4 rounded-xl border border-border bg-surface p-6"
+      >
+        <Field label="Title">
+          <input
+            required
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className={inputClass}
+            placeholder="Senior Backend Engineer"
+          />
+        </Field>
+
+        <Field label="Department">
+          <input
+            required
+            value={departmentName}
+            onChange={(e) => setDepartmentName(e.target.value)}
+            className={inputClass}
+            placeholder="Engineering"
+          />
+        </Field>
+
+        <Field label="Employment type">
+          <select
+            value={employmentType}
+            onChange={(e) => setEmploymentType(e.target.value)}
+            className={inputClass}
+          >
+            {EMPLOYMENT_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {t.replaceAll("_", " ")}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="Description">
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={6}
+            className={inputClass}
+            placeholder="Responsibilities, requirements, and what makes this role a good fit…"
+          />
+        </Field>
+
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Opening date">
+            <input
+              type="date"
+              value={openingDate}
+              onChange={(e) => setOpeningDate(e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Closing date">
+            <input
+              type="date"
+              value={closingDate}
+              onChange={(e) => setClosingDate(e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+        </div>
+
+        {error && <p className="text-sm text-red-600">{error}</p>}
+
+        <button
+          type="submit"
+          disabled={submitting}
+          className="rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {submitting ? "Creating…" : "Create vacancy"}
+        </button>
+      </form>
     </PortalGuard>
   );
 }

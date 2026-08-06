@@ -1,41 +1,21 @@
-/** Tailwind classes per status value; unknown statuses fall back to a neutral style. */
-const STATUS_STYLES: Record<string, string> = {
-  APPLIED: "border-border text-muted",
-  SHORTLISTED: "border-border-strong text-foreground",
-  REJECTED: "border-danger/50 text-danger",
-  DRAFT: "border-border text-muted",
-  OPEN: "border-border-strong text-foreground",
-  CLOSED: "border-border text-muted",
+const COLORS: Record<string, string> = {
+  OPEN: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  APPLIED: "bg-amber-50 text-amber-700 border-amber-200",
+  SHORTLISTED: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  CLOSED: "bg-neutral-100 text-neutral-600 border-neutral-200",
+  REJECTED: "bg-red-50 text-red-700 border-red-200",
+  WITHDRAWN: "bg-neutral-100 text-neutral-600 border-neutral-200",
+  DRAFT: "bg-neutral-100 text-neutral-600 border-neutral-200",
 };
 
-/**
- * Pill-shaped badge that displays a status (e.g. APPLIED, OPEN) with a
- * status-specific color and a humanized label ("Shortlisted").
- *
- * @param props.status The raw status string from the API.
- */
+/** A small colored status pill (vacancy or application status). */
 export function StatusBadge({ status }: { status: string }) {
+  const cls = COLORS[status] ?? "bg-neutral-100 text-neutral-600 border-neutral-200";
   return (
     <span
-      className={`inline-block rounded-full border px-2.5 py-0.5 text-[11px] font-medium capitalize ${STATUS_STYLES[status] ?? "border-border text-muted"}`}
+      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${cls}`}
     >
-      {status.toLowerCase().replaceAll("_", " ")}
+      {status.charAt(0) + status.slice(1).toLowerCase()}
     </span>
   );
-}
-
-/**
- * Formats an ISO date string as a localized short date (e.g. "Aug 4, 2026").
- * Returns an em-dash for missing/invalid values.
- *
- * @param value ISO date string, or null/undefined.
- * @returns Formatted date string or "—".
- */
-export function formatDate(value: string | null | undefined): string {
-  if (!value) return "—";
-  return new Date(value).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
 }

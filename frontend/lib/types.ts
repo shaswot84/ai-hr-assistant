@@ -1,10 +1,5 @@
-/**
- * Coarse role assigned to a user. Manager/recruiter authority is
- * derived server-side; only these three roles reach the frontend.
- */
 export type CoarseRole = "HR_ADMIN" | "EMPLOYEE" | "CANDIDATE";
 
-/** Identity + coarse role of the signed-in user, returned by the auth endpoints. */
 export interface UserContext {
   subject: string;
   email: string;
@@ -12,7 +7,6 @@ export interface UserContext {
   coarse_role: CoarseRole;
 }
 
-/** A job posting; shown to candidates (OPEN only) and managed by HR_ADMINs. */
 export interface Vacancy {
   vacancy_id: string;
   title: string;
@@ -21,24 +15,21 @@ export interface Vacancy {
   employment_type: string;
   opening_date: string | null;
   closing_date: string | null;
-  status: string;
+  status: "DRAFT" | "OPEN" | "CLOSED";
   created_at: string;
 }
 
-/** A named feedback dimension (clarity/impact/formatting) with a summary + issues. */
 export interface FeedbackSection {
   summary: string;
   issues: string[];
 }
 
-/** A before/after resume bullet rewrite produced by the evaluator. */
 export interface ImprovedBullet {
   original: string;
   improved: string;
   reason: string;
 }
 
-/** How well the resume matches the target job (jobMatch). */
 export interface JobMatch {
   match_score: number;
   summary: string;
@@ -46,7 +37,6 @@ export interface JobMatch {
   missing_keywords: string[];
 }
 
-/** The full structured review returned to rich evaluation UIs. */
 export interface EvaluationDetail {
   overall_score: number;
   score_justification: string;
@@ -58,7 +48,6 @@ export interface EvaluationDetail {
   job_match: JobMatch | null;
 }
 
-/** Advisory AI result for a resume; stored separately from authoritative application state. */
 export interface Evaluation {
   score: number;
   overview: string;
@@ -67,18 +56,18 @@ export interface Evaluation {
   detail: EvaluationDetail | null;
 }
 
-/** A candidate's application to a vacancy, including the AI evaluation if present. */
+export type ApplicationStatus = "APPLIED" | "SHORTLISTED" | "REJECTED" | "WITHDRAWN";
+
 export interface Application {
   application_id: string;
   vacancy_id: string;
   vacancy_title: string | null;
-  application_status: string;
+  application_status: ApplicationStatus;
   applied_at: string;
   evaluated: boolean;
   evaluation: Evaluation | null;
 }
 
-/** Application plus candidate identity; used on manager-facing detail pages. */
 export interface ApplicationDetail extends Application {
   candidate_name: string | null;
   candidate_email: string | null;

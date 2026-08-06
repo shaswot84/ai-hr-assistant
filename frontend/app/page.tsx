@@ -5,11 +5,13 @@ import { useEffect } from "react";
 import { api } from "@/lib/api";
 import { getAuthToken } from "@/lib/auth";
 
-/**
- * Root route: role-aware dispatcher. If the user has no stored JWT, go to the
- * login page. Otherwise resolve the coarse role from `/api/auth/me` and route
- * to the matching portal (manager vs candidate/employee).
- */
+const ROLE_HOME: Record<string, string> = {
+  HR_ADMIN: "/manager",
+  CANDIDATE: "/candidate",
+  EMPLOYEE: "/employee",
+};
+
+/** Root route: dispatches to the role-appropriate portal, or /login if unauthenticated. */
 export default function HomePage() {
   const router = useRouter();
 
@@ -23,7 +25,7 @@ export default function HomePage() {
       .me()
       .then((res) => {
         if (cancelled) return;
-        router.replace(res.user.coarse_role === "HR_ADMIN" ? "/manager" : "/candidate");
+        router.replace(ROLE_HOME[res.user.coarse_role] ?? "/login");
       })
       .catch(() => {
         if (!cancelled) router.replace("/login");

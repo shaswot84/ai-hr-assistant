@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,11 +8,16 @@ from sqlalchemy.orm import Session
 from app.contracts.auth import UserContext
 from app.domain.identity import Department, Person
 from app.domain.recruitment import Application, ApplicationEvaluation, Vacancy
+from app.repositories.audit import AuditRepo
 from app.repositories.outbox import OutboxRepo
 from app.repositories.recruitment import ApplicationRepo, VacancyRepo
 from app.services.identity import IdentityService
+from app.shared.clock import Clock, get_clock
 
-VALID_APPLICATION_STATUSES = {"APPLIED", "SHORTLISTED", "REJECTED", "WITHDRAWN"}
+# Decisions are only valid from APPLIED — SHORTLISTED/REJECTED are terminal
+# for this week's flow (no re-review), so a decision can never be replayed
+# into a second candidate-facing email or leave a stale rejected_at behind.
+DECIDABLE_STATUSES = {"APPLIED"}
 
 
 class PermissionError_(Exception):
@@ -27,12 +31,14 @@ class RecruitmentService:
     business rules. The AI/agent never bypasses these.
     """
 
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, clock: Clock | None = None) -> None:
         """Bind the service to a DB session and build its repositories."""
         self._db = db
+        self._clock = clock or get_clock()
         self._vacancies = VacancyRepo(db)
         self._applications = ApplicationRepo(db)
-        self._outbox = OutboxRepo(db)
+        self._outbox = OutboxRepo(db, clock=self._clock)
+        self._audit = AuditRepo(db, clock=self._clock)
         self._identity = IdentityService(db)
 
     # ---- vacancies ---------------------------------------------------
@@ -45,15 +51,15 @@ class RecruitmentService:
         department_name: str,
         description: str | None,
         employment_type: str,
-        opening_date: date | None,
-        closing_date: date | None,
+        opening_date,
+        closing_date,
     ) -> Vacancy:
         """Create an open vacancy (HR_ADMIN only), auto-creating the department if needed."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can create vacancies.")
         employee = self._identity.get_employee(actor)
         department = self._get_or_create_department(department_name)
-        now = datetime.now(UTC)
+        now = self._clock.now()
         vacancy = Vacancy(
             title=title.strip(),
             department_id=department.department_id,
@@ -68,6 +74,13 @@ class RecruitmentService:
             updated_at=now,
         )
         self._vacancies.create(vacancy)
+        self._audit.record(
+            actor_user_id=self._actor_user_id(actor),
+            action="VACANCY_CREATED",
+            target_type="vacancy",
+            target_id=vacancy.vacancy_id,
+            new_state={"title": vacancy.title, "status": vacancy.status},
+        )
         self._db.commit()
         return vacancy
 
@@ -94,9 +107,18 @@ class RecruitmentService:
             raise ValueError("Vacancy not found.")
         if vacancy.status == "CLOSED":
             return vacancy
+        previous_status = vacancy.status
         vacancy.status = "CLOSED"
-        vacancy.updated_at = datetime.now(UTC)
+        vacancy.updated_at = self._clock.now()
         self._vacancies.save(vacancy)
+        self._audit.record(
+            actor_user_id=self._actor_user_id(actor),
+            action="VACANCY_CLOSED",
+            target_type="vacancy",
+            target_id=vacancy.vacancy_id,
+            previous_state={"status": previous_status},
+            new_state={"status": "CLOSED"},
+        )
         self._db.commit()
         return vacancy
 
@@ -109,9 +131,18 @@ class RecruitmentService:
             raise ValueError("Vacancy not found.")
         if vacancy.status == "OPEN":
             return vacancy
+        previous_status = vacancy.status
         vacancy.status = "OPEN"
-        vacancy.updated_at = datetime.now(UTC)
+        vacancy.updated_at = self._clock.now()
         self._vacancies.save(vacancy)
+        self._audit.record(
+            actor_user_id=self._actor_user_id(actor),
+            action="VACANCY_REOPENED",
+            target_type="vacancy",
+            target_id=vacancy.vacancy_id,
+            previous_state={"status": previous_status},
+            new_state={"status": "OPEN"},
+        )
         self._db.commit()
         return vacancy
 
@@ -137,7 +168,7 @@ class RecruitmentService:
         if self._applications.find_existing(candidate.candidate_id, vacancy_id) is not None:
             raise ValueError("You have already applied to this vacancy.")
 
-        now = datetime.now(UTC)
+        now = self._clock.now()
         application = Application(
             candidate_id=candidate.candidate_id,
             vacancy_id=vacancy_id,
@@ -151,6 +182,15 @@ class RecruitmentService:
         self._outbox.enqueue(
             "EVALUATE_APPLICATION",
             {"application_id": str(application.application_id), "cv_object_key": cv_object_key},
+            aggregate_type="application",
+            aggregate_id=application.application_id,
+        )
+        self._audit.record(
+            actor_user_id=self._actor_user_id(actor),
+            action="APPLICATION_CREATED",
+            target_type="application",
+            target_id=application.application_id,
+            new_state={"vacancy_id": str(vacancy_id), "status": "APPLIED"},
         )
         self._db.commit()
         return application
@@ -201,29 +241,48 @@ class RecruitmentService:
     ) -> Application:
         """Approve (shortlist) or reject an application and enqueue the notification email.
 
-        The status transition and the outbox email job commit in one transaction.
+        Only valid from APPLIED — once decided, an application is terminal for
+        this week's flow, so re-submitting a decision can never re-send the
+        candidate email or silently overwrite a prior outcome.
         """
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can make hiring decisions.")
         application = self._applications.get(application_id)
         if application is None:
             raise ValueError("Application not found.")
-        if application.application_status not in {"APPLIED", "SHORTLISTED", "REJECTED"}:
-            raise ValueError(f"Cannot decide an application in state {application.application_status}.")
+        if application.application_status not in DECIDABLE_STATUSES:
+            raise ValueError(
+                f"Application has already been decided (status={application.application_status})."
+            )
 
-        now = datetime.now(UTC)
+        now = self._clock.now()
+        previous_status = application.application_status
         application.application_status = "SHORTLISTED" if approve else "REJECTED"
         if not approve:
             application.rejected_at = now
         application.updated_at = now
         self._applications.save(application)
 
-        # same-transaction outbox: notification email
-        if approve:
-            job_type, subject, body = self._build_email_payload(application, approve=True)
-        else:
-            job_type, subject, body = self._build_email_payload(application, approve=False)
-        self._outbox.enqueue(job_type, {"application_id": str(application.application_id), "to_email": self._candidate_email(application), "subject": subject, "body": body})
+        job_type, subject, body = self._build_email_payload(application, approve=approve)
+        self._outbox.enqueue(
+            job_type,
+            {
+                "application_id": str(application.application_id),
+                "to_email": self._candidate_email(application),
+                "subject": subject,
+                "body": body,
+            },
+            aggregate_type="application",
+            aggregate_id=application.application_id,
+        )
+        self._audit.record(
+            actor_user_id=self._actor_user_id(actor),
+            action="APPLICATION_DECIDED",
+            target_type="application",
+            target_id=application.application_id,
+            previous_state={"status": previous_status},
+            new_state={"status": application.application_status},
+        )
 
         self._db.commit()
         return application
@@ -233,6 +292,13 @@ class RecruitmentService:
         return self._applications.latest_evaluation(application_id)
 
     # ---- helpers -----------------------------------------------------
+
+    def _actor_user_id(self, actor: UserContext) -> uuid.UUID | None:
+        """Resolve the actor's application_user id for audit records (best-effort)."""
+        try:
+            return self._identity._get_app_user(actor).user_id
+        except Exception:  # noqa: BLE001 - audit metadata must never block the business action
+            return None
 
     def _candidate_email(self, application: Application) -> str:
         """Resolve the candidate's email address for an application."""
@@ -268,7 +334,7 @@ class RecruitmentService:
             ),
         )
 
-    def _get_or_create_department(self, name: str):
+    def _get_or_create_department(self, name: str) -> Department:
         """Return the department matching `name`, creating it if it does not yet exist."""
         stmt = select(Department).where(Department.name == name.strip())
         dept = self._db.scalar(stmt)

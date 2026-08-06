@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
 
 from app.api.deps import get_auth_provider, get_current_user
 from app.auth.jwt import JwtAuthProvider
 from app.auth.provider import AuthProvider
 from app.contracts.auth import UserContext
+from app.db.sync_session import get_db
+from app.repositories.audit import AuditRepo
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -42,6 +45,7 @@ def me(user: UserContext = Depends(get_current_user)) -> MeResponse:
 def login(
     body: LoginRequest,
     provider: AuthProvider = Depends(get_auth_provider),
+    db: Session = Depends(get_db),
 ) -> LoginResponse:
     """Exchange email + password for a signed JWT access token.
 
@@ -60,5 +64,13 @@ def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         )
-    access_token, context = result
+    access_token, context, app_user = result
+    AuditRepo(db).record(
+        actor_user_id=app_user.user_id,
+        action="LOGIN",
+        target_type="application_user",
+        target_id=app_user.user_id,
+        new_state={"email": context.email, "coarse_role": context.coarse_role},
+    )
+    db.commit()
     return LoginResponse(access_token=access_token, user=context)

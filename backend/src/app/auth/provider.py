@@ -9,9 +9,9 @@ from app.contracts.auth import UserContext
 class AuthProvider(ABC):
     """Swappable identity/authentication seam.
 
-    Implementations: JwtAuthProvider (self-issued JWT). FastAPI depends only on
-    this interface + UserContext. Swapping providers must never require changes
-    in HR domain code.
+    Implementations: JwtAuthProvider (self-issued JWT — the only runtime
+    provider; no external IdP). FastAPI depends only on this interface +
+    UserContext, so HR domain code never leaks provider-specific logic.
     """
 
     @abstractmethod

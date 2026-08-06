@@ -4,7 +4,6 @@ import uuid
 from datetime import date, datetime
 
 from pydantic import BaseModel, Field
-from pydantic.alias_generators import to_camel
 
 
 class VacancyCreate(BaseModel):
@@ -34,21 +33,6 @@ class VacancyOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class EvaluationOut(BaseModel):
-    """API representation of a rich AI resume evaluation.
-
-    ``score``/``overview`` are the compact headline fields; ``detail`` carries
-    the full verbose review (sections, bullets, keyword matches) rendered by the
-    manager and candidate portals.
-    """
-
-    score: int
-    overview: str
-    model: str | None
-    evaluated_at: datetime
-    detail: EvaluationDetail | None = None
-
-
 class FeedbackSection(BaseModel):
     """A named feedback dimension (clarity/impact/formatting) with a summary + issues."""
 
@@ -65,9 +49,17 @@ class ImprovedBullet(BaseModel):
 
 
 class JobMatch(BaseModel):
-    """How well the resume matches the target job (jobMatch)."""
+    """How well the resume matches the target job.
 
-    model_config = {"alias_generator": to_camel, "populate_by_name": True}
+    Wire format is snake_case like every other field in this API — the LLM's
+    raw camelCase payload (`jobMatch.matchScore`, etc., see
+    `evaluation/scoring.py`) is translated to these field names explicitly in
+    `api.routes.recruitment._to_detail()`, not via a Pydantic alias
+    generator. A `to_camel` alias generator here would make FastAPI's
+    response serialization emit camelCase keys (`matchedKeywords`) on the
+    wire while every other field stays snake_case — an inconsistency the
+    frontend doesn't expect and that crashes rendering.
+    """
 
     match_score: int = 0
     summary: str = ""
@@ -86,6 +78,21 @@ class EvaluationDetail(BaseModel):
     missing_sections: list[str] = []
     improved_bullets: list[ImprovedBullet] = []
     job_match: JobMatch | None = None
+
+
+class EvaluationOut(BaseModel):
+    """API representation of a rich AI resume evaluation.
+
+    ``score``/``overview`` are the compact headline fields; ``detail`` carries
+    the full verbose review (sections, bullets, keyword matches) rendered by the
+    manager and candidate portals.
+    """
+
+    score: int
+    overview: str
+    model: str | None
+    evaluated_at: datetime
+    detail: EvaluationDetail | None = None
 
 
 class ApplicationOut(BaseModel):

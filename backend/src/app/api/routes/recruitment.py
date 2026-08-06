@@ -8,7 +8,8 @@ from fastapi.responses import Response
 from app.api.deps import get_current_user, require_role
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
 from app.contracts.auth import UserContext
-from app.db.session import get_db
+from app.db.sync_session import get_db
+from app.domain.identity import Department, Person
 from app.integrations.object_store import ObjectStore
 from app.schemas.recruitment import (
     ApplicationDetailOut,
@@ -26,10 +27,7 @@ from app.schemas.recruitment import (
 router = APIRouter(prefix="/api", tags=["recruitment"])
 
 MAX_RESUME_BYTES = 10 * 1024 * 1024  # 10MB
-ALLOWED_RESUME_TYPES = (
-    ".pdf",
-    ".docx",
-)
+ALLOWED_RESUME_TYPES = (".pdf", ".docx")
 
 
 def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
@@ -49,20 +47,31 @@ def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
             for b in raw_payload.get("improvedBullets", [])
             if isinstance(b, dict)
         ],
-        job_match=JobMatch(**job_match) if isinstance(job_match, dict) else None,
+        job_match=_to_job_match(job_match),
+    )
+
+
+def _to_job_match(raw: dict | None) -> JobMatch | None:
+    """Translate the LLM's camelCase `jobMatch` payload into the snake_case JobMatch schema."""
+    if not isinstance(raw, dict):
+        return None
+    return JobMatch(
+        match_score=raw.get("matchScore", 0),
+        summary=raw.get("summary", ""),
+        matched_keywords=raw.get("matchedKeywords", []),
+        missing_keywords=raw.get("missingKeywords", []),
     )
 
 
 def _to_application_out(application, evaluation=None) -> ApplicationOut:
     """Build an API response model for an application, attaching the latest evaluation if present."""
-    evaluated = evaluation is not None
     return ApplicationOut(
         application_id=application.application_id,
         vacancy_id=application.vacancy_id,
         vacancy_title=application.vacancy.title if application.vacancy else None,
         application_status=application.application_status,
         applied_at=application.applied_at,
-        evaluated=evaluated,
+        evaluated=evaluation is not None,
         evaluation=(
             EvaluationOut(
                 score=evaluation.score,
@@ -82,6 +91,43 @@ def _svc(db=Depends(get_db)) -> RecruitmentService:
     return RecruitmentService(db)
 
 
+def _department_name(svc: RecruitmentService, department_id: uuid.UUID) -> str | None:
+    """Resolve a department id to its display name, or None if it no longer exists."""
+    dept = svc._db.get(Department, department_id)
+    return dept.name if dept else None
+
+
+def _candidate_display(svc: RecruitmentService, candidate) -> str | None:
+    """Return the candidate's full display name, or None if the candidate/person is unknown."""
+    if candidate is None:
+        return None
+    person = svc._db.get(Person, candidate.person_id)
+    return f"{person.first_name} {person.last_name}".strip() if person else None
+
+
+def _candidate_email(svc: RecruitmentService, candidate) -> str | None:
+    """Return the candidate's email address, or None if the candidate/person is unknown."""
+    if candidate is None:
+        return None
+    person = svc._db.get(Person, candidate.person_id)
+    return person.email if person else None
+
+
+def _vacancy_out(v) -> VacancyOut:
+    """Build a VacancyOut from a Vacancy row (department name resolved separately)."""
+    return VacancyOut(
+        vacancy_id=v.vacancy_id,
+        title=v.title,
+        department_name=None,
+        description=v.description,
+        employment_type=v.employment_type,
+        opening_date=v.opening_date,
+        closing_date=v.closing_date,
+        status=v.status,
+        created_at=v.created_at,
+    )
+
+
 # ---- vacancies --------------------------------------------------------
 
 
@@ -93,20 +139,12 @@ def list_vacancies(
     """List vacancies; candidates see only open ones, employees/managers see all."""
     vacancies = svc.list_vacancies(user)
     depts = {v.department_id: _department_name(svc, v.department_id) for v in vacancies}
-    return [
-        VacancyOut(
-            vacancy_id=v.vacancy_id,
-            title=v.title,
-            department_name=depts.get(v.department_id),
-            description=v.description,
-            employment_type=v.employment_type,
-            opening_date=v.opening_date,
-            closing_date=v.closing_date,
-            status=v.status,
-            created_at=v.created_at,
-        )
-        for v in vacancies
-    ]
+    out = []
+    for v in vacancies:
+        vo = _vacancy_out(v)
+        vo.department_name = depts.get(v.department_id)
+        out.append(vo)
+    return out
 
 
 @router.post("/vacancies", response_model=VacancyOut, status_code=status.HTTP_201_CREATED)
@@ -128,17 +166,9 @@ def create_vacancy(
         )
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
-    return VacancyOut(
-        vacancy_id=vacancy.vacancy_id,
-        title=vacancy.title,
-        department_name=body.department_name,
-        description=vacancy.description,
-        employment_type=vacancy.employment_type,
-        opening_date=vacancy.opening_date,
-        closing_date=vacancy.closing_date,
-        status=vacancy.status,
-        created_at=vacancy.created_at,
-    )
+    vo = _vacancy_out(vacancy)
+    vo.department_name = body.department_name
+    return vo
 
 
 @router.get("/vacancies/{vacancy_id}", response_model=VacancyOut)
@@ -151,17 +181,9 @@ def get_vacancy(
     vacancy = svc.get_vacancy(vacancy_id)
     if vacancy is None:
         raise HTTPException(status_code=404, detail="Vacancy not found.")
-    return VacancyOut(
-        vacancy_id=vacancy.vacancy_id,
-        title=vacancy.title,
-        department_name=_department_name(svc, vacancy.department_id),
-        description=vacancy.description,
-        employment_type=vacancy.employment_type,
-        opening_date=vacancy.opening_date,
-        closing_date=vacancy.closing_date,
-        status=vacancy.status,
-        created_at=vacancy.created_at,
-    )
+    vo = _vacancy_out(vacancy)
+    vo.department_name = _department_name(svc, vacancy.department_id)
+    return vo
 
 
 @router.post("/vacancies/{vacancy_id}/close", response_model=VacancyOut)
@@ -177,17 +199,9 @@ def close_vacancy(
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
-    return VacancyOut(
-        vacancy_id=vacancy.vacancy_id,
-        title=vacancy.title,
-        department_name=_department_name(svc, vacancy.department_id),
-        description=vacancy.description,
-        employment_type=vacancy.employment_type,
-        opening_date=vacancy.opening_date,
-        closing_date=vacancy.closing_date,
-        status=vacancy.status,
-        created_at=vacancy.created_at,
-    )
+    vo = _vacancy_out(vacancy)
+    vo.department_name = _department_name(svc, vacancy.department_id)
+    return vo
 
 
 @router.post("/vacancies/{vacancy_id}/reopen", response_model=VacancyOut)
@@ -203,17 +217,9 @@ def reopen_vacancy(
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
-    return VacancyOut(
-        vacancy_id=vacancy.vacancy_id,
-        title=vacancy.title,
-        department_name=_department_name(svc, vacancy.department_id),
-        description=vacancy.description,
-        employment_type=vacancy.employment_type,
-        opening_date=vacancy.opening_date,
-        closing_date=vacancy.closing_date,
-        status=vacancy.status,
-        created_at=vacancy.created_at,
-    )
+    vo = _vacancy_out(vacancy)
+    vo.department_name = _department_name(svc, vacancy.department_id)
+    return vo
 
 
 # ---- applications ------------------------------------------------------
@@ -224,14 +230,18 @@ def reopen_vacancy(
     response_model=ApplicationOut,
     status_code=status.HTTP_201_CREATED,
 )
-async def apply_to_vacancy(
+def apply_to_vacancy(
     vacancy_id: uuid.UUID,
     file: UploadFile,
     user: UserContext = Depends(require_role("CANDIDATE")),
     svc: RecruitmentService = Depends(_svc),
 ):
-    """Apply to a vacancy (candidate-only): validates and stores the resume, then creates the application."""
-    data = await file.read()
+    """Apply to a vacancy (candidate-only): validates and stores the resume, then creates the application.
+
+    Plain `def` (not `async def`) so FastAPI runs the blocking MinIO upload
+    and DB commit in its threadpool instead of on the shared event loop.
+    """
+    data = file.file.read()
     if len(data) == 0:
         raise HTTPException(status_code=400, detail="The uploaded resume is empty.")
     if len(data) > MAX_RESUME_BYTES:
@@ -252,8 +262,6 @@ async def apply_to_vacancy(
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
-    except Exception as err:
-        raise HTTPException(status_code=500, detail=str(err)) from err
 
     return _to_application_out(application)
 
@@ -277,7 +285,10 @@ def my_application(
     svc: RecruitmentService = Depends(_svc),
 ):
     """Return one of the current candidate's applications (with evaluation) by id."""
-    application = svc.get_my_application(user, application_id)
+    try:
+        application = svc.get_my_application(user, application_id)
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
     evaluation = svc.latest_evaluation(application_id)
     out = _to_application_out(application, evaluation)
     return ApplicationDetailOut(**out.model_dump())
@@ -292,7 +303,10 @@ def vacancy_applications(
     svc: RecruitmentService = Depends(_svc),
 ):
     """List all applications for a vacancy, including candidate details (manager-only)."""
-    applications = svc.list_vacancy_applications(user, vacancy_id)
+    try:
+        applications = svc.list_vacancy_applications(user, vacancy_id)
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
     result: list[ApplicationDetailOut] = []
     for a in applications:
         evaluation = svc.latest_evaluation(a.application_id)
@@ -308,16 +322,17 @@ def vacancy_applications(
     return result
 
 
-@router.get(
-    "/applications/{application_id}", response_model=ApplicationDetailOut
-)
+@router.get("/applications/{application_id}", response_model=ApplicationDetailOut)
 def application_detail(
     application_id: uuid.UUID,
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """Return a single application for review, with its evaluation and candidate details."""
-    application = svc.get_application_for_review(user, application_id)
+    try:
+        application = svc.get_application_for_review(user, application_id)
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
     evaluation = svc.latest_evaluation(application_id)
     out = _to_application_out(application, evaluation)
     candidate = svc._identity.get_candidate_for_application(application)
@@ -335,7 +350,10 @@ def download_resume(
     svc: RecruitmentService = Depends(_svc),
 ):
     """Stream the stored resume file for an application (manager-only)."""
-    application = svc.get_application_for_review(user, application_id)
+    try:
+        application = svc.get_application_for_review(user, application_id)
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
     if not application.cv_object_key:
         raise HTTPException(status_code=404, detail="No resume on file.")
     try:
@@ -367,34 +385,3 @@ def decide_application(
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
     return _to_application_out(application, svc.latest_evaluation(application_id))
-
-
-# ---- helpers -----------------------------------------------------------
-
-
-def _department_name(svc: RecruitmentService, department_id: uuid.UUID) -> str | None:
-    """Resolve a department id to its display name, or None if it no longer exists."""
-    from app.domain.identity import Department
-
-    dept = svc._db.get(Department, department_id)
-    return dept.name if dept else None
-
-
-def _candidate_display(svc: RecruitmentService, candidate) -> str | None:
-    """Return the candidate's full display name, or None if the candidate/person is unknown."""
-    if candidate is None:
-        return None
-    from app.domain.identity import Person
-
-    person = svc._db.get(Person, candidate.person_id)
-    return f"{person.first_name} {person.last_name}".strip() if person else None
-
-
-def _candidate_email(svc: RecruitmentService, candidate) -> str | None:
-    """Return the candidate's email address, or None if the candidate/person is unknown."""
-    if candidate is None:
-        return None
-    from app.domain.identity import Person
-
-    person = svc._db.get(Person, candidate.person_id)
-    return person.email if person else None

@@ -8,7 +8,7 @@ from app.auth.jwt import JwtAuthProvider
 from app.auth.provider import AuthProvider
 from app.config.settings import get_settings
 from app.contracts.auth import UserContext
-from app.db.session import get_db
+from app.db.sync_session import get_db
 
 _bearer = HTTPBearer(auto_error=False)
 

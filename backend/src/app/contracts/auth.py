@@ -7,7 +7,8 @@ class UserContext(BaseModel):
     """Trusted identity + coarse role built by an AuthProvider.
 
     Auth answers WHO you are and your coarse role. Resolving employee_id /
-    candidate_id / manager relationships is the identity layer's job, not auth.
+    candidate_id / manager relationships is the identity layer's job
+    (`services.identity.IdentityService`), not auth.
     """
 
     subject: str

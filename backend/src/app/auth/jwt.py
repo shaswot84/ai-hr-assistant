@@ -36,7 +36,12 @@ class JwtAuthProvider(AuthProvider):
     # -- helpers ------------------------------------------------------
 
     def _encode(self, subject: str) -> str:
-        """Sign a short-lived access token for the given auth subject."""
+        """Sign a short-lived access token for the given auth subject.
+
+        Uses real wall-clock time deliberately (not the injected Clock):
+        token expiry is a security boundary, not a business scheduling
+        concern, so it must never be affected by a future simulation clock.
+        """
         now = datetime.now(UTC)
         payload = {
             "sub": subject,
@@ -67,20 +72,32 @@ class JwtAuthProvider(AuthProvider):
             coarse_role=app_user.coarse_role,
         )
 
+    def _find_by_subject(self, subject: str) -> ApplicationUser | None:
+        """Look up an ApplicationUser by (identity_provider="local", external_subject)."""
+        if self._db is None:
+            return None
+        stmt = select(ApplicationUser).where(
+            ApplicationUser.identity_provider == "local",
+            ApplicationUser.external_subject == subject,
+        )
+        return self._db.scalar(stmt)
+
     def create_access_token(self, subject: str) -> str:
         """Issue a signed access token for a subject (used by the login route)."""
         return self._encode(subject)
 
-    def login(self, email: str, password: str) -> tuple[str, UserContext] | None:
-        """Verify credentials and return (access_token, UserContext), or None on failure.
+    def login(self, email: str, password: str) -> tuple[str, UserContext, ApplicationUser] | None:
+        """Verify credentials and return (access_token, UserContext, ApplicationUser), or None.
 
         Returns None for both unknown email and wrong password so the route can
-        answer with a single generic 401.
+        answer with a single generic 401. The ApplicationUser row is returned
+        alongside the token so the caller (the login route) can write an audit
+        entry against ``user_id`` without an extra lookup.
         """
         app_user = self.verify_credentials(email, password)
         if app_user is None:
             return None
-        return self.create_access_token(app_user.external_subject), self._to_context(app_user)
+        return self.create_access_token(app_user.external_subject), self._to_context(app_user), app_user
 
     def verify_credentials(self, email: str, password: str) -> ApplicationUser | None:
         """Return the ApplicationUser whose email+password match, else None.
@@ -95,9 +112,12 @@ class JwtAuthProvider(AuthProvider):
         if person is None:
             return None
         app_user = self._db.scalar(
-            select(ApplicationUser).where(ApplicationUser.person_id == person.person_id)
+            select(ApplicationUser).where(
+                ApplicationUser.identity_provider == "local",
+                ApplicationUser.person_id == person.person_id,
+            )
         )
-        if app_user is None or not app_user.password_hash:
+        if app_user is None or not app_user.password_hash or app_user.status != "ACTIVE":
             return None
         if not verify_password(password, app_user.password_hash):
             return None
@@ -115,8 +135,6 @@ class JwtAuthProvider(AuthProvider):
         auth = req.headers.get("authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else None
         if not token:
-            token = req.headers.get("x-access-token")
-        if not token:
             return None
         try:
             payload = self._decode(token)
@@ -125,12 +143,8 @@ class JwtAuthProvider(AuthProvider):
         subject = payload.get("sub")
         if not subject:
             return None
-        if self._db is None:
-            return None
-        app_user = self._db.scalar(
-            select(ApplicationUser).where(ApplicationUser.external_subject == subject)
-        )
-        if app_user is None:
+        app_user = self._find_by_subject(subject)
+        if app_user is None or app_user.status != "ACTIVE":
             return None
         return self._to_context(app_user)
 

@@ -38,6 +38,7 @@ class Vacancy(Base):
     )
     approval_status: Mapped[str] = mapped_column(String(20), default="APPROVED")
     status: Mapped[str] = mapped_column(String(30), default="OPEN")  # DRAFT|OPEN|CLOSED
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -52,8 +53,13 @@ class Application(Base):
     candidate_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("candidate.candidate_id"))
     vacancy_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("vacancy.vacancy_id"))
     cv_object_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    application_status: Mapped[str] = mapped_column(String(30), default="APPLIED")  # APPLIED|SHORTLISTED|REJECTED|WITHDRAWN
+    # APPLIED | SHORTLISTED | REJECTED | WITHDRAWN — WITHDRAWN has no capability
+    # method yet (no withdraw endpoint this week); the column/state exists so
+    # the candidate-initiated withdraw flow can land later without a migration.
+    application_status: Mapped[str] = mapped_column(String(30), default="APPLIED")
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -82,4 +88,6 @@ class ApplicationEvaluation(Base):
 
 
 Index("ix_application_candidate", Application.candidate_id)
-Index("ix_application_vacancy", Application.vacancy_id)
+Index("ix_application_vacancy_status", Application.vacancy_id, Application.application_status)
+Index("ix_vacancy_deleted_at", Vacancy.deleted_at)
+Index("ix_application_deleted_at", Application.deleted_at)

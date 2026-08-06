@@ -5,11 +5,13 @@ import { useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { setAuthToken } from "@/lib/auth";
 
-/**
- * Login page: collects email + password and exchanges them for a JWT access
- * token via the backend. On success the token is stored and the user is routed
- * to the role-aware landing page.
- */
+const ROLE_HOME: Record<string, string> = {
+  HR_ADMIN: "/manager",
+  CANDIDATE: "/candidate",
+  EMPLOYEE: "/employee",
+};
+
+/** Login page: email + password, works for all three roles (role comes back from the API). */
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -17,7 +19,6 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  /** Submits the credentials; on success stores the token and redirects home. */
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -25,26 +26,18 @@ export default function LoginPage() {
     try {
       const res = await api.login(email, password);
       setAuthToken(res.access_token);
-      router.push("/");
+      router.push(ROLE_HOME[res.user.coarse_role] ?? "/");
     } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.detail);
-      } else {
-        setError("Could not sign in. Is the backend running?");
-      }
+      setError(err instanceof ApiError ? err.detail : "Could not sign in. Is the backend running?");
       setSubmitting(false);
     }
   }
 
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-center px-4">
-      <div className="animate-fade-in w-full max-w-sm">
-        <h1 className="text-center text-2xl font-semibold tracking-tight">
-          AI HR Assistant
-        </h1>
-        <p className="mt-1 text-center text-sm text-muted">
-          Sign in with your account to continue.
-        </p>
+    <div className="flex min-h-screen flex-col items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        <h1 className="text-center text-2xl font-semibold tracking-tight">AI HR Assistant</h1>
+        <p className="mt-1 text-center text-sm text-muted">Sign in with your account to continue.</p>
 
         <form
           onSubmit={handleSubmit}
@@ -58,7 +51,7 @@ export default function LoginPage() {
               autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-foreground"
+              className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-foreground"
               placeholder="you@example.com"
             />
           </label>
@@ -71,7 +64,7 @@ export default function LoginPage() {
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-foreground"
+              className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-foreground"
               placeholder="••••••••"
             />
           </label>
@@ -90,6 +83,12 @@ export default function LoginPage() {
             {submitting ? "Signing in…" : "Sign in"}
           </button>
         </form>
+
+        <div className="mt-4 rounded-lg border border-border bg-surface p-3 text-xs text-muted">
+          <p className="font-medium text-foreground">Demo accounts</p>
+          <p className="mt-1">Manager: manager@example.com / manager123</p>
+          <p>Candidate: candidate@example.com / candidate123</p>
+        </div>
       </div>
     </div>
   );

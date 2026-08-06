@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from app.api.deps import require_role
 from app.capabilities.settings import SettingsService
 from app.contracts.auth import UserContext
-from app.db.session import get_db
+from app.db.sync_session import get_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
