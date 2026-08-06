@@ -10,8 +10,9 @@
 Build the **Recruitment module** (Manager vacancy posting → Candidate
 apply → AI resume evaluation → Manager approve/shortlist or reject) on top
 of the swappable `AuthProvider` seam (plan-auth.md). Full end-to-end flow
-runs against the dev-stub auth in local dev; Keycloak provider is
-interchangeable behind the same interface.
+runs against a **self-issued JWT** (email+password login locally, roles
+enforced via `GET /api/auth/me`); the provider is interchangeable behind the
+same interface.
 
 Locked decisions (AGENTS.md §14.1):
 - Candidate applies by uploading **only a resume** (PDF/DOCX).

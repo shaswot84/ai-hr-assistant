@@ -22,7 +22,7 @@ class Person(Base):
 
 
 class ApplicationUser(Base):
-    """Maps an external auth subject (Keycloak sub / dev-stub id) to a Person."""
+    """Maps an auth subject (JWT `sub`) to a Person, and stores login credentials."""
 
     __tablename__ = "application_user"
 
@@ -30,6 +30,7 @@ class ApplicationUser(Base):
     external_subject: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     person_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("person.person_id"))
     coarse_role: Mapped[str] = mapped_column(String(30))
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     person: Mapped[Person] = relationship()
 

@@ -17,8 +17,9 @@ class IdentityError(Exception):
 class IdentityService:
     """Resolves a trusted UserContext into HR domain identities.
 
-    For local dev the stub subjects are auto-provisioned: a user with
-    HR_ADMIN role becomes an Employee; CANDIDATE becomes a Candidate.
+    Users are created by the seed script (`app.db.seed`) with a stored password
+    hash; this service maps an authenticated UserContext to the matching
+    Person/Employee/Candidate rows (creating them only if they were removed).
     """
 
     def __init__(self, db: Session) -> None:
@@ -86,7 +87,6 @@ class IdentityService:
     @staticmethod
     def _employee_number(subject: str) -> str:
         """Derive a unique, deterministic employee number from the auth subject."""
-        # Dev-stub subjects are `{role}-{email}`, so a role-based prefix collides.
         # Hash the full subject so every user gets a unique number.
         digest = hashlib.sha1(subject.encode("utf-8")).hexdigest()[:8].upper()
         return f"EMP-{digest}"

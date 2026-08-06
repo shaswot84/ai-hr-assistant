@@ -1,66 +1,64 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 
 from app.api.deps import get_auth_provider, get_current_user
-from app.auth.dev_stub import DevStubProvider
+from app.auth.jwt import JwtAuthProvider
 from app.auth.provider import AuthProvider
 from app.contracts.auth import UserContext
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-VALID_ROLES = {"HR_ADMIN", "EMPLOYEE", "CANDIDATE"}
 
-
-class DevLoginRequest(BaseModel):
-    """Request body for the dev-only login endpoint."""
-
-    role: str
-    email: EmailStr | None = None
-    name: str | None = None
-
-
-class DevLoginResponse(BaseModel):
+class MeResponse(BaseModel):
     """Response body describing the authenticated user."""
 
     user: UserContext
 
 
-@router.get("/me", response_model=DevLoginResponse)
-def me(user: UserContext = Depends(get_current_user)) -> DevLoginResponse:
+class LoginRequest(BaseModel):
+    """Credentials supplied at login (email + password)."""
+
+    email: EmailStr
+    password: str
+
+
+class LoginResponse(BaseModel):
+    """JWT access token plus the resolved user context."""
+
+    access_token: str
+    token_type: str = "bearer"
+    user: UserContext
+
+
+@router.get("/me", response_model=MeResponse)
+def me(user: UserContext = Depends(get_current_user)) -> MeResponse:
     """Return the identity of the currently authenticated user."""
-    return DevLoginResponse(user=user)
+    return MeResponse(user=user)
 
 
-@router.post("/dev-login", response_model=DevLoginResponse)
-def dev_login(
-    body: DevLoginRequest,
-    response: Response,
+@router.post("/login", response_model=LoginResponse)
+def login(
+    body: LoginRequest,
     provider: AuthProvider = Depends(get_auth_provider),
-) -> DevLoginResponse:
-    """Dev-only: switch identity/role via the stub provider (no Keycloak needed)."""
-    if not isinstance(provider, DevStubProvider):
-        raise HTTPException(status_code=404, detail="Dev login unavailable with this auth provider.")
-    if body.role not in VALID_ROLES:
-        raise HTTPException(status_code=400, detail=f"Role must be one of {sorted(VALID_ROLES)}")
-    subject = f"{body.role.lower()}-{body.email or 'demo'}"
-    user = UserContext(
-        subject=subject,
-        email=body.email or f"{subject}@example.com",
-        display_name=body.name or body.role.replace("_", " ").title(),
-        coarse_role=body.role,
-    )
-    provider.set_session(response, user)
-    return DevLoginResponse(user=user)
+) -> LoginResponse:
+    """Exchange email + password for a signed JWT access token.
 
-
-@router.post("/logout")
-def logout(
-    response: Response,
-    provider: AuthProvider = Depends(get_auth_provider),
-) -> dict[str, bool]:
-    """Clear the dev session cookie, if the active provider is the dev stub."""
-    if isinstance(provider, DevStubProvider):
-        provider.clear_session(response)
-    return {"ok": True}
+    Credentials are checked against the `application_user` table. A single
+    generic 401 is returned for both unknown email and wrong password, so the
+    endpoint does not leak which one failed.
+    """
+    if not isinstance(provider, JwtAuthProvider):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="JWT authentication is not enabled.",
+        )
+    result = provider.login(body.email, body.password)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+    access_token, context = result
+    return LoginResponse(access_token=access_token, user=context)

@@ -39,7 +39,6 @@ up: setup
 	@echo "  Backend  (API docs):                  http://localhost:8000/docs"
 	@echo "  Mailpit  (dev email):                 http://localhost:8025"
 	@echo "  MinIO    (console):                   http://localhost:9001"
-	@echo "  Keycloak:                             http://localhost:8080"
 	@echo ""
 	$(MAKE) seed
 

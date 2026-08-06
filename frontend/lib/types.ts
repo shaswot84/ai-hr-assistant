@@ -1,5 +1,5 @@
 /**
- * Coarse Keycloak role assigned to a user. Manager/recruiter authority is
+ * Coarse role assigned to a user. Manager/recruiter authority is
  * derived server-side; only these three roles reach the frontend.
  */
 export type CoarseRole = "HR_ADMIN" | "EMPLOYEE" | "CANDIDATE";

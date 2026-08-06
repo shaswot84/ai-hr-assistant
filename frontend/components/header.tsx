@@ -3,13 +3,13 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { clearAuthToken } from "@/lib/auth";
 import type { UserContext } from "@/lib/types";
 
 /**
  * Top navigation bar rendered inside role-guarded portal layouts. Shows the
  * app name, a role-scoped nav (manager only), the user's display name and
- * role badge, a theme toggle, and a sign-out button.
+ * role badge, and a sign-out button.
  *
  * @param props.user The authenticated user, used to derive the home link and
  *   whether to render the manager nav.
@@ -18,14 +18,11 @@ export function Header({ user }: { user: UserContext }) {
   const router = useRouter();
   const [signingOut, setSigningOut] = useState(false);
 
-  /** Logs the user out via the API, then always returns to the login page. */
-  async function signOut() {
+  /** Clears the stored JWT, then always returns to the login page. */
+  async function signOutAction() {
     setSigningOut(true);
-    try {
-      await api.logout();
-    } finally {
-      router.push("/login");
-    }
+    clearAuthToken();
+    router.push("/login");
   }
 
   // Managers land on /manager; everyone else is routed to the candidate portal.
@@ -62,7 +59,7 @@ export function Header({ user }: { user: UserContext }) {
           </span>
           <button
             type="button"
-            onClick={signOut}
+            onClick={signOutAction}
             disabled={signingOut}
             className="rounded-full border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-surface-hover disabled:opacity-50"
           >

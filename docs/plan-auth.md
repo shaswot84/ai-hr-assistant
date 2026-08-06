@@ -1,51 +1,65 @@
 # Auth Development Plan — Sprint 2 (Recruitment module)
 
 > Author: Nitin · Branch: `feature/auth-and-recruitment`
-> Status: Planning · Target: swappable auth so Keycloak can be swapped later
+> Status: **Implemented · RESOLVED (2026-08-05): Keycloak → Clerk → self-issued JWT**
 
 ---
 
-## 1. Goal
+## 1. Goal (revised)
 
-Give the backend and frontend a **swappable auth layer** so the Recruitment
-module can be built, demoed, and tested **without depending on a Keycloak
-container**, while keeping Keycloak a first-class provider that can be
-dropped in later (or replaced entirely by another OIDC IdP) without
-touching recruitment code.
+Give the backend and frontend a **robust, self-contained authentication layer** so
+the Recruitment module runs against a **self-issued JWT** auth provider. Keycloak,
+Clerk, and the dev-stub provider have all been **removed** — there is no external
+IdP, no cloud dependency, and no webhook/tunnel. Every localhost/dev clone
+authenticates identically against the same backend. Auth is still built behind the
+`AuthProvider` abstraction + `UserContext`, so swapping providers later requires no
+recruitment-code changes.
 
-Decisions locked in AGENTS.md §14.2:
-- Build the module against an `AuthProvider` abstraction + `UserContext`
-  from day one.
-- A **dev-stub provider** is the default for local dev/CI/tests.
-- **Keycloak** is one concrete provider, **dev-mode only** (`start-dev`,
-  `keycloak:26.0`, plain HTTP `:8080`).
-- Coarse roles: `HR_ADMIN`, `EMPLOYEE`, `CANDIDATE`. Manager/recruiter
-  authority is derived in FastAPI from `employee.manager_employee_id`, not
-  from a Keycloak role.
+Decisions locked in AGENTS.md §14.2 (as revised):
+- Build the module against an `AuthProvider` abstraction + `UserContext`.
+- Single provider: **self-issued JWT** (`JwtAuthProvider`). `get_auth_provider`
+  hard-fails unless `AUTH_PROVIDER=jwt`.
+- Credentials: email + password stored on `application_user` (PBKDF2-HMAC-SHA256
+  hashed, stdlib — no bcrypt/passlib dependency).
+- Coarse roles: `HR_ADMIN`, `EMPLOYEE`, `CANDIDATE`. The role is **read from the
+  DB on every request** (authoritative state), never trusted from the token.
+  Manager/recruiter authority is derived in FastAPI from `employee.manager_employee_id`.
 
 ---
 
 ## 2. Architecture
 
-### 2.1 Seam
+### 2.1 Flow
 
 ```text
 Next.js (role-aware portals)
-   │  login / logout / token exchange
+   │  POST /api/auth/login {email, password}
+   ▼
+FastAPI auth route → JwtAuthProvider.verify_credentials()
+   │  (check application_user.password_hash via constant-time compare)
+   ▼
+Signed HS256 JWT  (sub = application_user.external_subject, 60-min expiry)
+   │  stored client-side in lib/auth.ts (localStorage + module store)
+   ▼
+Subsequent requests → Authorization: Bearer <JWT>
    ▼
 AuthProvider interface            ← the seam (backend owns this)
-   ├── KeycloakProvider           (OIDC code flow, JWKS validation)
-   └── DevStubProvider            (mock claims / header, no infra)
+   └── JwtAuthProvider.authenticate(request)
+        (verify signature/exp/iss; load application_user; build UserContext)
    ▼
-UserContext { subject, email, name, coarse_role }
+UserContext { subject, email, display_name, coarse_role }   ← role from DB
    ▼
 FastAPI handlers + Enforcement Layer (role checks, derived manager authority)
 ```
 
-- Frontend talks to **one session endpoint** (`/api/auth/me`,
-  `/api/auth/login`, `/api/auth/logout`) — never to Keycloak directly.
-- The same seam is exposed client-side so Next.js can route by role
-  (`/manager` vs `/candidate`).
+- Frontend uses a custom email/password login form (`/login`). On success the token
+  is stored in `lib/auth.ts`; `lib/api.ts` attaches `Authorization: Bearer` to every
+  request and clears it on sign-out.
+- `GET /api/auth/me` returns the resolved `UserContext`; the client routes
+  `/manager` vs `/candidate` on it.
+- Backend signs tokens with `JWT_SECRET_KEY` (HS256). Expiry is short (60 min); the
+  coarse role is re-read from `application_user` on every request, so a role change
+  takes effect immediately and a deleted user is denied immediately.
 
 ### 2.2 UserContext
 
@@ -53,7 +67,7 @@ Minimal, serializable shape shared by backend + frontend:
 
 ```text
 UserContext {
-  subject: str        # application_user.external_subject (Keycloak `sub` / stub id)
+  subject: str        # application_user.external_subject (the JWT "sub")
   email: str
   display_name: str
   coarse_role: "HR_ADMIN" | "EMPLOYEE" | "CANDIDATE"
@@ -68,73 +82,58 @@ Domain/Identity layer's job (see plan-recruitment.md).
 
 ---
 
-## 3. Deliverables / Task breakdown
+## 3. Implementation (DONE on `feature/auth-and-recruitment`)
 
-### Phase A — Core seam + stub (foundation)
-
-| # | Task | Details |
-|---|---|---|
-| A1 | `UserContext` model | `backend/src/app/contracts/auth.py` (pydantic). Shared shape. |
-| A2 | `AuthProvider` ABC | `backend/src/app/auth/provider.py` — `authenticate(request) -> UserContext`, `require_role(...)`, `build_login_url(...)`, `exchange_code(...)`, `logout(...)`. |
-| A3 | `DevStubProvider` | `backend/src/app/auth/dev_stub.py` — reads role from env/header (e.g. `X-Dev-Role`, `X-Dev-User`) for local dev + tests. No container needed. |
-| A4 | FastAPI dependency + router | `auth/me`, `auth/login`, `auth/logout`; `get_current_user` dependency in `backend/src/app/api/deps.py`. |
-| A5 | Config | `AUTH_PROVIDER=dev_stub\|keycloak`, keys for Keycloak in `.env` (from `keycloak_docker_setup.md`). |
-| A6 | Unit tests | `backend/tests/unit/auth/` — stub + interface contract, dependency injection, role rejection (403). |
-
-### Phase B — Keycloak provider (dev mode)
-
-| # | Task | Details |
-|---|---|---|
-| B1 | `KeycloakProvider` | `backend/src/app/auth/keycloak.py` — OIDC code flow + JWKS token validation via `httpx`/`python-jose` (or `authlib`), maps roles → `UserContext`. |
-| B2 | Docker Compose service | `keycloak` service per `keycloak_docker_setup.md` (`start-dev`, shared Postgres `keycloak` DB, `KC_JVM_OPTS` cap, healthcheck). |
-| B3 | Realm bootstrap | `infra/keycloak/realm-export.json` — realm `hr-assistant`, client `hr-portal`, roles `HR_ADMIN/EMPLOYEE/CANDIDATE`, test user. Use `--import-realm` for reproducibility. |
-| B4 | Config wiring | `AUTH_PROVIDER=keycloak` path; verify `auth/me` returns `UserContext` with a real token. |
-| B5 | Frontend login flow | Next.js redirect to Keycloak `/auth`, handle callback, store session, route by role. |
-| B6 | Integration smoke test | Login as HR_ADMIN and CANDIDATE test users → correct portal routing. |
-
-### Phase C — Role-aware frontend shell
-
-| # | Task | Details |
-|---|---|---|
-| C1 | Session client | `lib/auth.ts` — `useSession()`, `login()`, `logout()`, role guard. |
-| C2 | Role guard / layout | `app/(manager)/layout.tsx` + `app/(candidate)/layout.tsx` — middleware or layout-level redirect to `/login` or role home when unauthorized. |
-| C3 | Login page | `/login` — role selection landing (employee placeholder), Keycloak redirect in prod mode / stub login in dev. |
+| Area | File(s) |
+|---|---|
+| JWT config | `backend/src/app/config/settings.py` — `JwtSettings` (env prefix `JWT_`): `secret_key`, `algorithm`, `access_token_expire_minutes`, `issuer` |
+| Provider seam | `backend/src/app/auth/provider.py` — `AuthProvider` ABC + `UserContext` |
+| Password hashing | `backend/src/app/auth/passwords.py` — PBKDF2-HMAC-SHA256, constant-time verify |
+| JWT provider | `backend/src/app/auth/jwt.py` — sign/verify HS256 tokens, `verify_credentials`, `login`, `authenticate` (reads role from DB) |
+| Auth routes | `backend/src/app/api/routes/auth.py` — `POST /api/auth/login`, `GET /api/auth/me` |
+| FastAPI wiring | `backend/src/app/api/deps.py` — `get_auth_provider` (jwt-only), `get_current_user`, `require_role` |
+| Model | `backend/src/app/domain/identity.py` — `application_user.password_hash` column |
+| Seed | `backend/src/app/db/seed.py` — demo users `manager@example.com`/`manager123` (HR_ADMIN) and `candidate@example.com`/`candidate123` (CANDIDATE) |
+| Deleted | `auth/clerk.py`, `auth/dev_stub.py`, `auth/keycloak.py`; Clerk webhook; `infra/keycloak/`; Clerk frontend SDK |
+| Frontend | `app/login/page.tsx` (email+password form), `lib/auth.ts` (token store), `lib/api.ts` (`login`/Bearer attach), `components/header.tsx` (client-side sign-out) |
+| Tests | `backend/tests/unit/test_auth.py` (login, token issuance, role enforcement), `conftest.py` test-only `HeaderAuthProvider` → 11 pass |
 
 ---
 
-## 4. Keycloak (dev-mode only) — non-negotiables
+## 4. JWT configuration — non-negotiables
 
-From `hr-project-docs/architecture/keycloak_docker_setup.md`:
+- **`JWT_SECRET_KEY`** must be a long random string (≥32 chars) and differ between
+  dev and prod. The provider refuses to start if it is empty.
+- **`JWT_ACCESS_TOKEN_EXPIRE_MINUTES`** default 60 — keep short; roles are re-read
+  from the DB per request, so nothing is lost by short lifetimes.
+- **Passwords**: PBKDF2-HMAC-SHA256 (600k iterations, random 16-byte salt), stored
+  as `pbkdf2_sha256$<iterations>$<salt>$<hash>`. Never store plaintext.
+- **Login failures**: a single generic 401 for both unknown email and wrong password
+  (no user-enumeration).
+- Seed credentials (dev only): `manager@example.com` / `manager123` (HR_ADMIN),
+  `candidate@example.com` / `candidate123` (CANDIDATE).
 
-- Image `quay.io/keycloak/keycloak:26.0`, command `["start-dev"]`.
-- Reuses shared PostgreSQL (`keycloak` DB) — **not** its own server.
-- Plain HTTP on `:8080` (no HTTPS/clustering/MFA).
-- `KC_JVM_OPTS="-Xms512m -Xmx1g"` to cap memory.
-- Roles: `HR_ADMIN`, `EMPLOYEE`, `CANDIDATE`. Do **not** create
-  `MANAGER`/`RECRUITER` roles.
-
-Failure behavior (AGENTS.md §8): Keycloak down → `401`, never fall back to
-unauthenticated state. The dev-stub is for dev/CI only, not a runtime
-fallback.
+Failure behavior (AGENTS.md §8): unverifiable/expired/missing token → `401`. There
+is **no dev-stub** and no fallback authentication path.
 
 ---
 
 ## 5. Out of scope (this sprint)
 
 - Employee portal (RAG + leave) — placeholder only.
-- MFA, SSO/LDAP, HTTPS, clustering, multi-tenant realms.
-- Fine-grained authorization engine — just the seam + coarse role checks
-  needed by recruitment. Derived manager/recruiter authority lands with the
-  recruitment module (plan-recruitment.md).
+- MFA, SSO/LDAP, token refresh, password reset flows — not needed for the demo.
+- Fine-grained authorization engine — just the seam + coarse role checks needed by
+  recruitment. Derived manager/recruiter authority lands with the recruitment module
+  (plan-recruitment.md).
 
 ---
 
 ## 6. Definition of Done
 
-- [ ] `AuthProvider` seam with dev-stub + Keycloak provider both runnable.
-- [ ] `auth/me|login|logout` endpoints return/accept `UserContext`.
-- [ ] Role checks on recruitment endpoints (403 for wrong role).
-- [ ] Keycloak dev stack boots from `docker compose up -d` with realm import.
-- [ ] Login routes HR_ADMIN → `/manager`, CANDIDATE → `/candidate`.
-- [ ] Unit tests for seam + stub; CI green (lint + tests).
-- [ ] Docs updated; author can explain every line.
+- [x] `AuthProvider` seam; single `JwtAuthProvider`; `get_auth_provider` hard-fails unless `jwt`.
+- [x] `POST /api/auth/login` returns a signed HS256 JWT; `GET /api/auth/me` returns `UserContext`; 401/403 as expected.
+- [x] Passwords hashed (PBKDF2) and never stored in plaintext; constant-time comparison.
+- [x] Roles read from the DB on every request (authoritative), not trusted from the token.
+- [x] Frontend login form + Bearer attach + client-side sign-out; routes by role.
+- [x] Unit tests for hashing, login, token use, and role enforcement; CI green (lint + tests).
+- [x] Docs updated; author can explain every line.

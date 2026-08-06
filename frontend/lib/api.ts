@@ -1,4 +1,5 @@
 import type { Application, ApplicationDetail, Vacancy } from "@/lib/types";
+import { getAuthToken } from "@/lib/auth";
 
 /** Base URL of the FastAPI backend. Overridable at build time via NEXT_PUBLIC_API_BASE_URL. */
 export const API_BASE_URL =
@@ -43,9 +44,10 @@ async function parseError(res: Response): Promise<never> {
 }
 
 /**
- * Shared fetch helper: sends the request to the API base URL with cookies
- * (credentials: "include") and a JSON content type unless the body is a
- * FormData (e.g. file uploads). Throws an ApiError for non-2xx responses.
+ * Shared fetch helper: sends the request to the API base URL with the current
+ * JWT access token attached (Authorization: Bearer) and a JSON content type
+ * unless the body is a FormData (e.g. file uploads). Throws an ApiError for
+ * non-2xx responses.
  *
  * @template T The expected response body type.
  * @param path API path appended to API_BASE_URL (e.g. "/api/vacancies").
@@ -53,9 +55,17 @@ async function parseError(res: Response): Promise<never> {
  * @returns The parsed JSON response body as type T.
  */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getAuthToken();
+  const headers: Record<string, string> = {};
+  if (init?.body instanceof FormData) {
+    // Let the browser set the multipart boundary; still attach auth.
+  } else {
+    headers["Content-Type"] = "application/json";
+  }
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
-    headers: init?.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
+    headers,
     ...init,
   });
   if (!res.ok) await parseError(res);
@@ -64,24 +74,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 /**
  * Client for the FastAPI backend. Each method maps to one REST endpoint and
- * wraps the response via `request` (JSON, cookies included).
+ * wraps the response via `request` (JSON, JWT auth header included).
  */
 export const api = {
   /** GET /api/auth/me — returns the current authenticated user's context. */
   me: () => request<{ user: import("@/lib/types").UserContext }>("/api/auth/me"),
 
-  /**
-   * POST /api/auth/dev-login — dev-only stub login that simulates a user with
-   * the given coarse role. Used by the login page in place of Keycloak.
-   */
-  devLogin: (role: string, email?: string, name?: string) =>
-    request<{ user: import("@/lib/types").UserContext }>("/api/auth/dev-login", {
-      method: "POST",
-      body: JSON.stringify({ role, email, name }),
-    }),
-
-  /** POST /api/auth/logout — ends the current session. */
-  logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
+  /** POST /api/auth/login — exchanges email+password for a JWT access token. */
+  login: (email: string, password: string) =>
+    request<{ access_token: string; token_type: string; user: import("@/lib/types").UserContext }>(
+      "/api/auth/login",
+      { method: "POST", body: JSON.stringify({ email, password }) }
+    ),
 
   /** GET /api/vacancies — lists all vacancies (any role). */
   listVacancies: () => request<Vacancy[]>("/api/vacancies"),

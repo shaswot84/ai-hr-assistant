@@ -39,7 +39,7 @@ ai-hr-assistant/
 
 - **Frontend**: Next.js (React, Tailwind) — Manager + Candidate portals.
 - **Backend**: FastAPI (Python), dependency management via `uv`.
-- **Auth**: swappable `AuthProvider` interface — `dev_stub` (default) or Keycloak (`start-dev`).
+- **Auth**: **self-issued JWT** behind a swappable `AuthProvider` interface. The backend signs short-lived HS256 access tokens after verifying email+password against the `application_user` table (PBKDF2-hashed). No external IdP, cloud dependency, or webhook — works on every localhost clone. Coarse roles (`HR_ADMIN`/`EMPLOYEE`/`CANDIDATE`) are read from the DB on every request and enforced in FastAPI.
 - **Database**: PostgreSQL (+ pgvector); **MinIO** for resumes; **Mailpit** for dev email.
 - **AI scoring**: hosted Ollama API via Model Gateway; deterministic keyword fallback when no key is set.
 - **Jobs**: PostgreSQL-backed transactional outbox + worker.
@@ -66,7 +66,10 @@ Key variables (see `config/settings.py` for defaults):
 | --- | --- | --- |
 | `DATABASE_URL` | `postgresql+psycopg2://hr:hr@localhost:5432/hr_assistant` | app DB |
 | `TEST_DATABASE_URL` | — | pgvector integration tests (skipped if unset) |
-| `AUTH_PROVIDER` | `dev_stub` | `dev_stub` \| `keycloak` |
+| `AUTH_PROVIDER` | `jwt` | `jwt` only (others rejected) |
+| `JWT_SECRET_KEY` | — | HS256 signing secret (set a long random value) |
+| `JWT_ALGORITHM` | `HS256` | signing algorithm |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | token lifetime (short; role re-read from DB per request) |
 | `MINIO_ENDPOINT` | `minio:9000` | S3-compatible resume object store |
 | `OLLAMA_URL` | `http://localhost:11434` | embedding server |
 | `EMBEDDING_MODEL` | `nomic-embed-text` | embedding model (768-dim) |
@@ -90,7 +93,7 @@ alembic downgrade base   # roll back
 make dev          # uvicorn with reload (backend/.venv/bin/uvicorn)
 ```
 
-Or start the full Docker stack (Postgres+pgvector, Keycloak, MinIO, backend,
+Or start the full Docker stack (Postgres+pgvector, Clerk, MinIO, backend,
 worker, Ollama, ...) — see
 [`docker_infrastructure.md`](../inital_docs/architecture/docker_infrastructure.md):
 

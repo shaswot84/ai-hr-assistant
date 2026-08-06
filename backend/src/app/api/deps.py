@@ -2,34 +2,36 @@ from __future__ import annotations
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
 
-from app.auth.dev_stub import DevStubProvider
-from app.auth.keycloak import KeycloakProvider
+from app.auth.jwt import JwtAuthProvider
 from app.auth.provider import AuthProvider
 from app.config.settings import get_settings
 from app.contracts.auth import UserContext
+from app.db.session import get_db
 
 _bearer = HTTPBearer(auto_error=False)
 
 
-def get_auth_provider() -> AuthProvider:
-    """Instantiate the active AuthProvider based on app settings (keycloak or dev stub)."""
+def get_auth_provider(db: Session = Depends(get_db)) -> AuthProvider:
+    """Instantiate the active AuthProvider (self-issued JWT is the only provider)."""
     settings = get_settings()
-    if settings.auth.provider == "keycloak":
-        return KeycloakProvider()
-    return DevStubProvider()
+    if settings.auth.provider != "jwt":
+        raise RuntimeError(f"Unsupported auth provider configured: {settings.auth.provider!r}")
+    return JwtAuthProvider(db=db)
 
 
 def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    provider: AuthProvider = Depends(get_auth_provider),
 ) -> UserContext:
-    """Resolve the authenticated user from the active AuthProvider.
+    """Resolve the authenticated user from the signed JWT.
 
-    The dev stub reads X-Dev-* headers / session cookie; Keycloak reads the
-    Bearer token. Authorization (role checks) happens in the capability layer.
+    The short-lived HS256 JWT is verified against the local secret; the coarse
+    role is re-read from the DB on every request (authoritative). Authorization
+    (role checks) happens in the capability layer, not here.
     """
-    provider = get_auth_provider()
     user = provider.authenticate(request)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")

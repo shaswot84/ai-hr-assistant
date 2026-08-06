@@ -68,29 +68,27 @@ class ModelGatewaySettings(BaseSettings):
 
 
 class AuthSettings(BaseSettings):
-    """Authentication provider selection and shared secrets."""
+    """Authentication provider selection (JWT is the only supported runtime provider)."""
 
-    provider: str = "dev_stub"  # dev_stub | keycloak
-    secret_key: str = "dev-secret-change-me"
+    provider: str = "jwt"  # jwt
 
     model_config = SettingsConfigDict(env_prefix="AUTH_")
 
 
-class KeycloakSettings(BaseSettings):
-    """Keycloak OIDC realm configuration (used only when auth provider is keycloak)."""
+class JwtSettings(BaseSettings):
+    """Self-issued JWT authentication — the single runtime auth provider.
 
-    url: str = "http://localhost:8080"
-    realm: str = "hr-assistant"
-    client_id: str = "hr-portal"
-    client_secret: str = "change-me"
-    redirect_uri: str = "http://localhost:3000/auth/callback"
+    The backend signs short-lived HS256 access tokens after verifying email +
+    password against the `application_user` table. No external IdP is involved,
+    so every localhost/dev clone works identically with no cloud dependency.
+    """
 
-    model_config = SettingsConfigDict(env_prefix="KEYCLOAK_")
+    secret_key: str = ""  # JWT_SECRET_KEY (HS256 signing secret; must be set in prod)
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60  # short-lived; role re-read from DB per request
+    issuer: str = "ai-hr-assistant"
 
-    @property
-    def issuer(self) -> str:
-        """Keycloak OIDC issuer URL, derived from url + realm."""
-        return f"{self.url}/realms/{self.realm}"
+    model_config = SettingsConfigDict(env_prefix="JWT_")
 
 
 class MinioSettings(BaseSettings):
@@ -141,7 +139,7 @@ class AppSettings(BaseSettings):
     reranker: RerankerSettings = RerankerSettings()
     model_gateway: ModelGatewaySettings = ModelGatewaySettings()
     auth: AuthSettings = AuthSettings()
-    keycloak: KeycloakSettings = KeycloakSettings()
+    jwt: JwtSettings = JwtSettings()
     minio: MinioSettings = MinioSettings()
     smtp: SmtpSettings = SmtpSettings()
     chat: ChatSettings = ChatSettings()
