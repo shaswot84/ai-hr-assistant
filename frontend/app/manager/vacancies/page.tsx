@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { PortalGuard } from "@/components/portal-guard";
 import { StatusBadge } from "@/components/status";
 import { Modal } from "@/components/modal";
+import { ListSkeleton } from "@/components/loading";
+import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
 import type { Vacancy } from "@/lib/types";
 
@@ -20,15 +21,7 @@ const emptyForm = {
   closingDate: "",
 };
 
-function VacanciesTable({
-  vacancies,
-  loading,
-  search,
-}: {
-  vacancies: Vacancy[];
-  loading: boolean;
-  search: string;
-}) {
+function VacanciesTable({ vacancies, search }: { vacancies: Vacancy[]; search: string }) {
   const filtered = vacancies.filter(
     (v) =>
       v.title.toLowerCase().includes(search.toLowerCase()) ||
@@ -50,13 +43,7 @@ function VacanciesTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {loading ? (
-              <tr>
-                <td colSpan={6} className="table-td py-8 text-center text-gray-500">
-                  Loading…
-                </td>
-              </tr>
-            ) : filtered.length ? (
+            {filtered.length ? (
               filtered.map((v) => (
                 <tr key={v.vacancy_id} className="transition-colors hover:bg-sky-50">
                   <td className="table-td">
@@ -122,6 +109,7 @@ export default function ManagerVacanciesPage() {
 function ManagerVacanciesContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { addToast } = useToast();
   const [vacancies, setVacancies] = useState<Vacancy[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -166,6 +154,7 @@ function ManagerVacanciesContent() {
         opening_date: form.openingDate || null,
         closing_date: form.closingDate || null,
       });
+      addToast("Vacancy posted successfully.", "success");
       setModalOpen(false);
       refresh();
     } catch (err) {
@@ -176,8 +165,8 @@ function ManagerVacanciesContent() {
   }
 
   return (
-    <PortalGuard allowedRoles={["HR_ADMIN"]}>
-      <div className="animate-fade-in space-y-6">
+    <>
+      <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Vacancies</h1>
@@ -213,7 +202,7 @@ function ManagerVacanciesContent() {
           </div>
         </div>
 
-        <VacanciesTable vacancies={vacancies} loading={loading} search={search} />
+        {loading ? <ListSkeleton rows={5} /> : <VacanciesTable vacancies={vacancies} search={search} />}
       </div>
 
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="Post a Vacancy" size="lg">
@@ -295,6 +284,6 @@ function ManagerVacanciesContent() {
           </div>
         </form>
       </Modal>
-    </PortalGuard>
+    </>
   );
 }

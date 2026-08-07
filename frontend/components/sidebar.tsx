@@ -74,9 +74,29 @@ const NAV: Record<CoarseRole, NavItem[]> = {
   ],
 };
 
+/**
+ * Return the href of the single nav item that best matches `pathname` — the
+ * longest href that is either an exact match or a path prefix. Using
+ * `startsWith` per-item independently would keep a root item like
+ * `/manager` highlighted on every sub-route (`/manager/vacancies`, etc.)
+ * since it's a prefix of all of them; picking the longest match ensures
+ * only the most specific tab lights up.
+ */
+function activeHref(items: NavItem[], pathname: string): string | null {
+  let best: string | null = null;
+  for (const item of items) {
+    const matches = pathname === item.href || pathname.startsWith(`${item.href}/`);
+    if (matches && (best === null || item.href.length > best.length)) {
+      best = item.href;
+    }
+  }
+  return best;
+}
+
 function SidebarContent({ role, onNavigate }: { role: CoarseRole; onNavigate?: () => void }) {
   const pathname = usePathname();
   const items = NAV[role];
+  const active = activeHref(items, pathname);
 
   return (
     <div className="flex h-full flex-col">
@@ -97,8 +117,7 @@ function SidebarContent({ role, onNavigate }: { role: CoarseRole; onNavigate?: (
           Main Menu
         </p>
         {items.map((item) => {
-          const isActive =
-            pathname === item.href || pathname.startsWith(`${item.href}/`);
+          const isActive = item.href === active;
           return (
             <Link
               key={item.href}

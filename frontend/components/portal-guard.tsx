@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type { CoarseRole, UserContext } from "@/lib/types";
 import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
+import { Spinner } from "@/components/loading";
 
 /**
  * Client-side auth guard + page shell (sidebar + top bar) wrapping every
@@ -21,6 +22,7 @@ export function PortalGuard({
   children: React.ReactNode;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [user, setUser] = useState<UserContext | null>(null);
   const [checking, setChecking] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -49,7 +51,7 @@ export function PortalGuard({
   if (checking || !user) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-sky-100">
-        <p className="text-sm text-gray-500">Loading…</p>
+        <Spinner size="lg" />
       </div>
     );
   }
@@ -64,7 +66,9 @@ export function PortalGuard({
       <div className="flex min-w-0 flex-1 flex-col">
         <Header user={user} onMenuClick={() => setMobileNavOpen(true)} />
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
-          <div className="mx-auto max-w-6xl">{children}</div>
+          <div key={pathname} className="animate-fade-in mx-auto max-w-6xl">
+            {children}
+          </div>
         </main>
       </div>
     </div>

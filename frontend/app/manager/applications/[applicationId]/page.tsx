@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { PortalGuard } from "@/components/portal-guard";
 import { StatusBadge } from "@/components/status";
 import { EvaluationDetail } from "@/components/evaluation-detail";
+import { DetailSkeleton } from "@/components/loading";
+import { useToast } from "@/components/toast";
 import { api, ApiError, downloadResume } from "@/lib/api";
 import type { ApplicationDetail as ApplicationDetailType } from "@/lib/types";
 
@@ -15,6 +16,7 @@ function DecisionButtons({
   application: ApplicationDetailType;
   onChange: (a: ApplicationDetailType) => void;
 }) {
+  const { addToast } = useToast();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,6 +26,10 @@ function DecisionButtons({
     try {
       const updated = await api.decide(application.application_id, action);
       onChange({ ...application, ...updated });
+      addToast(
+        action === "approve" ? "Application shortlisted." : "Application rejected.",
+        "success"
+      );
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Failed to record decision.");
     } finally {
@@ -93,59 +99,57 @@ export default function ManagerApplicationDetailPage() {
   }
 
   return (
-    <PortalGuard allowedRoles={["HR_ADMIN"]}>
-      <div className="animate-fade-in space-y-6">
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        {!error && !application && <p className="text-sm text-gray-500">Loading…</p>}
-        {application && (
-          <>
-            <div className="card flex flex-col gap-4 p-6 sm:flex-row sm:items-start sm:justify-between">
-              <div className="flex items-start gap-4">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-lg font-bold text-blue-600">
-                  {(application.candidate_name ?? application.candidate_email ?? "?").charAt(0).toUpperCase()}
-                </div>
-                <div>
-                  <div className="flex items-center gap-3">
-                    <h1 className="text-xl font-bold text-gray-900">
-                      {application.candidate_name ?? application.candidate_email ?? "Candidate"}
-                    </h1>
-                    <StatusBadge status={application.application_status} />
-                  </div>
-                  <p className="mt-1 text-sm text-gray-500">
-                    Applied for {application.vacancy_title ?? "this role"} · {application.candidate_email}
-                  </p>
-                </div>
+    <div className="space-y-6">
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {!error && !application && <DetailSkeleton />}
+      {application && (
+        <>
+          <div className="card flex flex-col gap-4 p-6 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-lg font-bold text-blue-600">
+                {(application.candidate_name ?? application.candidate_email ?? "?").charAt(0).toUpperCase()}
               </div>
-              <button type="button" onClick={handleDownload} disabled={downloading} className="btn-secondary">
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                </svg>
-                {downloading ? "Downloading…" : "Resume"}
-              </button>
-            </div>
-
-            <div className="card p-6">
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
-                Decision
-              </h2>
-              <DecisionButtons application={application} onChange={setApplication} />
-            </div>
-
-            <div>
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
-                AI Resume Review
-              </h2>
-              {application.evaluation ? (
-                <EvaluationDetail evaluation={application.evaluation} />
-              ) : (
-                <div className="card p-8 text-center">
-                  <p className="text-sm text-gray-500">Still evaluating this resume — check back shortly.</p>
+              <div>
+                <div className="flex items-center gap-3">
+                  <h1 className="text-xl font-bold text-gray-900">
+                    {application.candidate_name ?? application.candidate_email ?? "Candidate"}
+                  </h1>
+                  <StatusBadge status={application.application_status} />
                 </div>
-              )}
+                <p className="mt-1 text-sm text-gray-500">
+                  Applied for {application.vacancy_title ?? "this role"} · {application.candidate_email}
+                </p>
+              </div>
             </div>
-          </>
-        )}
-      </div>
-    </PortalGuard>
+            <button type="button" onClick={handleDownload} disabled={downloading} className="btn-secondary">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+              </svg>
+              {downloading ? "Downloading…" : "Resume"}
+            </button>
+          </div>
+
+          <div className="card p-6">
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
+              Decision
+            </h2>
+            <DecisionButtons application={application} onChange={setApplication} />
+          </div>
+
+          <div>
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
+              Resume Screening
+            </h2>
+            {application.evaluation ? (
+              <EvaluationDetail evaluation={application.evaluation} />
+            ) : (
+              <div className="card p-8 text-center">
+                <p className="text-sm text-gray-500">Still screening this resume — check back shortly.</p>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }

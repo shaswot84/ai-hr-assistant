@@ -18,6 +18,101 @@ from app.domain.identity import (
 from app.domain.recruitment import Vacancy
 from app.shared.clock import get_clock
 
+# (title, department, employment_type, description, days_open) — a spread of
+# roles/departments so the candidate portal and AI scoring demo have variety.
+SAMPLE_VACANCIES = [
+    (
+        "Senior Backend Engineer",
+        "Engineering",
+        "FULL_TIME",
+        (
+            "We're hiring a Senior Backend Engineer to design and build scalable APIs. "
+            "Requirements: Python, FastAPI, PostgreSQL, Docker, Kubernetes, AWS, and "
+            "mentoring junior engineers."
+        ),
+        30,
+    ),
+    (
+        "Senior Frontend Engineer",
+        "Engineering",
+        "FULL_TIME",
+        (
+            "We're hiring a Senior Frontend Engineer with 5+ years of experience in React, "
+            "TypeScript, and modern state management (Redux/Zustand). You'll lead frontend "
+            "architecture decisions, mentor junior engineers, own performance optimization "
+            "and accessibility, and collaborate with design and backend teams. Experience "
+            "with Next.js, component design systems, and CI/CD pipelines is required."
+        ),
+        21,
+    ),
+    (
+        "DevOps Engineer",
+        "Engineering",
+        "FULL_TIME",
+        (
+            "Looking for a DevOps Engineer to own our cloud infrastructure. Requirements: "
+            "Kubernetes, Terraform, AWS, CI/CD pipelines (GitHub Actions), Docker, "
+            "observability (Prometheus/Grafana), and on-call incident response experience."
+        ),
+        30,
+    ),
+    (
+        "Product Designer",
+        "Design",
+        "FULL_TIME",
+        (
+            "We're looking for a Product Designer with strong Figma, prototyping, and user "
+            "research skills. Experience with design systems and cross-functional "
+            "collaboration with engineering is a must."
+        ),
+        21,
+    ),
+    (
+        "Data Analyst",
+        "Data",
+        "FULL_TIME",
+        (
+            "Seeking a Data Analyst to turn raw data into decisions. Requirements: SQL, "
+            "Python (pandas), dashboarding (Looker/Tableau/Metabase), A/B test analysis, "
+            "and clear written communication with non-technical stakeholders."
+        ),
+        30,
+    ),
+    (
+        "HR Generalist",
+        "Human Resources",
+        "FULL_TIME",
+        (
+            "Join our People team as an HR Generalist covering recruitment coordination, "
+            "onboarding, employee relations, and policy administration. Requirements: 2+ "
+            "years HR experience, HRIS familiarity, and strong interpersonal skills."
+        ),
+        30,
+    ),
+    (
+        "Marketing Manager",
+        "Marketing",
+        "FULL_TIME",
+        (
+            "We need a Marketing Manager to own campaign strategy across paid, content, and "
+            "lifecycle channels. Requirements: 4+ years B2B/B2C marketing, analytics tools "
+            "(GA4/Mixpanel), budget management, and experience briefing design/content teams."
+        ),
+        21,
+    ),
+    (
+        "Customer Support Specialist",
+        "Operations",
+        "PART_TIME",
+        (
+            "Part-time Customer Support Specialist to handle inbound tickets via email and "
+            "chat. Requirements: excellent written communication, patience, familiarity "
+            "with helpdesk tools (Zendesk/Intercom), and a knack for de-escalating issues."
+        ),
+        14,
+    ),
+]
+
 
 def _get_or_create_department(db, name: str) -> Department:
     """Return the department matching `name`, creating it if it does not yet exist."""
@@ -60,13 +155,16 @@ def _provision_user(
 
     person = db.scalar(select(Person).where(Person.email == email))
     if person is None:
-        person = Person(first_name=first, last_name=last, email=email, created_at=now, updated_at=now)
+        person = Person(
+            first_name=first, last_name=last, email=email, created_at=now, updated_at=now
+        )
         db.add(person)
         db.flush()
 
     app_user = db.scalar(
         select(ApplicationUser).where(
-            ApplicationUser.identity_provider == "local", ApplicationUser.person_id == person.person_id
+            ApplicationUser.identity_provider == "local",
+            ApplicationUser.person_id == person.person_id,
         )
     )
     if app_user is None:
@@ -121,7 +219,6 @@ def seed() -> None:
 
         hr_dept = _get_or_create_department(db, "Human Resources")
         hr_manager_designation = _get_or_create_designation(db, hr_dept, "HR Manager")
-        eng_dept = _get_or_create_department(db, "Engineering")
 
         _provision_user(
             db,
@@ -149,30 +246,32 @@ def seed() -> None:
             .where(Person.email == "manager@example.com")
         )
 
-        # sample vacancy if none exist
-        if db.scalar(select(Vacancy).limit(1)) is None and manager is not None:
-            db.add(
-                Vacancy(
-                    title="Senior Backend Engineer",
-                    department_id=eng_dept.department_id,
-                    description=(
-                        "We're hiring a Senior Backend Engineer to design and build scalable "
-                        "APIs. Requirements: Python, FastAPI, PostgreSQL, Docker, Kubernetes, "
-                        "AWS, and mentoring junior engineers."
-                    ),
-                    employment_type="FULL_TIME",
-                    opening_date=clock.today(),
-                    closing_date=clock.today() + timedelta(days=30),
-                    created_by_employee_id=manager.employee_id,
-                    approval_status="APPROVED",
-                    status="OPEN",
-                    created_at=now,
-                    updated_at=now,
+        # sample vacancies, one per title (idempotent: skip titles that already exist)
+        created = 0
+        if manager is not None:
+            for title, dept_name, employment_type, description, days_open in SAMPLE_VACANCIES:
+                if db.scalar(select(Vacancy).where(Vacancy.title == title)) is not None:
+                    continue
+                dept = _get_or_create_department(db, dept_name)
+                db.add(
+                    Vacancy(
+                        title=title,
+                        department_id=dept.department_id,
+                        description=description,
+                        employment_type=employment_type,
+                        opening_date=clock.today(),
+                        closing_date=clock.today() + timedelta(days=days_open),
+                        created_by_employee_id=manager.employee_id,
+                        approval_status="APPROVED",
+                        status="OPEN",
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
-            )
+                created += 1
 
         db.commit()
-        print("Seed complete: demo manager + candidate + sample vacancy ready.")
+        print(f"Seed complete: demo manager + candidate ready, {created} new vacancy(ies) added.")
     finally:
         db.close()
 

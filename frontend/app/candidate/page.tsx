@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { PortalGuard } from "@/components/portal-guard";
 import { VacancyCard } from "@/components/vacancy-card";
+import { GridSkeleton } from "@/components/loading";
 import { api, ApiError } from "@/lib/api";
 import type { Vacancy } from "@/lib/types";
 
@@ -18,7 +18,7 @@ function VacancyList() {
   }, []);
 
   if (error) return <p className="text-sm text-red-600">{error}</p>;
-  if (vacancies === null) return <p className="text-sm text-gray-500">Loading vacancies…</p>;
+  if (vacancies === null) return <GridSkeleton />;
   if (vacancies.length === 0)
     return (
       <div className="card p-10 text-center">
@@ -37,14 +37,12 @@ function VacancyList() {
 
 export default function CandidateHomePage() {
   return (
-    <PortalGuard allowedRoles={["CANDIDATE"]}>
-      <div className="animate-fade-in space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Open Vacancies</h1>
-          <p className="mt-1 text-sm text-gray-500">Browse open roles and apply with your resume.</p>
-        </div>
-        <VacancyList />
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">Open Vacancies</h1>
+        <p className="mt-1 text-sm text-gray-500">Browse open roles and apply with your resume.</p>
       </div>
-    </PortalGuard>
+      <VacancyList />
+    </div>
   );
 }

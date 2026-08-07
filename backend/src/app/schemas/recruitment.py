@@ -33,59 +33,38 @@ class VacancyOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class FeedbackSection(BaseModel):
-    """A named feedback dimension (clarity/impact/formatting) with a summary + issues."""
+class ScoreFactor(BaseModel):
+    """One dimension the score was based on (e.g. "Skills Match": 85, "reason...")."""
 
-    summary: str = ""
-    issues: list[str] = []
-
-
-class ImprovedBullet(BaseModel):
-    """A before/after resume bullet rewrite produced by the evaluator."""
-
-    original: str
-    improved: str
-    reason: str = ""
+    factor: str
+    score: int = 0
+    note: str = ""
 
 
-class JobMatch(BaseModel):
-    """How well the resume matches the target job.
+class EvaluationDetail(BaseModel):
+    """The structured ATS-style screening result: does this resume match the job, and why.
 
-    Wire format is snake_case like every other field in this API — the LLM's
-    raw camelCase payload (`jobMatch.matchScore`, etc., see
-    `evaluation/scoring.py`) is translated to these field names explicitly in
-    `api.routes.recruitment._to_detail()`, not via a Pydantic alias
-    generator. A `to_camel` alias generator here would make FastAPI's
-    response serialization emit camelCase keys (`matchedKeywords`) on the
-    wire while every other field stays snake_case — an inconsistency the
-    frontend doesn't expect and that crashes rendering.
+    This is a hiring-manager tool, not a resume-writing coach — there is
+    deliberately no resume-quality feedback (clarity/formatting/rewrites)
+    here, only whether and why the candidate matches this specific role.
     """
 
     match_score: int = 0
+    recommendation: str = ""
     summary: str = ""
+    score_factors: list[ScoreFactor] = []
+    strengths: list[str] = []
+    weaknesses: list[str] = []
     matched_keywords: list[str] = []
     missing_keywords: list[str] = []
 
 
-class EvaluationDetail(BaseModel):
-    """The full structured review returned to rich evaluation UIs."""
-
-    overall_score: int = 0
-    score_justification: str = ""
-    clarity: FeedbackSection = FeedbackSection()
-    impact: FeedbackSection = FeedbackSection()
-    formatting: FeedbackSection = FeedbackSection()
-    missing_sections: list[str] = []
-    improved_bullets: list[ImprovedBullet] = []
-    job_match: JobMatch | None = None
-
-
 class EvaluationOut(BaseModel):
-    """API representation of a rich AI resume evaluation.
+    """API representation of an AI screening result (manager-only — never sent to candidates).
 
     ``score``/``overview`` are the compact headline fields; ``detail`` carries
-    the full verbose review (sections, bullets, keyword matches) rendered by the
-    manager and candidate portals.
+    the full structured screening (score factors, strengths/weaknesses,
+    keyword match) rendered on the manager's application review page.
     """
 
     score: int
@@ -96,7 +75,7 @@ class EvaluationOut(BaseModel):
 
 
 class ApplicationOut(BaseModel):
-    """API representation of a job application (with optional evaluation)."""
+    """Manager-facing representation of a job application, with its AI screening result."""
 
     application_id: uuid.UUID
     vacancy_id: uuid.UUID
@@ -112,6 +91,21 @@ class ApplicationDetailOut(ApplicationOut):
 
     candidate_name: str | None = None
     candidate_email: str | None = None
+
+
+class ApplicationStatusOut(BaseModel):
+    """Candidate-facing representation of their own application — status only.
+
+    Deliberately excludes the AI screening result: candidates see whether
+    they were shortlisted, not the scoring/strengths/weaknesses a manager
+    uses to decide.
+    """
+
+    application_id: uuid.UUID
+    vacancy_id: uuid.UUID
+    vacancy_title: str | None = None
+    application_status: str
+    applied_at: datetime
 
 
 class DecisionRequest(BaseModel):

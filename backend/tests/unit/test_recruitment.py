@@ -94,42 +94,24 @@ def test_archive_and_reopen_vacancy(db, manager_context, candidate_context):
     assert reopened.vacancy_id in {v.vacancy_id for v in svc.list_vacancies(candidate_context)}
 
 
-def test_application_detail_serializes_job_match_as_snake_case(
-    db, client, manager_context, candidate_context, candidate_password
-):
-    """Regression test: the LLM's raw evaluation payload uses camelCase keys
-    (`jobMatch.matchedKeywords`), but every other field in this API is
-    snake_case on the wire. A `JobMatch` schema that round-tripped those
-    camelCase keys straight through to the HTTP response (via a Pydantic
-    alias generator) silently broke the frontend, which reads
-    `job_match.matched_keywords` — this crashed the candidate/manager
-    application detail pages with "Cannot read properties of undefined
-    (reading 'map')". Assert the actual JSON body uses snake_case.
-    """
-    svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(
-        candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
-    )
+def _seed_evaluation(db, application_id):
+    """Attach an AI screening result (LLM-shaped raw_payload) to an application."""
     db.add(
         ApplicationEvaluation(
-            application_id=application.application_id,
+            application_id=application_id,
             score=76,
             overview="Strong match.",
             raw_payload={
-                "overallScore": 76,
-                "scoreJustification": "Solid alignment with the role.",
-                "clarity": {"summary": "Clear.", "issues": []},
-                "impact": {"summary": "", "issues": []},
-                "formatting": {"summary": "", "issues": []},
-                "missingSections": [],
-                "improvedBullets": [],
-                "jobMatch": {
-                    "matchScore": 76,
-                    "summary": "Strong match.",
-                    "matchedKeywords": ["python", "fastapi"],
-                    "missingKeywords": ["kubernetes"],
-                },
+                "matchScore": 76,
+                "recommendation": "Good Match",
+                "summary": "Strong match.",
+                "scoreFactors": [
+                    {"factor": "Skills Match", "score": 80, "note": "Has most required skills."},
+                ],
+                "strengths": ["Strong Python background"],
+                "weaknesses": ["No Kubernetes experience mentioned"],
+                "matchedKeywords": ["python", "fastapi"],
+                "missingKeywords": ["kubernetes"],
             },
             model="test-model",
             prompt_version="v1",
@@ -138,21 +120,78 @@ def test_application_detail_serializes_job_match_as_snake_case(
     )
     db.commit()
 
+
+def test_manager_application_detail_serializes_screening_as_snake_case(
+    db, client, manager_context, candidate_context, manager_password
+):
+    """Regression test: the LLM's raw evaluation payload uses camelCase keys
+    (`matchedKeywords`, `scoreFactors`, ...), but every other field in this
+    API is snake_case on the wire. A schema that round-tripped those
+    camelCase keys straight through to the HTTP response (via a Pydantic
+    alias generator) previously broke the frontend, which reads
+    `matched_keywords` — this crashed the application detail pages with
+    "Cannot read properties of undefined (reading 'map')". Assert the
+    manager-facing JSON body uses snake_case throughout.
+    """
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(
+        candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
+    )
+    _seed_evaluation(db, application.application_id)
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": manager_context.email, "password": manager_password},
+    )
+    token = login.json()["access_token"]
+    res = client.get(
+        f"/api/applications/{application.application_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 200
+    detail = res.json()["evaluation"]["detail"]
+    assert detail["matched_keywords"] == ["python", "fastapi"]
+    assert detail["missing_keywords"] == ["kubernetes"]
+    assert detail["match_score"] == 76
+    assert detail["score_factors"][0]["factor"] == "Skills Match"
+    assert "matchedKeywords" not in detail
+
+
+def test_candidate_application_view_excludes_screening_result(
+    db, client, manager_context, candidate_context, candidate_password
+):
+    """Candidates must only ever see their application status, never the AI
+    screening result (score, strengths/weaknesses) a manager uses to decide.
+    """
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(
+        candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
+    )
+    _seed_evaluation(db, application.application_id)
+
     login = client.post(
         "/api/auth/login",
         json={"email": candidate_context.email, "password": candidate_password},
     )
     token = login.json()["access_token"]
-    res = client.get(
+
+    detail_res = client.get(
         f"/api/applications/mine/{application.application_id}",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert res.status_code == 200
-    job_match = res.json()["evaluation"]["detail"]["job_match"]
-    assert job_match["matched_keywords"] == ["python", "fastapi"]
-    assert job_match["missing_keywords"] == ["kubernetes"]
-    assert job_match["match_score"] == 76
-    assert "matchedKeywords" not in job_match
+    assert detail_res.status_code == 200
+    body = detail_res.json()
+    assert body["application_status"] == "APPLIED"
+    assert "evaluation" not in body
+    assert "evaluated" not in body
+
+    list_res = client.get(
+        "/api/applications/mine", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert list_res.status_code == 200
+    assert all("evaluation" not in a for a in list_res.json())
 
 
 def test_create_vacancy_http_requires_hr_admin(client, candidate_context, candidate_password):

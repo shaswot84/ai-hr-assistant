@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { PortalGuard } from "@/components/portal-guard";
 import { StatsCard } from "@/components/stats-card";
 import { StatusBadge } from "@/components/status";
+import { ListSkeleton, StatsSkeleton } from "@/components/loading";
 import { api } from "@/lib/api";
 import type { Vacancy } from "@/lib/types";
 
@@ -34,20 +34,22 @@ export default function ManagerDashboardPage() {
     .slice(0, 5);
 
   return (
-    <PortalGuard allowedRoles={["HR_ADMIN"]}>
-      <div className="animate-fade-in space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">{greeting()} 👋</h1>
-          <p className="mt-1 text-sm text-gray-500">
-            {new Date().toLocaleDateString("en-US", {
-              weekday: "long",
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            })}
-          </p>
-        </div>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">{greeting()} 👋</h1>
+        <p className="mt-1 text-sm text-gray-500">
+          {new Date().toLocaleDateString("en-US", {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          })}
+        </p>
+      </div>
 
+      {loading ? (
+        <StatsSkeleton />
+      ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <StatsCard
             title="Open Vacancies"
@@ -83,7 +85,11 @@ export default function ManagerDashboardPage() {
             }
           />
         </div>
+      )}
 
+      {loading ? (
+        <ListSkeleton rows={3} />
+      ) : (
         <div className="card overflow-hidden">
           <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
             <h2 className="font-semibold text-gray-900">Recent Vacancies</h2>
@@ -102,13 +108,7 @@ export default function ManagerDashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {loading ? (
-                  <tr>
-                    <td colSpan={4} className="table-td py-8 text-center text-gray-500">
-                      Loading…
-                    </td>
-                  </tr>
-                ) : recent.length ? (
+                {recent.length ? (
                   recent.map((v) => (
                     <tr key={v.vacancy_id} className="transition-colors hover:bg-sky-50">
                       <td className="table-td">
@@ -139,34 +139,34 @@ export default function ManagerDashboardPage() {
             </table>
           </div>
         </div>
+      )}
 
-        <div className="card p-6">
-          <h2 className="mb-4 font-semibold text-gray-900">Quick Actions</h2>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Link
-              href="/manager/vacancies?new=1"
-              className="flex flex-col items-center justify-center gap-2 rounded-xl bg-blue-50 p-4 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-100"
-            >
-              <span className="text-2xl">📝</span>
-              Post a Vacancy
-            </Link>
-            <Link
-              href="/manager/vacancies"
-              className="flex flex-col items-center justify-center gap-2 rounded-xl bg-purple-50 p-4 text-sm font-medium text-purple-700 transition-colors hover:bg-purple-100"
-            >
-              <span className="text-2xl">📋</span>
-              Review Applications
-            </Link>
-            <Link
-              href="/manager/settings"
-              className="flex flex-col items-center justify-center gap-2 rounded-xl bg-amber-50 p-4 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-100"
-            >
-              <span className="text-2xl">⚙️</span>
-              AI Settings
-            </Link>
-          </div>
+      <div className="card p-6">
+        <h2 className="mb-4 font-semibold text-gray-900">Quick Actions</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <Link
+            href="/manager/vacancies?new=1"
+            className="flex flex-col items-center justify-center gap-2 rounded-xl bg-blue-50 p-4 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-100"
+          >
+            <span className="text-2xl">📝</span>
+            Post a Vacancy
+          </Link>
+          <Link
+            href="/manager/vacancies"
+            className="flex flex-col items-center justify-center gap-2 rounded-xl bg-purple-50 p-4 text-sm font-medium text-purple-700 transition-colors hover:bg-purple-100"
+          >
+            <span className="text-2xl">📋</span>
+            Review Applications
+          </Link>
+          <Link
+            href="/manager/settings"
+            className="flex flex-col items-center justify-center gap-2 rounded-xl bg-amber-50 p-4 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-100"
+          >
+            <span className="text-2xl">⚙️</span>
+            AI Settings
+          </Link>
         </div>
       </div>
-    </PortalGuard>
+    </div>
   );
 }

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { setAuthToken } from "@/lib/auth";
+import { useToast } from "@/components/toast";
 
 const ROLE_HOME: Record<string, string> = {
   HR_ADMIN: "/manager",
@@ -25,6 +26,7 @@ const DEMOS: Record<string, { email: string; password: string }> = {
 
 export default function LoginPage() {
   const router = useRouter();
+  const { addToast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +44,7 @@ export default function LoginPage() {
     try {
       const res = await api.login(email, password);
       setAuthToken(res.access_token);
+      addToast(`Logged in successfully as ${res.user.display_name}.`, "success");
       router.push(ROLE_HOME[res.user.coarse_role] ?? "/");
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Could not sign in. Is the backend running?");

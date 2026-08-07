@@ -1,6 +1,7 @@
 import type {
   Application,
   ApplicationDetail,
+  ApplicationStatusView,
   UserContext,
   Vacancy,
 } from "@/lib/types";
@@ -89,15 +90,15 @@ export const api = {
   applicationDetail: (applicationId: string) =>
     request<ApplicationDetail>(`/api/applications/${applicationId}`),
 
-  myApplications: () => request<Application[]>("/api/applications/mine"),
+  myApplications: () => request<ApplicationStatusView[]>("/api/applications/mine"),
 
   myApplication: (applicationId: string) =>
-    request<ApplicationDetail>(`/api/applications/mine/${applicationId}`),
+    request<ApplicationStatusView>(`/api/applications/mine/${applicationId}`),
 
   apply: (vacancyId: string, file: File) => {
     const formData = new FormData();
     formData.append("file", file);
-    return request<Application>(`/api/vacancies/${vacancyId}/applications`, {
+    return request<ApplicationStatusView>(`/api/vacancies/${vacancyId}/applications`, {
       method: "POST",
       body: formData,
     });

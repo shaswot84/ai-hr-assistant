@@ -3,12 +3,14 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { PortalGuard } from "@/components/portal-guard";
 import { StatusBadge } from "@/components/status";
+import { DetailSkeleton, ListSkeleton } from "@/components/loading";
+import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
 import type { ApplicationDetail, Vacancy } from "@/lib/types";
 
 function ArchiveButton({ vacancy, onChange }: { vacancy: Vacancy; onChange: (v: Vacancy) => void }) {
+  const { addToast } = useToast();
   const [busy, setBusy] = useState(false);
 
   async function toggle() {
@@ -19,6 +21,10 @@ function ArchiveButton({ vacancy, onChange }: { vacancy: Vacancy; onChange: (v: 
           ? await api.closeVacancy(vacancy.vacancy_id)
           : await api.reopenVacancy(vacancy.vacancy_id);
       onChange(updated);
+      addToast(
+        updated.status === "OPEN" ? "Vacancy reopened." : "Vacancy closed.",
+        "success"
+      );
     } finally {
       setBusy(false);
     }
@@ -43,7 +49,7 @@ function ApplicationsList({ vacancyId }: { vacancyId: string }) {
   }, [vacancyId]);
 
   if (error) return <p className="text-sm text-red-600">{error}</p>;
-  if (applications === null) return <p className="text-sm text-gray-500">Loading applications…</p>;
+  if (applications === null) return <ListSkeleton rows={3} />;
   if (applications.length === 0)
     return (
       <div className="card p-8 text-center">
@@ -66,7 +72,7 @@ function ApplicationsList({ vacancyId }: { vacancyId: string }) {
             <p className="truncate font-medium text-gray-900">{a.candidate_name ?? a.candidate_email}</p>
             <p className="mt-0.5 text-xs text-gray-500">
               Applied {new Date(a.applied_at).toLocaleDateString()}
-              {a.evaluated && a.evaluation ? ` · AI score ${a.evaluation.score}` : " · evaluating…"}
+              {a.evaluated && a.evaluation ? ` · match score ${a.evaluation.score}` : " · screening…"}
             </p>
           </div>
           <StatusBadge status={a.application_status} />
@@ -89,39 +95,37 @@ export default function ManagerVacancyDetailPage() {
   }, [params.vacancyId]);
 
   return (
-    <PortalGuard allowedRoles={["HR_ADMIN"]}>
-      <div className="animate-fade-in space-y-6">
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        {!error && !vacancy && <p className="text-sm text-gray-500">Loading…</p>}
-        {vacancy && (
-          <>
-            <div className="card flex flex-col gap-4 p-6 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <div className="flex items-center gap-3">
-                  <h1 className="text-xl font-bold text-gray-900">{vacancy.title}</h1>
-                  <StatusBadge status={vacancy.status} />
-                </div>
-                <p className="mt-1 text-sm text-gray-500">
-                  {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
-                </p>
-                {vacancy.description && (
-                  <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
-                    {vacancy.description}
-                  </p>
-                )}
-              </div>
-              <ArchiveButton vacancy={vacancy} onChange={setVacancy} />
-            </div>
-
+    <div className="space-y-6">
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {!error && !vacancy && <DetailSkeleton />}
+      {vacancy && (
+        <>
+          <div className="card flex flex-col gap-4 p-6 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
-                Applications
-              </h2>
-              <ApplicationsList vacancyId={vacancy.vacancy_id} />
+              <div className="flex items-center gap-3">
+                <h1 className="text-xl font-bold text-gray-900">{vacancy.title}</h1>
+                <StatusBadge status={vacancy.status} />
+              </div>
+              <p className="mt-1 text-sm text-gray-500">
+                {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
+              </p>
+              {vacancy.description && (
+                <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+                  {vacancy.description}
+                </p>
+              )}
             </div>
-          </>
-        )}
-      </div>
-    </PortalGuard>
+            <ArchiveButton vacancy={vacancy} onChange={setVacancy} />
+          </div>
+
+          <div>
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
+              Applications
+            </h2>
+            <ApplicationsList vacancyId={vacancy.vacancy_id} />
+          </div>
+        </>
+      )}
+    </div>
   );
 }

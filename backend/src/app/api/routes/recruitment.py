@@ -14,12 +14,11 @@ from app.integrations.object_store import ObjectStore
 from app.schemas.recruitment import (
     ApplicationDetailOut,
     ApplicationOut,
+    ApplicationStatusOut,
     DecisionRequest,
     EvaluationDetail,
     EvaluationOut,
-    FeedbackSection,
-    ImprovedBullet,
-    JobMatch,
+    ScoreFactor,
     VacancyCreate,
     VacancyOut,
 )
@@ -31,40 +30,31 @@ ALLOWED_RESUME_TYPES = (".pdf", ".docx")
 
 
 def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
-    """Build a typed EvaluationDetail from a stored raw evaluation payload, or None if absent."""
+    """Build a typed EvaluationDetail from a stored raw evaluation payload, or None if absent.
+
+    The LLM's raw payload uses camelCase keys (`matchScore`, `scoreFactors`,
+    ...); translated explicitly here rather than via a Pydantic alias
+    generator, matching the wire format (snake_case) every other field in
+    this API uses.
+    """
     if not raw_payload:
         return None
-    job_match = raw_payload.get("jobMatch")
     return EvaluationDetail(
-        overall_score=raw_payload.get("overallScore", 0),
-        score_justification=raw_payload.get("scoreJustification", ""),
-        clarity=FeedbackSection(**raw_payload.get("clarity", {})),
-        impact=FeedbackSection(**raw_payload.get("impact", {})),
-        formatting=FeedbackSection(**raw_payload.get("formatting", {})),
-        missing_sections=raw_payload.get("missingSections", []),
-        improved_bullets=[
-            ImprovedBullet(**b)
-            for b in raw_payload.get("improvedBullets", [])
-            if isinstance(b, dict)
+        match_score=raw_payload.get("matchScore", 0),
+        recommendation=raw_payload.get("recommendation", ""),
+        summary=raw_payload.get("summary", ""),
+        score_factors=[
+            ScoreFactor(**f) for f in raw_payload.get("scoreFactors", []) if isinstance(f, dict)
         ],
-        job_match=_to_job_match(job_match),
-    )
-
-
-def _to_job_match(raw: dict | None) -> JobMatch | None:
-    """Translate the LLM's camelCase `jobMatch` payload into the snake_case JobMatch schema."""
-    if not isinstance(raw, dict):
-        return None
-    return JobMatch(
-        match_score=raw.get("matchScore", 0),
-        summary=raw.get("summary", ""),
-        matched_keywords=raw.get("matchedKeywords", []),
-        missing_keywords=raw.get("missingKeywords", []),
+        strengths=raw_payload.get("strengths", []),
+        weaknesses=raw_payload.get("weaknesses", []),
+        matched_keywords=raw_payload.get("matchedKeywords", []),
+        missing_keywords=raw_payload.get("missingKeywords", []),
     )
 
 
 def _to_application_out(application, evaluation=None) -> ApplicationOut:
-    """Build an API response model for an application, attaching the latest evaluation if present."""
+    """Build a manager-facing response model for an application, attaching its AI screening result."""
     return ApplicationOut(
         application_id=application.application_id,
         vacancy_id=application.vacancy_id,
@@ -83,6 +73,17 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
             if evaluation is not None
             else None
         ),
+    )
+
+
+def _to_status_out(application) -> ApplicationStatusOut:
+    """Build a candidate-facing response: status only, no AI screening result."""
+    return ApplicationStatusOut(
+        application_id=application.application_id,
+        vacancy_id=application.vacancy_id,
+        vacancy_title=application.vacancy.title if application.vacancy else None,
+        application_status=application.application_status,
+        applied_at=application.applied_at,
     )
 
 
@@ -227,7 +228,7 @@ def reopen_vacancy(
 
 @router.post(
     "/vacancies/{vacancy_id}/applications",
-    response_model=ApplicationOut,
+    response_model=ApplicationStatusOut,
     status_code=status.HTTP_201_CREATED,
 )
 def apply_to_vacancy(
@@ -263,35 +264,31 @@ def apply_to_vacancy(
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
 
-    return _to_application_out(application)
+    return _to_status_out(application)
 
 
-@router.get("/applications/mine", response_model=list[ApplicationOut])
+@router.get("/applications/mine", response_model=list[ApplicationStatusOut])
 def my_applications(
     user: UserContext = Depends(require_role("CANDIDATE")),
     svc: RecruitmentService = Depends(_svc),
 ):
-    """List the current candidate's applications, each with its latest evaluation."""
+    """List the current candidate's applications — status only, no AI screening result."""
     applications = svc.list_my_applications(user)
-    return [
-        _to_application_out(a, svc.latest_evaluation(a.application_id)) for a in applications
-    ]
+    return [_to_status_out(a) for a in applications]
 
 
-@router.get("/applications/mine/{application_id}", response_model=ApplicationDetailOut)
+@router.get("/applications/mine/{application_id}", response_model=ApplicationStatusOut)
 def my_application(
     application_id: uuid.UUID,
     user: UserContext = Depends(require_role("CANDIDATE")),
     svc: RecruitmentService = Depends(_svc),
 ):
-    """Return one of the current candidate's applications (with evaluation) by id."""
+    """Return one of the current candidate's applications by id — status only."""
     try:
         application = svc.get_my_application(user, application_id)
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
-    evaluation = svc.latest_evaluation(application_id)
-    out = _to_application_out(application, evaluation)
-    return ApplicationDetailOut(**out.model_dump())
+    return _to_status_out(application)
 
 
 @router.get(

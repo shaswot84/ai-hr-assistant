@@ -2,17 +2,19 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { PortalGuard } from "@/components/portal-guard";
 import { StatusBadge } from "@/components/status";
+import { DetailSkeleton } from "@/components/loading";
 import { api, ApiError } from "@/lib/api";
-import type { Application, Vacancy } from "@/lib/types";
+import type { ApplicationStatusView, Vacancy } from "@/lib/types";
+import { useToast } from "@/components/toast";
 
 const ALLOWED_EXTENSIONS = [".pdf", ".docx"];
 const MAX_BYTES = 10 * 1024 * 1024;
 
 function ApplySection({ vacancy }: { vacancy: Vacancy }) {
   const router = useRouter();
-  const [existing, setExisting] = useState<Application | null | undefined>(undefined);
+  const { addToast } = useToast();
+  const [existing, setExisting] = useState<ApplicationStatusView | null | undefined>(undefined);
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -51,6 +53,7 @@ function ApplySection({ vacancy }: { vacancy: Vacancy }) {
     setError(null);
     try {
       await api.apply(vacancy.vacancy_id, file);
+      addToast("Application submitted successfully.", "success");
       router.push("/candidate/applications");
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Failed to submit application.");
@@ -118,30 +121,28 @@ export default function VacancyDetailPage() {
   }, [params.vacancyId]);
 
   return (
-    <PortalGuard allowedRoles={["CANDIDATE"]}>
-      <div className="animate-fade-in space-y-6">
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        {!error && !vacancy && <p className="text-sm text-gray-500">Loading…</p>}
-        {vacancy && (
-          <>
-            <div className="card p-6">
-              <div className="flex items-center gap-3">
-                <h1 className="text-xl font-bold text-gray-900">{vacancy.title}</h1>
-                <StatusBadge status={vacancy.status} />
-              </div>
-              <p className="mt-1 text-sm text-gray-500">
-                {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
-              </p>
-              {vacancy.description && (
-                <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
-                  {vacancy.description}
-                </p>
-              )}
+    <div className="space-y-6">
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {!error && !vacancy && <DetailSkeleton />}
+      {vacancy && (
+        <>
+          <div className="card p-6">
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl font-bold text-gray-900">{vacancy.title}</h1>
+              <StatusBadge status={vacancy.status} />
             </div>
-            <ApplySection vacancy={vacancy} />
-          </>
-        )}
-      </div>
-    </PortalGuard>
+            <p className="mt-1 text-sm text-gray-500">
+              {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
+            </p>
+            {vacancy.description && (
+              <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+                {vacancy.description}
+              </p>
+            )}
+          </div>
+          <ApplySection vacancy={vacancy} />
+        </>
+      )}
+    </div>
   );
 }

@@ -19,33 +19,22 @@ export interface Vacancy {
   created_at: string;
 }
 
-export interface FeedbackSection {
-  summary: string;
-  issues: string[];
+export interface ScoreFactor {
+  factor: string;
+  score: number;
+  note: string;
 }
 
-export interface ImprovedBullet {
-  original: string;
-  improved: string;
-  reason: string;
-}
-
-export interface JobMatch {
+/** ATS-style screening result: does this resume match the job, and why — not a resume review. */
+export interface EvaluationDetail {
   match_score: number;
+  recommendation: string;
   summary: string;
+  score_factors: ScoreFactor[];
+  strengths: string[];
+  weaknesses: string[];
   matched_keywords: string[];
   missing_keywords: string[];
-}
-
-export interface EvaluationDetail {
-  overall_score: number;
-  score_justification: string;
-  clarity: FeedbackSection;
-  impact: FeedbackSection;
-  formatting: FeedbackSection;
-  missing_sections: string[];
-  improved_bullets: ImprovedBullet[];
-  job_match: JobMatch | null;
 }
 
 export interface Evaluation {
@@ -58,6 +47,16 @@ export interface Evaluation {
 
 export type ApplicationStatus = "APPLIED" | "SHORTLISTED" | "REJECTED" | "WITHDRAWN";
 
+/** Candidate-facing view of their own application — status only, no screening result. */
+export interface ApplicationStatusView {
+  application_id: string;
+  vacancy_id: string;
+  vacancy_title: string | null;
+  application_status: ApplicationStatus;
+  applied_at: string;
+}
+
+/** Manager-facing view of an application, including its AI screening result. */
 export interface Application {
   application_id: string;
   vacancy_id: string;
