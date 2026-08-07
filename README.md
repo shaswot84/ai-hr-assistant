@@ -52,7 +52,7 @@ want to run the backend natively. The easiest path is Docker:
 `run.sh` checks Docker, reuses a native Ollama on `:11434` if one is running
 (otherwise it starts the containerized Ollama and pulls `nomic-embed-text`),
 then runs `docker compose up -d --build` and waits until the backend and
-frontend are healthy. Ports/creds come from `.env` (see `.env.example`).
+frontend are healthy. Ports/creds come from `.env` (see `.env.example`)..
 
 Stop everything with `docker compose down` (add `-v` to also wipe data).
 
