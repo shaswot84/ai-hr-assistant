@@ -65,6 +65,51 @@ SAMPLE_VACANCIES = [
         ),
         30,
     ),
+    (
+        "DevOps Engineer",
+        "Engineering",
+        "FULL_TIME",
+        (
+            "Looking for a DevOps Engineer to own our cloud infrastructure. Requirements: "
+            "Kubernetes, Terraform, AWS, CI/CD pipelines (GitHub Actions), Docker, "
+            "observability (Prometheus/Grafana), and on-call incident response experience."
+        ),
+        30,
+    ),
+    (
+        "Marketing Manager",
+        "Marketing",
+        "FULL_TIME",
+        (
+            "We need a Marketing Manager to own campaign strategy across paid, content, and "
+            "lifecycle channels. Requirements: 4+ years B2B/B2C marketing, analytics tools "
+            "(GA4/Mixpanel), budget management, and experience briefing design/content teams."
+        ),
+        21,
+    ),
+    (
+        "Frontend Engineer",
+        "Engineering",
+        "FULL_TIME",
+        (
+            "We're hiring a Frontend Engineer with strong experience in React, TypeScript, "
+            "and modern state management. You'll own UI implementation, performance, and "
+            "accessibility, working closely with design and backend teams. Experience with "
+            "Next.js and component design systems is required."
+        ),
+        21,
+    ),
+    (
+        "Customer Support Specialist",
+        "Operations",
+        "PART_TIME",
+        (
+            "Part-time Customer Support Specialist to handle inbound tickets via email and "
+            "chat. Requirements: excellent written communication, patience, familiarity "
+            "with helpdesk tools (Zendesk/Intercom), and a knack for de-escalating issues."
+        ),
+        14,
+    ),
 ]
 
 
