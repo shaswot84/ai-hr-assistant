@@ -57,7 +57,9 @@ export function Header({
           <button
             type="button"
             onClick={() => setDropdownOpen((o) => !o)}
-            className="flex items-center gap-2 rounded-lg p-1.5 transition-colors hover:bg-sky-100"
+            className={`flex items-center gap-2 rounded-lg p-1.5 transition-colors hover:bg-sky-100 ${
+              dropdownOpen ? "bg-sky-100" : ""
+            }`}
           >
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-semibold text-white">
               {user.display_name.charAt(0).toUpperCase()}
@@ -66,7 +68,14 @@ export function Header({
               <p className="text-sm font-medium leading-tight text-gray-900">{user.display_name}</p>
               <p className="text-xs leading-tight text-gray-500">{ROLE_LABEL[user.coarse_role]}</p>
             </div>
-            <svg className="hidden h-4 w-4 text-gray-400 sm:block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg
+              className={`hidden h-4 w-4 text-gray-400 transition-transform sm:block ${
+                dropdownOpen ? "rotate-180" : ""
+              }`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
           </button>
@@ -74,8 +83,8 @@ export function Header({
           {dropdownOpen && (
             <>
               <div className="fixed inset-0 z-10" onClick={() => setDropdownOpen(false)} />
-              <div className="animate-fade-in absolute right-0 top-full z-20 mt-2 w-48 rounded-xl border border-sky-200 bg-white py-1 shadow-lg">
-                <div className="border-b border-gray-100 px-4 py-2.5">
+              <div className="animate-fade-in absolute right-0 top-full z-20 mt-2 w-48 rounded-2xl border border-sky-200 bg-white py-1.5 shadow-xl">
+                <div className="border-b border-sky-100 px-4 py-2.5">
                   <p className="text-sm font-medium text-gray-900">{user.display_name}</p>
                   <p className="text-xs text-gray-500">{user.email}</p>
                 </div>
