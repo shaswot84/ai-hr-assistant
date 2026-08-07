@@ -10,7 +10,7 @@ __pycache__
 .env.*
 !.env.example
 .env
-
+AGENTS.md
 # Virtual environments
 .venv
 venv/
