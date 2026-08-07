@@ -33,30 +33,6 @@ SAMPLE_VACANCIES = [
         30,
     ),
     (
-        "Senior Frontend Engineer",
-        "Engineering",
-        "FULL_TIME",
-        (
-            "We're hiring a Senior Frontend Engineer with 5+ years of experience in React, "
-            "TypeScript, and modern state management (Redux/Zustand). You'll lead frontend "
-            "architecture decisions, mentor junior engineers, own performance optimization "
-            "and accessibility, and collaborate with design and backend teams. Experience "
-            "with Next.js, component design systems, and CI/CD pipelines is required."
-        ),
-        21,
-    ),
-    (
-        "DevOps Engineer",
-        "Engineering",
-        "FULL_TIME",
-        (
-            "Looking for a DevOps Engineer to own our cloud infrastructure. Requirements: "
-            "Kubernetes, Terraform, AWS, CI/CD pipelines (GitHub Actions), Docker, "
-            "observability (Prometheus/Grafana), and on-call incident response experience."
-        ),
-        30,
-    ),
-    (
         "Product Designer",
         "Design",
         "FULL_TIME",
@@ -88,28 +64,6 @@ SAMPLE_VACANCIES = [
             "years HR experience, HRIS familiarity, and strong interpersonal skills."
         ),
         30,
-    ),
-    (
-        "Marketing Manager",
-        "Marketing",
-        "FULL_TIME",
-        (
-            "We need a Marketing Manager to own campaign strategy across paid, content, and "
-            "lifecycle channels. Requirements: 4+ years B2B/B2C marketing, analytics tools "
-            "(GA4/Mixpanel), budget management, and experience briefing design/content teams."
-        ),
-        21,
-    ),
-    (
-        "Customer Support Specialist",
-        "Operations",
-        "PART_TIME",
-        (
-            "Part-time Customer Support Specialist to handle inbound tickets via email and "
-            "chat. Requirements: excellent written communication, patience, familiarity "
-            "with helpdesk tools (Zendesk/Intercom), and a knack for de-escalating issues."
-        ),
-        14,
     ),
 ]
 
