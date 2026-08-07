@@ -5,7 +5,7 @@ It never touches pgvector/FTS/MinIO directly — it only talks to the
 repository (PostgreSQL) and the Model Gateway (embedding + reranking).
 """
 
-import asyncio
+from dataclasses import replace
 from uuid import UUID
 
 from app.config.settings import RetrievalSettings
@@ -66,23 +66,31 @@ class KnowledgeService:
         2. Run BM25 and vector legs in parallel.
         3. Fuse both ranked lists with RRF.
         4. Rerank the fused candidates.
-        5. Estimate confidence and apply the low-confidence gate.
-        6. Build grounded context + citations.
+        5. Expand matched leaves with their enclosing section context
+           (small-to-big).
+        6. Estimate confidence and apply the low-confidence gate.
+        7. Build grounded context + citations.
         """
         top_k = top_k or self._settings.top_k
-        query_embedding = (await self._embedder.embed([query]))[0]
+        # nomic-embed-text is trained with task prefixes; matching the query
+        # prefix against the document prefix used at ingestion improves
+        # semantic retrieval substantially.
+        query_embedding = (await self._embedder.embed([query], prefix="search_query: "))[0]
 
-        bm25_hits, vector_hits = await asyncio.gather(
-            self._repository.bm25_search(
-                query, top_k, current_only=current_only, category=category, document_type=document_type
-            ),
-            self._repository.vector_search(
-                query_embedding,
-                top_k,
-                current_only=current_only,
-                category=category,
-                document_type=document_type,
-            ),
+        # Run the legs sequentially: the repository is bound to a single
+        # AsyncSession, which SQLAlchemy forbids using concurrently
+        # ("concurrent operations are not permitted"). Both legs share the
+        # already-computed query embedding, so there is nothing left to
+        # parallelize at this layer.
+        bm25_hits = await self._repository.bm25_search(
+            query, top_k, current_only=current_only, category=category, document_type=document_type
+        )
+        vector_hits = await self._repository.vector_search(
+            query_embedding,
+            top_k,
+            current_only=current_only,
+            category=category,
+            document_type=document_type,
         )
 
         # De-duplicate by chunk id so a chunk present in both legs is one row.
@@ -92,13 +100,28 @@ class KnowledgeService:
             [h.key for h in bm25_hits],
             [h.key for h in vector_hits],
             settings=self._settings,
+            weights=[
+                self._settings.bm25_weight,
+                self._settings.vector_weight,
+            ],
         )
 
         fused_chunks = self._to_retrieved_chunks(fused, hits_by_id)
 
-        reranked = await self._rerank(query, fused_chunks)
+        # True semantic signal from the vector leg (cosine similarity), used
+        # as the quality signal when no reranker model is available.
+        vector_scores = {hit.chunk_id: hit.score for hit in vector_hits}
+
+        reranked = await self._rerank(query, fused_chunks, vector_scores)
 
         final = reranked[: self._settings.rerank_top_n]
+
+        # Small-to-big: attach each matched leaf's enclosing section text so
+        # grounding shows the section context the leaf lives in. Reranking and
+        # confidence stay on the precise leaf; expansion only enriches what
+        # the LLM actually sees.
+        final = await self._expand(final)
+
         confidence = self._confidence.estimate(final)
         low_confidence = self._low_confidence.is_low(confidence, len(final))
 
@@ -139,10 +162,40 @@ class KnowledgeService:
             )
         return chunks
 
-    async def _rerank(self, query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
-        """Attach reranker scores and, unless pass-through, reorder by them."""
+    async def _expand(self, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+        """Small-to-big: attach each matched leaf's enclosing section text.
+
+        Retrieval matches leaf rows only; a leaf alone can be too narrow to
+        answer. For every selected chunk we fetch the text of its immediate
+        parent section and carry it on ``parent_context`` so grounding shows
+        the leaf inside its section. Leaves whose parent is the document root
+        get no expansion (the repository skips document rows deliberately).
+        """
         if not chunks:
             return chunks
+        parent_texts = await self._repository.fetch_parent_context(
+            [c.chunk_id for c in chunks]
+        )
+        return [
+            replace(c, parent_context=parent_texts.get(c.chunk_id, "")) for c in chunks
+        ]
+
+    async def _rerank(
+        self,
+        query: str,
+        chunks: list[RetrievedChunk],
+        vector_scores: dict[UUID, float] | None = None,
+    ) -> list[RetrievedChunk]:
+        """Attach reranker scores and, unless pass-through, reorder by them.
+
+        Without a reranker model, the real vector cosine similarity is used
+        as the quality signal (the pass-through's flat 0.5 carries no
+        information, so it would make both ordering and confidence noise).
+        """
+        if not chunks:
+            return chunks
+        if self._reranker.model == "passthrough":
+            return self._score_by_vector_similarity(chunks, vector_scores)
         pairs = [(query, chunk.text) for chunk in chunks]
         scores = await self._reranker.rerank(query, pairs)
 
@@ -164,8 +217,46 @@ class KnowledgeService:
             )
             for c, score in zip(chunks, scores, strict=True)
         ]
+        reranked.sort(key=lambda c: c.reranker_score or 0.0, reverse=True)
+        return reranked
 
-        # Pass-through reranker keeps RRF order; a real model reorders.
-        if self._reranker.model != "passthrough":
-            reranked.sort(key=lambda c: c.reranker_score or 0.0, reverse=True)
+    @staticmethod
+    def _score_by_vector_similarity(
+        chunks: list[RetrievedChunk], vector_scores: dict[UUID, float] | None
+    ) -> list[RetrievedChunk]:
+        """Order by real cosine similarity; BM25-only hits rank below.
+
+        A chunk may appear in the vector leg, the BM25 leg, or both. Cosine
+        similarity is a genuine [0, 1] semantic score, so it ranks the
+        relevant leaves first and gives the confidence estimator a real
+        signal. Lexical-only hits (no embedding distance) fall back to their
+        RRF score so they still sort, but below any semantically matched leaf.
+        """
+        vector_scores = vector_scores or {}
+        reranked = [
+            RetrievedChunk(
+                chunk_id=c.chunk_id,
+                document_id=c.document_id,
+                document_version_id=c.document_version_id,
+                version_number=c.version_number,
+                document_title=c.document_title,
+                category=c.category,
+                page=c.page,
+                section_title=c.section_title,
+                text=c.text,
+                retrieval_score=c.retrieval_score,
+                reranker_score=vector_scores.get(c.chunk_id),
+                confidence=c.confidence,
+                provenance=c.provenance,
+            )
+            for c in chunks
+        ]
+        # Chunks with a cosine score first (higher = better); BM25-only chunks
+        # sort by their RRF score below any scored leaf.
+        reranked.sort(
+            key=lambda c: (
+                c.reranker_score is None,
+                -(c.reranker_score or c.retrieval_score or 0.0),
+            )
+        )
         return reranked

@@ -44,6 +44,20 @@ class FakeRepository:
         self.last_kwargs["vector"] = kwargs
         return self._vector_hits
 
+    async def fetch_parent_context(self, chunk_ids):
+        return {}
+
+
+class FakeRepositoryWithParents(FakeRepository):
+    """Fake repository that returns parent section text for known leaves."""
+
+    def __init__(self, bm25_hits, vector_hits, parent_contexts=None):
+        super().__init__(bm25_hits, vector_hits)
+        self._parent_contexts = parent_contexts or {}
+
+    async def fetch_parent_context(self, chunk_ids):
+        return {cid: text for cid, text in self._parent_contexts.items() if cid in chunk_ids}
+
 
 class FakeEmbedder(Embedder):
     """Deterministic embedder returning a constant vector."""
@@ -52,7 +66,10 @@ class FakeEmbedder(Embedder):
     version = "1"
     dimension = 4
 
-    async def embed(self, texts):
+    async def embed(self, texts, *, prefix=""):
+        # The service must use the nomic query prefix so query embeddings are
+        # in the same space as ingestion-time document embeddings.
+        assert prefix == "search_query: "
         return [[0.0, 1.0, 0.0, 0.0]] * len(texts)
 
 
@@ -110,7 +127,7 @@ async def test_service_low_confidence_gate():
         vector_hits=[],
     )
     service = KnowledgeService(
-        repo, FakeEmbedder(), settings=RetrievalSettings(confidence_threshold=0.9)
+        repo, FakeEmbedder(), settings=RetrievalSettings(confidence_threshold=0.95)
     )
 
     result = await service.retrieve("nothing relevant")
@@ -135,6 +152,27 @@ async def test_service_forwards_metadata_filters():
     assert repo.last_kwargs["bm25"]["document_type"] == "policy"
     assert repo.last_kwargs["bm25"]["current_only"] is False
     assert repo.last_kwargs["vector"]["category"] == DocumentCategory.POLICY
+
+
+@pytest.mark.asyncio
+async def test_service_expands_leaf_with_parent_section():
+    """Small-to-big: matched leaves carry their enclosing section text."""
+    hit = make_hit("a", "Sign the contract, then receive equipment.")
+    repo = FakeRepositoryWithParents(
+        bm25_hits=[hit],
+        vector_hits=[],
+        parent_contexts={hit.chunk_id: "Hybrid Work Procedure: onboarding steps."},
+    )
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    result = await service.retrieve("what happens after signing the contract")
+
+    assert result.chunks[0].parent_context == "Hybrid Work Procedure: onboarding steps."
+    # The grounded context shows the leaf inside its section.
+    assert "Section: Annual Leave\nHybrid Work Procedure: onboarding steps." in (
+        result.grounded_context
+    )
+    assert "Sign the contract, then receive equipment." in result.grounded_context
 
 
 @pytest.mark.asyncio

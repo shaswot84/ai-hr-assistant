@@ -15,9 +15,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class DatabaseSettings(BaseSettings):
-    """Connection to PostgreSQL."""
+    """Connection to PostgreSQL (asyncpg driver).
 
-    url: str = "postgresql+psycopg2://hr:hr@localhost:5432/hr_assistant"
+    The sync recruitment/auth engine (db/sync_session.py) derives its own
+    +psycopg2 URL from this one at import time — see `_sync_url()` there.
+    """
+
+    url: str = "postgresql+asyncpg://hr:hr@localhost:5432/hr_assistant"
     echo: bool = False
 
     model_config = SettingsConfigDict(env_prefix="DATABASE_")
@@ -38,12 +42,14 @@ class EmbeddingSettings(BaseSettings):
 class RetrievalSettings(BaseSettings):
     """Query-time knobs for the hybrid retrieval pipeline."""
 
-    top_k: int = 20  # candidates fetched per retrieval leg (BM25 / vector)
-    rerank_top_n: int = 5  # chunks kept after reranking
-    bm25_weight: float = 1.0
-    vector_weight: float = 1.0
+    top_k: int = 30  # candidates fetched per retrieval leg (BM25 / vector)
+    rerank_top_n: int = 15  # chunks kept after reranking
+    bm25_weight: float = 1.0  # RRF weight for the lexical (BM25) leg
+    vector_weight: float = 1.0  # RRF weight for the semantic (vector) leg
     rrf_k: int = 60  # smoothing constant for Reciprocal Rank Fusion
-    confidence_threshold: float = 0.5
+    # bge-reranker scores are sigmoid-compressed; real hits cluster ~0.55-0.65
+    # and weak matches ~0.5. Confidence is peak-anchored (see confidence.py).
+    confidence_threshold: float = 0.55
     min_sources: int = 1
     model_config = SettingsConfigDict(env_prefix="RETRIEVAL_")
 
@@ -92,13 +98,13 @@ class JwtSettings(BaseSettings):
 
 
 class MinioSettings(BaseSettings):
-    """S3-compatible object store (MinIO in dev). Authoritative bytes for resumes."""
+    """S3-compatible object storage for authoritative HR documents (resumes + ingestion uploads)."""
 
-    endpoint: str = "minio:9000"
+    endpoint: str = "localhost:9000"
     access_key: str = "minioadmin"
     secret_key: str = "minioadmin"
+    bucket: str = "hr-documents"
     secure: bool = False
-    bucket: str = "hr-assets"
     auto_init: bool = True  # ensure bucket exists on startup (disable in tests)
 
     model_config = SettingsConfigDict(env_prefix="MINIO_")
@@ -127,6 +133,58 @@ class ChatSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OLLAMA_CHAT_")
 
 
+class IngestionSettings(BaseSettings):
+    """Ingestion pipeline knobs (worker + upload orchestration)."""
+
+    poll_interval_seconds: float = 5.0
+    max_file_size_bytes: int = 100 * 1024 * 1024
+    max_pages: int = 500
+    chunk_max_tokens: int = 500
+    chunk_overlap_tokens: int = 50
+    embed_batch_size: int = 32
+    # Worker claims at most this many PENDING jobs per loop pass.
+    max_jobs_per_pass: int = 8
+
+    model_config = SettingsConfigDict(env_prefix="INGESTION_")
+
+
+class OutputSafetySettings(BaseSettings):
+    """Configuration for the Output Safety layer (final response guards).
+
+    The deterministic guards (evidence, citations, PII, sensitive topics) run
+    always when enabled; the LLM-as-judge verifier is optional.
+    """
+
+    enabled: bool = True
+    require_citation: bool = True
+    redact_pii: bool = True
+    redaction_token: str = "[REDACTED]"
+    judge_enabled: bool = False
+    judge_model: str = "llama3.2"
+    judge_timeout_seconds: float = 30.0
+    sensitive_topics: list[str] = [
+        "LEGAL_ADVICE",
+        "TERMINATION_RECOMMENDATION",
+        "COMPENSATION_DECISION",
+    ]
+
+    model_config = SettingsConfigDict(env_prefix="OUTPUT_SAFETY_")
+
+
+class CorsSettings(BaseSettings):
+    """CORS origins allowed to call the API from the browser.
+
+    The Next.js frontend runs on a different origin (``localhost:3000``) and
+    calls the API directly, so the API must send CORS headers. Comma-separated
+    list; ``*`` (default) allows any origin — fine for local dev, since no
+    cookies/credentials are used.
+    """
+
+    allow_origins: str = "*"
+
+    model_config = SettingsConfigDict(env_prefix="CORS_")
+
+
 class AppSettings(BaseSettings):
     """Top-level settings: aggregates all groups and global flags."""
 
@@ -143,6 +201,9 @@ class AppSettings(BaseSettings):
     minio: MinioSettings = MinioSettings()
     smtp: SmtpSettings = SmtpSettings()
     chat: ChatSettings = ChatSettings()
+    ingestion: IngestionSettings = IngestionSettings()
+    output_safety: OutputSafetySettings = OutputSafetySettings()
+    cors: CorsSettings = CorsSettings()
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

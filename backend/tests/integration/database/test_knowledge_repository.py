@@ -194,3 +194,92 @@ async def test_repository_excludes_non_indexed(db_session):
 
     assert bm25 == []
     assert vector == []
+
+
+@pytest.mark.asyncio
+async def test_repository_expands_leaf_to_parent_section(db_session):
+    """fetch_parent_context returns the enclosing section, never the doc row."""
+    from app.knowledge.repository import HybridRetrievalRepository
+
+    doc = Document(
+        title="Hybrid Work Policy",
+        document_type="policy",
+        category=DocumentCategory.POLICY,
+        status="INDEXED",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+
+    version = DocumentVersion(
+        document_id=doc.document_id,
+        version_number=1,
+        object_key="documents/hybrid-work.pdf",
+        original_filename="hybrid-work.pdf",
+        mime_type="application/pdf",
+        file_size=1000,
+        checksum="leafctx",
+        is_current=True,
+        status="INDEXED",
+    )
+    db_session.add(version)
+    await db_session.flush()
+
+    job = IngestionJob(
+        document_version_id=version.document_version_id,
+        status=IngestionStatus.INDEXED,
+        embedding_model="nomic-embed-text",
+        chunking_strategy="hierarchical_small_to_big_v1",
+    )
+    db_session.add(job)
+    await db_session.flush()
+
+    # Document root row: whole-document context, never expanded into.
+    doc_row = DocumentChunk(
+        document_version_id=version.document_version_id,
+        chunk_index=0,
+        chunk_level="document",
+        content="<whole document text>",
+        processed_content="whole document text",
+        embeddable=False,
+    )
+    db_session.add(doc_row)
+    await db_session.flush()
+
+    # Section row: the enclosing context a leaf expands into.
+    section_row = DocumentChunk(
+        document_version_id=version.document_version_id,
+        chunk_index=1,
+        chunk_level="section",
+        parent_chunk_id=doc_row.chunk_id,
+        content="Hybrid Work Procedure: sign the contract, receive equipment.",
+        processed_content="hybrid work procedure sign contract receive equipment",
+        section_title="Hybrid Work Procedure",
+        embeddable=False,
+    )
+    db_session.add(section_row)
+    await db_session.flush()
+
+    leaf_row = DocumentChunk(
+        document_version_id=version.document_version_id,
+        chunk_index=2,
+        chunk_level="leaf",
+        parent_chunk_id=section_row.chunk_id,
+        content="Sign the contract, then receive equipment.",
+        processed_content="sign the contract then receive equipment",
+        section_title="Hybrid Work Procedure",
+        embeddable=True,
+        embedding=make_embedding(1.0),
+    )
+    db_session.add(leaf_row)
+    await db_session.flush()
+
+    repo = HybridRetrievalRepository(db_session)
+
+    # Leaf expands to its enclosing section text.
+    expanded = await repo.fetch_parent_context([leaf_row.chunk_id])
+    assert expanded == {leaf_row.chunk_id: section_row.content}
+
+    # The section's own parent is the document root -> no expansion (the
+    # whole-document text is never fed to the LLM).
+    assert await repo.fetch_parent_context([section_row.chunk_id]) == {}
+    assert await repo.fetch_parent_context([]) == {}

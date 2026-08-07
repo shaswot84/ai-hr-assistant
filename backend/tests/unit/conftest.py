@@ -25,6 +25,7 @@ os.environ["JWT_SECRET_KEY"] = "test-only-secret-key"
 os.environ["MINIO_AUTO_INIT"] = "false"
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.auth.passwords import hash_password
@@ -40,8 +41,29 @@ from app.domain.identity import (
     Employee,
     Person,
 )
-from app.main import app as fastapi_app
 from app.shared.clock import get_clock
+
+
+# A purpose-built app with only the routers this suite exercises — not the
+# real `app.main:app`. That app also wires up `app.api.knowledge`, which
+# imports `db/session.py`'s *async* engine at module load time; that engine
+# reads the same DATABASE_URL as the sync engine above, and a sqlite:// URL
+# (fine for the sync engine) isn't a valid async driver, so importing the
+# full app here would crash collection. Knowledge/RAG has its own test suite
+# with its own (Postgres-backed) fixtures — out of scope for this one.
+def _build_test_app() -> FastAPI:
+    from app.api.routes import auth as auth_router
+    from app.api.routes import recruitment as recruitment_router
+    from app.api.routes import settings as settings_router
+
+    app = FastAPI()
+    app.include_router(auth_router.router)
+    app.include_router(recruitment_router.router)
+    app.include_router(settings_router.router)
+    return app
+
+
+fastapi_app = _build_test_app()
 
 
 @pytest.fixture(scope="session", autouse=True)

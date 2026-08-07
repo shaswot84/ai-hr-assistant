@@ -10,7 +10,7 @@ from app.capabilities.recruitment import PermissionError_, RecruitmentService
 from app.contracts.auth import UserContext
 from app.db.sync_session import get_db
 from app.domain.identity import Department, Person
-from app.integrations.object_store import ObjectStore
+from app.integrations.object_store import SyncS3ObjectStore
 from app.schemas.recruitment import (
     ApplicationDetailOut,
     ApplicationOut,
@@ -268,7 +268,7 @@ def apply_to_vacancy(
 
     # upload to MinIO FIRST; only then create the application row
     try:
-        object_key = ObjectStore().put_resume(data, filename, file.content_type or "")
+        object_key = SyncS3ObjectStore().put_resume(data, filename, file.content_type or "")
     except Exception as err:
         raise HTTPException(status_code=500, detail="Failed to store resume.") from err
 
@@ -360,7 +360,7 @@ def download_resume(
     if not application.cv_object_key:
         raise HTTPException(status_code=404, detail="No resume on file.")
     try:
-        data, content_type = ObjectStore().get_object(application.cv_object_key)
+        data, content_type = SyncS3ObjectStore().get_object(application.cv_object_key)
     except FileNotFoundError as err:
         raise HTTPException(status_code=404, detail="Resume object missing from storage.") from err
     filename = application.cv_object_key.rsplit("/", 1)[-1]

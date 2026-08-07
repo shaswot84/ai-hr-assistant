@@ -14,15 +14,19 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
+    DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -83,7 +87,7 @@ class Document(Base):
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
-    deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # References application_user.user_id; FK added once identity tables exist.
     created_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
@@ -133,9 +137,27 @@ class DocumentVersion(Base):
         back_populates="document_version", cascade="all, delete-orphan"
     )
 
+    __table_args__ = (
+        # Dedup backstop: at most one INDEXED version per content checksum.
+        # The same bytes re-uploaded (any document) are skipped, not re-indexed.
+        Index(
+            "uq_version_checksum_indexed",
+            "checksum",
+            unique=True,
+            postgresql_where=text("status = 'INDEXED'"),
+        ),
+    )
+
 
 class DocumentChunk(Base):
-    """A retrievable text unit of a version, with its embedding."""
+    """A node in the hierarchical chunk tree of a version.
+
+    Small-to-big tree: one ``document`` row -> ``section`` rows (per heading)
+    -> ``leaf`` rows (budget-split, the only embedded + BM25-indexed rows).
+    Context (``document``/``section``) rows carry ``embedding = NULL`` and
+    ``embeddable = 0``; retrieval expands a matched leaf to its ancestors via
+    ``parent_chunk_id`` / ``ancestors``.
+    """
 
     __tablename__ = "document_chunk"
 
@@ -144,6 +166,16 @@ class DocumentChunk(Base):
         ForeignKey("document_version.document_version_id"), nullable=False, index=True
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Tree node kind: ``document`` | ``section`` | ``leaf``.
+    chunk_level: Mapped[str] = mapped_column(String(20), nullable=False, default="leaf")
+    # Parent node's chunk_id (NULL at the document root).
+    parent_chunk_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("document_chunk.chunk_id"), nullable=True
+    )
+    # Ordered parent chunk_id chain, root-most last (JSON array of UUIDs).
+    ancestors: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 1 for leaf rows (embedded + FTS-indexed); 0 for context rows.
+    embeddable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # Raw extracted text as written in the source document.
     content: Mapped[str] = mapped_column(Text, nullable=False)
     # Normalized text actually used for FTS indexing and embedding.
@@ -153,6 +185,8 @@ class DocumentChunk(Base):
     overlap_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     section_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Full heading path, e.g. "Leave Policy > Annual Leave".
+    section_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # pgvector column: float vector sized to the embedding model's dimension.
     embedding: Mapped[list[float] | None] = mapped_column(Vector(_EMBEDDING_DIM), nullable=True)
@@ -163,6 +197,8 @@ class DocumentChunk(Base):
     __table_args__ = (
         # No duplicate or re-ordered chunks within a version.
         UniqueConstraint("document_version_id", "chunk_index"),
+        # Fast context expansion: parent of a matched leaf.
+        Index("ix_document_chunk_parent", "document_version_id", "parent_chunk_id"),
     )
 
 
@@ -190,8 +226,8 @@ class IngestionJob(Base):
     embedding_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
     embedding_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
     pipeline_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 

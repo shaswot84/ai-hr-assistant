@@ -15,7 +15,7 @@ from app.domain.recruitment import Application, ApplicationEvaluation, Vacancy
 from app.evaluation.scoring import score_resume
 from app.integrations.email import EmailProvider
 from app.integrations.email.smtp import SmtpEmailProvider
-from app.integrations.object_store import ObjectStore
+from app.integrations.object_store import SyncS3ObjectStore
 from app.knowledge.resume_extraction import extract_text
 from app.repositories.outbox import OutboxRepo
 from app.repositories.settings import SettingRepo
@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message
 POLL_INTERVAL_SECONDS = 2.0
 
 
-async def process_job(db: Session, job: OutboxJob, object_store: ObjectStore, email: EmailProvider) -> None:
+async def process_job(db: Session, job: OutboxJob, object_store: SyncS3ObjectStore, email: EmailProvider) -> None:
     """Dispatch an outbox job to its handler based on job type."""
     if job.job_type == "EVALUATE_APPLICATION":
         await _evaluate_application(db, job, object_store)
@@ -41,7 +41,7 @@ async def process_job(db: Session, job: OutboxJob, object_store: ObjectStore, em
         raise RuntimeError(f"Unknown job type: {job.job_type}")
 
 
-async def _evaluate_application(db: Session, job: OutboxJob, object_store: ObjectStore) -> None:
+async def _evaluate_application(db: Session, job: OutboxJob, object_store: SyncS3ObjectStore) -> None:
     """Extract resume text, score it against the vacancy, and persist an evaluation row."""
     application_id = uuid.UUID(str(job.payload["application_id"]))
     object_key = str(job.payload["cv_object_key"])
@@ -118,7 +118,7 @@ def _send_email(db: Session, job: OutboxJob, email: EmailProvider) -> None:
 async def worker_loop() -> None:
     """Poll the outbox continuously, claiming and processing one job at a time."""
     init_db()
-    object_store = ObjectStore()
+    object_store = SyncS3ObjectStore()
     object_store.ensure_bucket()
     email: EmailProvider = SmtpEmailProvider()
 

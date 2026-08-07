@@ -52,5 +52,10 @@ class SentenceTransformerReranker(Reranker):
             return []
         model = await asyncio.to_thread(self._load)
         inputs = [[query, document] for _, document in pairs]
-        logits = await asyncio.to_thread(model.predict, inputs)
+        # CrossEncoder.predict applies sigmoid by default for single-label
+        # models; request the raw logits (identity activation) so we apply
+        # sigmoid exactly once here instead of twice.
+        logits = await asyncio.to_thread(
+            model.predict, inputs, activation_fn=lambda x: x
+        )
         return [sigmoid(float(score)) for score in logits]

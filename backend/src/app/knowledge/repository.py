@@ -10,7 +10,7 @@ every hit.
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.knowledge.contracts import IngestionProvenance
@@ -100,7 +100,12 @@ class HybridRetrievalRepository:
         category: DocumentCategory | None = None,
         document_type: str | None = None,
     ) -> list[RetrievalHit]:
-        """Lexical leg: PostgreSQL Full-Text Search (BM25 via ``ts_rank``)."""
+        """Lexical leg: PostgreSQL Full-Text Search (BM25 via ``ts_rank``).
+
+        Only embeddable (leaf) rows are searched: document/section context rows
+        are not indexed for retrieval, so a whole page that merely mentions a
+        phrase cannot crowd out the focused leaf that states it.
+        """
         sql = text(
             _SELECT_COLS
             + f""", ts_rank(to_tsvector('english', c.processed_content),
@@ -108,6 +113,8 @@ class HybridRetrievalRepository:
             {_JOINS}
             WHERE j.status = 'INDEXED'
               AND v.status = 'INDEXED'
+              AND d.deleted_at IS NULL
+              AND c.embeddable = TRUE
               AND to_tsvector('english', c.processed_content)
                   @@ plainto_tsquery('english', :query)
               AND (:current_only = FALSE OR v.is_current = TRUE)
@@ -143,6 +150,7 @@ class HybridRetrievalRepository:
             {_JOINS}
             WHERE j.status = 'INDEXED'
               AND v.status = 'INDEXED'
+              AND d.deleted_at IS NULL
               AND c.embedding IS NOT NULL
               AND (:current_only = FALSE OR v.is_current = TRUE)
               {self._filter_clause(category, document_type)}
@@ -156,6 +164,32 @@ class HybridRetrievalRepository:
         }
         self._add_filter_params(params, category, document_type)
         return await self._fetch(sql, params)
+
+    async def fetch_parent_context(self, chunk_ids: list[UUID]) -> dict[UUID, str]:
+        """Small-to-big expansion: enclosing section text for matched leaves.
+
+        Retrieval legs match leaf rows only; the answer needs the section the
+        leaf lives in. For each leaf chunk id this returns the text of its
+        immediate parent node, restricted to section rows — the document root
+        row (whole-document text) is deliberately excluded so the LLM context
+        stays focused instead of receiving the entire document per leaf.
+        Leaves whose parent is the document root (preamble) simply get no
+        expansion; their ``document_title`` metadata already anchors them.
+        """
+        if not chunk_ids:
+            return {}
+        sql = text(
+            """
+            SELECT c.chunk_id AS leaf_id, p.content
+            FROM document_chunk c
+            JOIN document_chunk p ON p.chunk_id = c.parent_chunk_id
+            WHERE c.chunk_id IN :chunk_ids
+              AND c.embeddable = TRUE
+              AND p.chunk_level = 'section'
+            """
+        ).bindparams(bindparam("chunk_ids", expanding=True))
+        result = await self._session.execute(sql, {"chunk_ids": chunk_ids})
+        return {row["leaf_id"]: row["content"] for row in result.mappings()}
 
     async def _fetch(self, sql: object, params: dict) -> list[RetrievalHit]:
         """Execute a leg's SQL and map rows to ``RetrievalHit`` objects."""

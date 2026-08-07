@@ -38,3 +38,22 @@ def test_rrf_from_settings():
     settings = RetrievalSettings(rrf_k=10)
     result = dict(reciprocal_rank_fusion(["a"], ["a"], settings=settings))
     assert result["a"] == 2 / 11
+
+
+def test_rrf_defaults_to_unity_weights():
+    result = dict(reciprocal_rank_fusion(["a", "b"], ["b"]))
+    assert result["a"] == pytest.approx(1 / 61)
+    assert result["b"] == pytest.approx(1 / 62 + 1 / 61)
+    assert result["b"] > result["a"]
+
+
+def test_rrf_weights_rebalance_legs():
+    """A heavier leg (e.g. vector_weight > 1) can outrank an equal-wins tie."""
+    result = dict(reciprocal_rank_fusion(["a", "b"], ["b"], weights=[1.0, 3.0]))
+    assert result["b"] > result["a"]
+
+
+def test_rrf_weights_from_settings():
+    settings = RetrievalSettings(bm25_weight=2.0, vector_weight=1.0, rrf_k=10)
+    result = dict(reciprocal_rank_fusion(["a"], ["a"], settings=settings))
+    assert result["a"] == pytest.approx(3 / 11)

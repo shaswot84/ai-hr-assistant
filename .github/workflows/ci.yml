@@ -5,10 +5,35 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      # pgvector image: provides the `vector` extension the integration
+      # tests need (they provision their own schema via drop_all/create_all).
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: hr_assistant
+          POSTGRES_USER: hr
+          POSTGRES_PASSWORD: hr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hr -d hr_assistant"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Enables the pgvector integration tests (repository + ingestion flow).
+      TEST_DATABASE_URL: postgresql+asyncpg://hr:hr@localhost:5432/hr_assistant
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e backend/
-      - run: pytest backend/tests
+      - name: Install
+        run: pip install -e "backend/[dev]"
+      - name: Lint
+        working-directory: backend
+        run: ruff check src tests
+      - name: Test
+        working-directory: backend
+        run: pytest tests
