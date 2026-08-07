@@ -29,7 +29,12 @@ async def process_job(db: Session, job: OutboxJob, object_store: ObjectStore, em
     """Dispatch an outbox job to its handler based on job type."""
     if job.job_type == "EVALUATE_APPLICATION":
         await _evaluate_application(db, job, object_store)
-    elif job.job_type in {"SEND_INTERVIEW_INVITATION", "SEND_APPLICATION_REJECTED"}:
+    elif job.job_type in {
+        "SEND_INTERVIEW_INVITATION",
+        "SEND_APPLICATION_REJECTED",
+        "SEND_APPLICATION_RECEIVED",
+        "SEND_NEW_APPLICATION_ALERT",
+    }:
         _send_email(db, job, email)
     else:
         raise RuntimeError(f"Unknown job type: {job.job_type}")

@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
+from app.domain.outbox import OutboxJob
 from app.domain.recruitment import ApplicationEvaluation
 
 
@@ -43,6 +45,23 @@ def test_candidate_can_apply_once_then_second_apply_fails(db, manager_context, c
 
     with pytest.raises(ValueError, match="already applied"):
         svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/b.pdf")
+
+
+def test_apply_enqueues_candidate_confirmation_and_manager_alert(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+
+    jobs = db.scalars(
+        select(OutboxJob).where(OutboxJob.aggregate_id == application.application_id)
+    ).all()
+    by_type = {j.job_type: j for j in jobs}
+
+    assert "SEND_APPLICATION_RECEIVED" in by_type
+    assert by_type["SEND_APPLICATION_RECEIVED"].payload["to_email"] == candidate_context.email
+
+    assert "SEND_NEW_APPLICATION_ALERT" in by_type
+    assert by_type["SEND_NEW_APPLICATION_ALERT"].payload["to_email"] == manager_context.email
 
 
 def test_apply_requires_open_vacancy(db, manager_context, candidate_context):

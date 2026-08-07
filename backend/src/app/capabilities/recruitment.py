@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.contracts.auth import UserContext
-from app.domain.identity import Department, Person
+from app.domain.identity import Department, Employee, Person
 from app.domain.recruitment import Application, ApplicationEvaluation, Vacancy
 from app.repositories.audit import AuditRepo
 from app.repositories.outbox import OutboxRepo
@@ -178,13 +178,43 @@ class RecruitmentService:
             updated_at=now,
         )
         self._applications.create(application)
-        # same-transaction outbox: AI evaluation
+        # same-transaction outbox: AI evaluation + confirmation emails
         self._outbox.enqueue(
             "EVALUATE_APPLICATION",
             {"application_id": str(application.application_id), "cv_object_key": cv_object_key},
             aggregate_type="application",
             aggregate_id=application.application_id,
         )
+        self._outbox.enqueue(
+            "SEND_APPLICATION_RECEIVED",
+            {
+                "application_id": str(application.application_id),
+                "to_email": self._candidate_email(application),
+                "subject": f"Application received: {vacancy.title}",
+                "body": (
+                    f"Thanks for applying to {vacancy.title}. We've received your resume and "
+                    "will notify you once it's been reviewed."
+                ),
+            },
+            aggregate_type="application",
+            aggregate_id=application.application_id,
+        )
+        manager_email = self._manager_email(vacancy)
+        if manager_email:
+            self._outbox.enqueue(
+                "SEND_NEW_APPLICATION_ALERT",
+                {
+                    "application_id": str(application.application_id),
+                    "to_email": manager_email,
+                    "subject": f"New application: {vacancy.title}",
+                    "body": (
+                        f"A new candidate applied to {vacancy.title}. Review the application "
+                        "in the manager portal."
+                    ),
+                },
+                aggregate_type="application",
+                aggregate_id=application.application_id,
+            )
         self._audit.record(
             actor_user_id=self._actor_user_id(actor),
             action="APPLICATION_CREATED",
@@ -312,6 +342,14 @@ class RecruitmentService:
         if candidate is None:
             return ""
         person = self._db.get(Person, candidate.person_id)
+        return person.email if person else ""
+
+    def _manager_email(self, vacancy: Vacancy) -> str:
+        """Resolve the email of the manager who posted a vacancy (its notification recipient)."""
+        employee = self._db.get(Employee, vacancy.created_by_employee_id)
+        if employee is None:
+            return ""
+        person = self._db.get(Person, employee.person_id)
         return person.email if person else ""
 
     def _build_email_payload(
