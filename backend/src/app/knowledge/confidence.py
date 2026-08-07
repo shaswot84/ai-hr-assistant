@@ -9,9 +9,14 @@ from app.knowledge.contracts import RetrievedChunk
 class ConfidenceEstimator:
     """Estimates retrieval confidence from reranker scores.
 
-    Confidence is the mean reranker score over the top-N reranked chunks.
+    Cross-encoder scores are sigmoid-compressed and cluster near 0.5 even
+    for weak matches, so the mean over the top-N barely discriminates
+    (junk and real hits both land ~0.5). Confidence is anchored to the
+    best hit instead: ``0.75 * peak + 0.25 * runner_up``. The peak carries
+    the real signal and the runner-up adds a small corroboration term, so
+    one strong match reads clearly above neutral while ties stay near 0.5.
     When reranking is disabled (no reranker scores), confidence falls back
-    to the mean normalized RRF score.
+    to the same peak-anchored formula over retrieval (RRF) scores.
     """
 
     def __init__(self, settings: RetrievalSettings | None = None) -> None:
@@ -22,10 +27,14 @@ class ConfidenceEstimator:
             return 0.0
 
         reranker_scores = [c.reranker_score for c in chunks if c.reranker_score is not None]
-        if reranker_scores:
-            return sum(reranker_scores) / len(reranker_scores)
+        scores = reranker_scores or [c.retrieval_score for c in chunks]
+        if not scores:
+            return 0.0
 
-        return sum(c.retrieval_score for c in chunks) / len(chunks)
+        ordered = sorted(scores, reverse=True)
+        peak = ordered[0]
+        runner_up = ordered[1] if len(ordered) > 1 else peak
+        return 0.75 * peak + 0.25 * runner_up
 
 
 class LowConfidenceDetector:

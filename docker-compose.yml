@@ -1,9 +1,130 @@
+# Core stack for the AI HR Assistant MVP (ingestion pipeline).
+#
+# Keycloak / Mailpit / Redis are intentionally NOT included (not required
+# yet). Ollama (local embeddings) is opt-in behind the `local-models` profile
+# because it pulls ~2.5 GB of model weights; by default the backend/worker
+# reuse an Ollama already running on the host via host.docker.internal.
+#
+#   docker compose up -d --build                # postgres + minio + backend + worker + frontend
+#   docker compose --profile local-models up -d # + ollama in Docker
+#   ollama pull nomic-embed-text                # first run (native or docker compose exec ollama ...)
+#
+# Host ports are overridable via .env (see .env.example). The defaults avoid
+# clashing with other local services: postgres=5433, minio=9100/9101, backend=8000, frontend=3000.
+
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: hr_assistant
+      POSTGRES_USER: hr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hr}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hr -d hr_assistant"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9100}:9000"   # S3 API (backend/worker use http://minio:9000)
+      - "${MINIO_CONSOLE_PORT:-9101}:9001"   # admin console (browser only)
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   backend:
     build: ./backend
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://hr:${POSTGRES_PASSWORD:-hr}@postgres:5432/hr_assistant
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: hr-documents
+      MINIO_SECURE: "false"
+      OLLAMA_URL: http://host.docker.internal:11434
+      INGESTION_POLL_INTERVAL_SECONDS: "5"
+      # In-process cross-encoder reranker (BAAI/bge-reranker-base). The model
+      # weights download from HuggingFace on first search into the HF cache
+      # volume below, so the download survives container recreates.
+      RERANKER_ENABLED: "true"
+      RERANKER_MODEL: BAAI/bge-reranker-base
+      # Retrieval funnel: fetch 30 candidates per leg, rerank 5, gate at 0.55.
+      RETRIEVAL_TOP_K: "30"
+      RETRIEVAL_RERANK_TOP_N: "5"
+      RETRIEVAL_CONFIDENCE_THRESHOLD: "0.55"
     volumes:
-      - ./backend/src:/app/src
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    ports:
+      - "${BACKEND_HOST_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.jobs.ingestion_worker"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://hr:${POSTGRES_PASSWORD:-hr}@postgres:5432/hr_assistant
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: hr-documents
+      MINIO_SECURE: "false"
+      OLLAMA_URL: http://host.docker.internal:11434
+      INGESTION_POLL_INTERVAL_SECONDS: "5"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Browser-visible vars use localhost (the browser is on the host) and
+        # are inlined at build time, so they are passed as build args.
+        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
+    ports:
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
+    depends_on:
+      - backend
+
+  # Optional: local embedding model (nomic-embed-text, 768-dim, ~2.5 GB).
+  # Enable with: docker compose --profile local-models up -d
+  ollama:
+    image: ollama/ollama
+    profiles: ["local-models"]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollamadata:/root/.ollama
+
+volumes:
+  pgdata:
+  miniodata:
+  ollamadata:

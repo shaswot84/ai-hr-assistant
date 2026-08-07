@@ -20,8 +20,11 @@ async def test_rerank_uses_cross_encoder_and_returns_scores(monkeypatch):
     reranker = SentenceTransformerReranker("fake/reranker", device="cpu")
 
     class FakeCrossEncoder:
-        def predict(self, inputs):
+        def predict(self, inputs, activation_fn=None):
             assert inputs == [["q", "doc1"], ["q", "doc2"]]
+            # Raw logits must be requested so the app's sigmoid is the only
+            # activation applied (avoiding the double-sigmoid bug).
+            assert activation_fn is not None
             return [2.0, -1.0]
 
     # Replace the lazy loader so no real model/torch is needed.
