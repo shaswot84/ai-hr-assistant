@@ -54,6 +54,11 @@ class RetrievedChunk:
     page: int | None = None
     section_title: str | None = None
     text: str = ""
+    # Enclosing section text fetched for small-to-big expansion: retrieval
+    # matches leaf rows, and this carries the section the leaf lives in so
+    # grounding can show both. Empty when the leaf has no section parent
+    # (preamble directly under the document row) or expansion is off.
+    parent_context: str = ""
     retrieval_score: float = 0.0
     reranker_score: float | None = None
     confidence: float = 0.0
