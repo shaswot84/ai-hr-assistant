@@ -8,6 +8,7 @@ import type { Vacancy } from "@/lib/types";
 
 function VacancyList() {
   const [vacancies, setVacancies] = useState<Vacancy[] | null>(null);
+  const [appliedVacancyIds, setAppliedVacancyIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -15,6 +16,10 @@ function VacancyList() {
       .listVacancies()
       .then(setVacancies)
       .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load vacancies."));
+    api
+      .myApplications()
+      .then((apps) => setAppliedVacancyIds(new Set(apps.map((a) => a.vacancy_id))))
+      .catch(() => setAppliedVacancyIds(new Set()));
   }, []);
 
   if (error) return <p className="text-sm text-red-600">{error}</p>;
@@ -29,7 +34,12 @@ function VacancyList() {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       {vacancies.map((v) => (
-        <VacancyCard key={v.vacancy_id} vacancy={v} href={`/candidate/vacancies/${v.vacancy_id}`} />
+        <VacancyCard
+          key={v.vacancy_id}
+          vacancy={v}
+          href={`/candidate/vacancies/${v.vacancy_id}`}
+          applied={appliedVacancyIds.has(v.vacancy_id)}
+        />
       ))}
     </div>
   );

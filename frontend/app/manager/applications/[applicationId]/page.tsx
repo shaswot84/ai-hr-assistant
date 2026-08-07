@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { StatusBadge } from "@/components/status";
 import { EvaluationDetail } from "@/components/evaluation-detail";
 import { DetailSkeleton } from "@/components/loading";
+import { Modal } from "@/components/modal";
 import { useToast } from "@/components/toast";
 import { api, ApiError, downloadResume } from "@/lib/api";
 import type { ApplicationDetail as ApplicationDetailType } from "@/lib/types";
@@ -19,6 +20,7 @@ function DecisionButtons({
   const { addToast } = useToast();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<"approve" | "reject" | null>(null);
 
   async function decide(action: "approve" | "reject") {
     setBusy(true);
@@ -30,6 +32,7 @@ function DecisionButtons({
         action === "approve" ? "Application shortlisted." : "Application rejected.",
         "success"
       );
+      setPendingAction(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Failed to record decision.");
     } finally {
@@ -52,7 +55,7 @@ function DecisionButtons({
         <button
           type="button"
           disabled={busy}
-          onClick={() => decide("approve")}
+          onClick={() => setPendingAction("approve")}
           className="btn-primary bg-green-600 hover:bg-green-700"
         >
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -60,7 +63,7 @@ function DecisionButtons({
           </svg>
           Shortlist
         </button>
-        <button type="button" disabled={busy} onClick={() => decide("reject")} className="btn-secondary">
+        <button type="button" disabled={busy} onClick={() => setPendingAction("reject")} className="btn-secondary">
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
@@ -68,6 +71,41 @@ function DecisionButtons({
         </button>
       </div>
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+
+      <Modal
+        isOpen={pendingAction !== null}
+        onClose={() => setPendingAction(null)}
+        title={pendingAction === "approve" ? "Shortlist this application?" : "Reject this application?"}
+        size="sm"
+      >
+        <p className="text-sm text-gray-600">
+          {pendingAction === "approve"
+            ? "The candidate will be emailed that they've been shortlisted. This decision can't be changed afterwards."
+            : "The candidate will be emailed that their application wasn't selected. This decision can't be changed afterwards."}
+        </p>
+        <div className="mt-6 flex justify-end gap-3">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setPendingAction(null)}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className={
+              pendingAction === "approve"
+                ? "btn-primary bg-green-600 hover:bg-green-700"
+                : "btn-primary bg-red-600 hover:bg-red-700"
+            }
+            disabled={busy}
+            onClick={() => pendingAction && decide(pendingAction)}
+          >
+            {busy ? "Saving…" : pendingAction === "approve" ? "Shortlist" : "Reject"}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -3,7 +3,15 @@ import type { Vacancy } from "@/lib/types";
 import { StatusBadge } from "@/components/status";
 
 /** A clickable summary card for one vacancy, linking into its detail page. */
-export function VacancyCard({ vacancy, href }: { vacancy: Vacancy; href: string }) {
+export function VacancyCard({
+  vacancy,
+  href,
+  applied = false,
+}: {
+  vacancy: Vacancy;
+  href: string;
+  applied?: boolean;
+}) {
   return (
     <Link href={href} className="card block p-5 transition-shadow duration-200 hover:shadow-md">
       <div className="flex items-start gap-3">
@@ -13,7 +21,10 @@ export function VacancyCard({ vacancy, href }: { vacancy: Vacancy; href: string 
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <p className="truncate font-semibold text-gray-900">{vacancy.title}</p>
-            <StatusBadge status={vacancy.status} />
+            <div className="flex shrink-0 gap-1.5">
+              {applied && <StatusBadge status="APPLIED" />}
+              <StatusBadge status={vacancy.status} />
+            </div>
           </div>
           <p className="text-sm text-gray-500">
             {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
