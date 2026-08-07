@@ -57,7 +57,7 @@ function PromptSettings() {
   if (loading) return <DetailSkeleton />;
 
   return (
-    <div className="card max-w-2xl p-6">
+    <div className="card flex h-full flex-col p-6">
       <div className="mb-3 flex items-center justify-between">
         <span className="text-sm font-semibold text-gray-900">Resume-Screening System Prompt</span>
         <span className={`badge ${isDefault ? "bg-gray-100 text-gray-600" : "bg-blue-100 text-blue-700"}`}>
@@ -67,8 +67,8 @@ function PromptSettings() {
       <textarea
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
-        rows={10}
-        className="input"
+        rows={14}
+        className="input flex-1"
       />
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
       <div className="mt-4 flex gap-3">
@@ -147,7 +147,7 @@ function LlmConnectionSettings() {
   if (loading) return <DetailSkeleton />;
 
   return (
-    <div className="card max-w-2xl p-6">
+    <div className="card flex h-full flex-col p-6">
       <div className="mb-3 flex items-center justify-between">
         <span className="text-sm font-semibold text-gray-900">LLM Provider Connection</span>
         <span className={`badge ${isDefault ? "bg-gray-100 text-gray-600" : "bg-blue-100 text-blue-700"}`}>
@@ -155,7 +155,7 @@ function LlmConnectionSettings() {
         </span>
       </div>
 
-      <div className="space-y-4">
+      <div className="flex-1 space-y-4">
         <div>
           <label className="label">API Route</label>
           <input
@@ -221,8 +221,10 @@ export default function ManagerSettingsPage() {
         </p>
       </div>
 
-      <LlmConnectionSettings />
-      <PromptSettings />
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <LlmConnectionSettings />
+        <PromptSettings />
+      </div>
     </div>
   );
 }
