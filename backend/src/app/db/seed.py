@@ -219,6 +219,8 @@ def seed() -> None:
 
         hr_dept = _get_or_create_department(db, "Human Resources")
         hr_manager_designation = _get_or_create_designation(db, hr_dept, "HR Manager")
+        eng_dept = _get_or_create_department(db, "Engineering")
+        eng_designation = _get_or_create_designation(db, eng_dept, "Software Engineer")
 
         _provision_user(
             db,
@@ -230,6 +232,17 @@ def seed() -> None:
             department=hr_dept,
             designation=hr_manager_designation,
             employee_code="EMP-MGR-001",
+        )
+        _provision_user(
+            db,
+            email="employee@example.com",
+            first="Sam",
+            last="Employee",
+            password="employee123",
+            role="EMPLOYEE",
+            department=eng_dept,
+            designation=eng_designation,
+            employee_code="EMP-STAFF-001",
         )
         _provision_user(
             db,
@@ -271,7 +284,10 @@ def seed() -> None:
                 created += 1
 
         db.commit()
-        print(f"Seed complete: demo manager + candidate ready, {created} new vacancy(ies) added.")
+        print(
+            f"Seed complete: demo manager + employee + candidate ready, "
+            f"{created} new vacancy(ies) added."
+        )
     finally:
         db.close()
 

@@ -212,6 +212,12 @@ class RecruitmentService:
             raise ValueError("Application not found.")
         return application
 
+    def list_all_applications(self, actor: UserContext) -> list[Application]:
+        """List every application across all vacancies (HR_ADMIN only)."""
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can review applications.")
+        return self._applications.list_all()
+
     def list_vacancy_applications(self, actor: UserContext, vacancy_id: uuid.UUID) -> list[Application]:
         """List all applications for a vacancy (HR_ADMIN only)."""
         if actor.coarse_role != "HR_ADMIN":

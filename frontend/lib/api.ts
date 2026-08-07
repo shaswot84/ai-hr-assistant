@@ -84,6 +84,8 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  allApplications: () => request<ApplicationDetail[]>("/api/applications"),
+
   vacancyApplications: (vacancyId: string) =>
     request<ApplicationDetail[]>(`/api/vacancies/${vacancyId}/applications`),
 

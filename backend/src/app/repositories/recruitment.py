@@ -89,6 +89,15 @@ class ApplicationRepo:
         )
         return self._db.scalar(stmt)
 
+    def list_all(self) -> list[Application]:
+        """List every application across all vacancies, most recently applied first."""
+        stmt = (
+            select(Application)
+            .where(Application.deleted_at.is_(None))
+            .order_by(Application.applied_at.desc())
+        )
+        return list(self._db.scalars(stmt))
+
     def list_for_vacancy(self, vacancy_id: uuid.UUID) -> list[Application]:
         """List applications for a vacancy, most recently applied first."""
         stmt = (

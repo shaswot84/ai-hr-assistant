@@ -25,6 +25,15 @@ export interface ScoreFactor {
   note: string;
 }
 
+/** Identity/contact info the AI extracted directly from the resume text (best-effort). */
+export interface CandidateProfile {
+  name: string;
+  email: string;
+  phone: string;
+  location: string;
+  headline: string;
+}
+
 /** ATS-style screening result: does this resume match the job, and why — not a resume review. */
 export interface EvaluationDetail {
   match_score: number;
@@ -35,6 +44,7 @@ export interface EvaluationDetail {
   weaknesses: string[];
   matched_keywords: string[];
   missing_keywords: string[];
+  candidate_profile: CandidateProfile | null;
 }
 
 export interface Evaluation {

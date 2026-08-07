@@ -33,7 +33,7 @@ export function Header({
       ? "/manager"
       : user.coarse_role === "CANDIDATE"
         ? "/candidate"
-        : "/employee";
+        : "/employee/chatbot";
 
   return (
     <header className="z-30 flex h-16 shrink-0 items-center justify-between border-b border-sky-200 bg-white px-4 sm:px-6">

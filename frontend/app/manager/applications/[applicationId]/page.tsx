@@ -72,6 +72,70 @@ function DecisionButtons({
   );
 }
 
+function CandidateProfileCard({ application }: { application: ApplicationDetailType }) {
+  const profile = application.evaluation?.detail?.candidate_profile;
+  const hasProfile =
+    profile && (profile.name || profile.email || profile.phone || profile.location || profile.headline);
+
+  return (
+    <div className="card p-6">
+      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
+        Candidate Profile
+      </h2>
+      {hasProfile ? (
+        <div className="space-y-3">
+          {profile.headline && <p className="text-sm font-medium text-gray-900">{profile.headline}</p>}
+          <div className="grid gap-3 sm:grid-cols-2">
+            {profile.name && (
+              <div className="flex items-center gap-2 text-sm text-gray-700">
+                <svg className="h-4 w-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                {profile.name}
+              </div>
+            )}
+            {profile.email && (
+              <div className="flex items-center gap-2 text-sm text-gray-700">
+                <svg className="h-4 w-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <span className="break-all">{profile.email}</span>
+                {application.candidate_email && profile.email.toLowerCase() !== application.candidate_email.toLowerCase() && (
+                  <span className="badge bg-amber-100 text-amber-700">differs from account</span>
+                )}
+              </div>
+            )}
+            {profile.phone && (
+              <div className="flex items-center gap-2 text-sm text-gray-700">
+                <svg className="h-4 w-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                </svg>
+                {profile.phone}
+              </div>
+            )}
+            {profile.location && (
+              <div className="flex items-center gap-2 text-sm text-gray-700">
+                <svg className="h-4 w-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a2 2 0 01-2.828 0l-4.243-4.243a8 8 0 1111.314 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                {profile.location}
+              </div>
+            )}
+          </div>
+          <p className="text-xs text-gray-400">Extracted from the resume by AI — cross-check before contacting.</p>
+        </div>
+      ) : (
+        <p className="text-sm text-gray-500">
+          {application.evaluation
+            ? "The AI screening didn't find contact details on the resume."
+            : "Available once the resume screening finishes."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function ManagerApplicationDetailPage() {
   const params = useParams<{ applicationId: string }>();
   const [application, setApplication] = useState<ApplicationDetailType | null>(null);
@@ -128,6 +192,8 @@ export default function ManagerApplicationDetailPage() {
               {downloading ? "Downloading…" : "Resume"}
             </button>
           </div>
+
+          <CandidateProfileCard application={application} />
 
           <div className="card p-6">
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">

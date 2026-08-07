@@ -49,11 +49,19 @@ Return a single JSON object with exactly this shape:
   "strengths": string[],                // 2-4 concrete reasons this candidate fits (pros)
   "weaknesses": string[],               // 2-4 concrete gaps vs the job requirements (cons); empty if none
   "matchedKeywords": string[],          // job requirements evidenced in the resume
-  "missingKeywords": string[]           // important job requirements absent from the resume
+  "missingKeywords": string[],          // important job requirements absent from the resume
+  "candidateProfile": {{                // identity/contact info read directly off the resume
+    "name": string,                     // candidate's full name as written on the resume
+    "email": string,                    // contact email found on the resume; "" if none
+    "phone": string,                    // contact phone number found on the resume; "" if none
+    "location": string,                 // city/region found on the resume; "" if none
+    "headline": string                  // short role/seniority summary, e.g. "Senior Backend Engineer, 7 yrs"
+  }}
 }}
 Rules:
 - Ground every claim in the resume text. Do not fabricate skills or experience.
 - "weaknesses" must be specific gaps against THIS job's requirements, not generic writing critiques.
+- "candidateProfile" fields must be copied verbatim from the resume text, never invented; use "" for anything not present.
 - Output raw JSON only."""
 
 
@@ -125,6 +133,18 @@ def _score_factors(value: Any) -> list[dict[str, Any]]:
     return result
 
 
+def _candidate_profile(value: Any) -> dict[str, str]:
+    """Normalize the candidateProfile object into {name, email, phone, location, headline}."""
+    obj = value if isinstance(value, dict) else {}
+    return {
+        "name": _str(obj.get("name")),
+        "email": _str(obj.get("email")),
+        "phone": _str(obj.get("phone")),
+        "location": _str(obj.get("location")),
+        "headline": _str(obj.get("headline")),
+    }
+
+
 def _normalize_review(data: dict[str, Any]) -> dict[str, Any]:
     """Coerce a raw model payload into a well-typed, defensively-parsed screening object.
 
@@ -143,6 +163,7 @@ def _normalize_review(data: dict[str, Any]) -> dict[str, Any]:
         "weaknesses": _str_list(data.get("weaknesses")),
         "matchedKeywords": _str_list(data.get("matchedKeywords")),
         "missingKeywords": _str_list(data.get("missingKeywords")),
+        "candidateProfile": _candidate_profile(data.get("candidateProfile")),
     }
 
 
@@ -200,6 +221,39 @@ async def _score_with_llm(
     )
 
 
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+_PHONE_RE = re.compile(r"(?:\+?\d[\d .()-]{8,}\d)")
+
+
+def _extract_contact_profile(resume_text: str) -> dict[str, str]:
+    """Best-effort regex extraction of contact info for the non-LLM fallback path.
+
+    No LLM available here, so this only pulls what's mechanically findable
+    (email, phone, a guessed name from the first line) — far cruder than the
+    LLM path, but keeps the candidate profile section populated when the
+    deterministic scorer is in use.
+    """
+    email_match = _EMAIL_RE.search(resume_text)
+    phone_match = _PHONE_RE.search(resume_text)
+
+    name = ""
+    for line in resume_text.splitlines():
+        candidate = line.strip()
+        if 2 <= len(candidate) <= 60 and not _EMAIL_RE.search(candidate) and not any(
+            ch.isdigit() for ch in candidate
+        ):
+            name = candidate
+            break
+
+    return {
+        "name": name,
+        "email": email_match.group(0) if email_match else "",
+        "phone": phone_match.group(0).strip() if phone_match else "",
+        "location": "",
+        "headline": "",
+    }
+
+
 def _score_deterministic(
     resume_text: str,
     job_title: str,
@@ -214,6 +268,7 @@ def _score_deterministic(
     """
     resume_lower = resume_text.lower()
     job_lower = job_description.lower() if job_description else job_title.lower()
+    candidate_profile = _extract_contact_profile(resume_text)
 
     keywords = _extract_keywords(job_lower)
     if not keywords:
@@ -232,6 +287,7 @@ def _score_deterministic(
             "weaknesses": [],
             "matchedKeywords": [],
             "missingKeywords": [],
+            "candidateProfile": candidate_profile,
         }
         return ScoreResult(
             score=50,
@@ -264,6 +320,7 @@ def _score_deterministic(
         "weaknesses": [],
         "matchedKeywords": matched,
         "missingKeywords": missing,
+        "candidateProfile": candidate_profile,
     }
 
     return ScoreResult(

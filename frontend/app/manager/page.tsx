@@ -152,7 +152,7 @@ export default function ManagerDashboardPage() {
             Post a Vacancy
           </Link>
           <Link
-            href="/manager/vacancies"
+            href="/manager/applications"
             className="flex flex-col items-center justify-center gap-2 rounded-xl bg-purple-50 p-4 text-sm font-medium text-purple-700 transition-colors hover:bg-purple-100"
           >
             <span className="text-2xl">📋</span>

@@ -15,6 +15,7 @@ from app.schemas.recruitment import (
     ApplicationDetailOut,
     ApplicationOut,
     ApplicationStatusOut,
+    CandidateProfile,
     DecisionRequest,
     EvaluationDetail,
     EvaluationOut,
@@ -39,6 +40,7 @@ def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
     """
     if not raw_payload:
         return None
+    profile = raw_payload.get("candidateProfile")
     return EvaluationDetail(
         match_score=raw_payload.get("matchScore", 0),
         recommendation=raw_payload.get("recommendation", ""),
@@ -50,6 +52,7 @@ def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
         weaknesses=raw_payload.get("weaknesses", []),
         matched_keywords=raw_payload.get("matchedKeywords", []),
         missing_keywords=raw_payload.get("missingKeywords", []),
+        candidate_profile=CandidateProfile(**profile) if isinstance(profile, dict) else None,
     )
 
 
@@ -73,6 +76,18 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
             if evaluation is not None
             else None
         ),
+    )
+
+
+def _to_application_detail_out(svc: RecruitmentService, application) -> ApplicationDetailOut:
+    """Build a manager-facing detail response: application + evaluation + candidate contact info."""
+    evaluation = svc.latest_evaluation(application.application_id)
+    out = _to_application_out(application, evaluation)
+    candidate = svc._identity.get_candidate_for_application(application)
+    return ApplicationDetailOut(
+        **out.model_dump(),
+        candidate_name=_candidate_display(svc, candidate),
+        candidate_email=_candidate_email(svc, candidate),
     )
 
 
@@ -291,6 +306,16 @@ def my_application(
     return _to_status_out(application)
 
 
+@router.get("/applications", response_model=list[ApplicationDetailOut])
+def all_applications(
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: RecruitmentService = Depends(_svc),
+):
+    """List every application across all vacancies, including candidate details (manager-only)."""
+    applications = svc.list_all_applications(user)
+    return [_to_application_detail_out(svc, a) for a in applications]
+
+
 @router.get(
     "/vacancies/{vacancy_id}/applications", response_model=list[ApplicationDetailOut]
 )
@@ -304,19 +329,7 @@ def vacancy_applications(
         applications = svc.list_vacancy_applications(user, vacancy_id)
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
-    result: list[ApplicationDetailOut] = []
-    for a in applications:
-        evaluation = svc.latest_evaluation(a.application_id)
-        out = _to_application_out(a, evaluation)
-        candidate = svc._identity.get_candidate_for_application(a)
-        result.append(
-            ApplicationDetailOut(
-                **out.model_dump(),
-                candidate_name=_candidate_display(svc, candidate),
-                candidate_email=_candidate_email(svc, candidate),
-            )
-        )
-    return result
+    return [_to_application_detail_out(svc, a) for a in applications]
 
 
 @router.get("/applications/{application_id}", response_model=ApplicationDetailOut)
@@ -330,14 +343,7 @@ def application_detail(
         application = svc.get_application_for_review(user, application_id)
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
-    evaluation = svc.latest_evaluation(application_id)
-    out = _to_application_out(application, evaluation)
-    candidate = svc._identity.get_candidate_for_application(application)
-    return ApplicationDetailOut(
-        **out.model_dump(),
-        candidate_name=_candidate_display(svc, candidate),
-        candidate_email=_candidate_email(svc, candidate),
-    )
+    return _to_application_detail_out(svc, application)
 
 
 @router.get("/applications/{application_id}/resume")

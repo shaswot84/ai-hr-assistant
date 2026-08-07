@@ -94,6 +94,32 @@ def test_archive_and_reopen_vacancy(db, manager_context, candidate_context):
     assert reopened.vacancy_id in {v.vacancy_id for v in svc.list_vacancies(candidate_context)}
 
 
+def test_list_all_applications_spans_every_vacancy(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy_a = _create_vacancy(svc, manager_context)
+    vacancy_b = svc.create_vacancy(
+        manager_context,
+        title="Product Designer",
+        department_name="Design",
+        description="Own product design end to end.",
+        employment_type="full_time",
+        opening_date=None,
+        closing_date=None,
+    )
+    app_a = svc.apply(candidate_context, vacancy_id=vacancy_a.vacancy_id, cv_object_key="resumes/a.pdf")
+    app_b = svc.apply(candidate_context, vacancy_id=vacancy_b.vacancy_id, cv_object_key="resumes/b.pdf")
+
+    all_apps = {a.application_id for a in svc.list_all_applications(manager_context)}
+    assert app_a.application_id in all_apps
+    assert app_b.application_id in all_apps
+
+
+def test_list_all_applications_requires_hr_admin(db, candidate_context):
+    svc = RecruitmentService(db)
+    with pytest.raises(PermissionError_):
+        svc.list_all_applications(candidate_context)
+
+
 def _seed_evaluation(db, application_id):
     """Attach an AI screening result (LLM-shaped raw_payload) to an application."""
     db.add(
@@ -210,3 +236,23 @@ def test_create_vacancy_http_requires_hr_admin(client, candidate_context, candid
         },
     )
     assert res.status_code == 403
+
+
+def test_all_applications_http_endpoint(
+    db, client, manager_context, candidate_context, manager_password
+):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(
+        candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
+    )
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": manager_context.email, "password": manager_password},
+    )
+    token = login.json()["access_token"]
+    res = client.get("/api/applications", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 200
+    ids = {a["application_id"] for a in res.json()}
+    assert str(application.application_id) in ids

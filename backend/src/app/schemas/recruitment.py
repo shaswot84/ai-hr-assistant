@@ -41,6 +41,22 @@ class ScoreFactor(BaseModel):
     note: str = ""
 
 
+class CandidateProfile(BaseModel):
+    """Identity/contact info the AI extracted directly from the resume text.
+
+    Distinct from the candidate's account (person.email etc.) — a resume
+    often has more complete or more current contact info than the account
+    it was uploaded from, and cross-checking the two is useful to a
+    hiring manager. Every field is best-effort and may be empty.
+    """
+
+    name: str = ""
+    email: str = ""
+    phone: str = ""
+    location: str = ""
+    headline: str = ""  # e.g. "Senior Backend Engineer, 7 years experience"
+
+
 class EvaluationDetail(BaseModel):
     """The structured ATS-style screening result: does this resume match the job, and why.
 
@@ -57,6 +73,7 @@ class EvaluationDetail(BaseModel):
     weaknesses: list[str] = []
     matched_keywords: list[str] = []
     missing_keywords: list[str] = []
+    candidate_profile: CandidateProfile | None = None
 
 
 class EvaluationOut(BaseModel):
