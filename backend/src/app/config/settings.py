@@ -3,6 +3,10 @@
 Every setting group reads from environment variables (prefix below) and can
 be overridden through a root `.env` file. Defaults keep a local dev setup
 working out of the box.
+
+Top-level settings aggregate the retrieval/embedding stack (shared with the
+Knowledge Service) and the HR recruitment stack (auth, MinIO, email, and the
+hosted Ollama chat API used for resume scoring).
 """
 
 from functools import lru_cache
@@ -11,7 +15,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class DatabaseSettings(BaseSettings):
-    """Connection to PostgreSQL (asyncpg driver)."""
+    """Connection to PostgreSQL (asyncpg driver).
+
+    The sync recruitment/auth engine (db/sync_session.py) derives its own
+    +psycopg2 URL from this one at import time — see `_sync_url()` there.
+    """
 
     url: str = "postgresql+asyncpg://hr:hr@localhost:5432/hr_assistant"
     echo: bool = False
@@ -65,16 +73,64 @@ class ModelGatewaySettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OLLAMA_")
 
 
+class AuthSettings(BaseSettings):
+    """Authentication provider selection (JWT is the only supported runtime provider)."""
+
+    provider: str = "jwt"  # jwt
+
+    model_config = SettingsConfigDict(env_prefix="AUTH_")
+
+
+class JwtSettings(BaseSettings):
+    """Self-issued JWT authentication — the single runtime auth provider.
+
+    The backend signs short-lived HS256 access tokens after verifying email +
+    password against the `application_user` table. No external IdP is involved,
+    so every localhost/dev clone works identically with no cloud dependency.
+    """
+
+    secret_key: str = ""  # JWT_SECRET_KEY (HS256 signing secret; must be set in prod)
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60  # short-lived; role re-read from DB per request
+    issuer: str = "ai-hr-assistant"
+
+    model_config = SettingsConfigDict(env_prefix="JWT_")
+
+
 class MinioSettings(BaseSettings):
-    """S3-compatible object storage for authoritative HR documents."""
+    """S3-compatible object storage for authoritative HR documents (resumes + ingestion uploads)."""
 
     endpoint: str = "localhost:9000"
     access_key: str = "minioadmin"
     secret_key: str = "minioadmin"
     bucket: str = "hr-documents"
     secure: bool = False
+    auto_init: bool = True  # ensure bucket exists on startup (disable in tests)
 
     model_config = SettingsConfigDict(env_prefix="MINIO_")
+
+
+class SmtpSettings(BaseSettings):
+    """Outbound email (Mailpit in dev, SMTP/SES in prod)."""
+
+    host: str = "mailpit"
+    port: int = 1025
+    user: str = ""
+    password: str = ""
+    from_addr: str = "AI HR Assistant <no-reply@hr.local>"
+
+    model_config = SettingsConfigDict(env_prefix="SMTP_")
+
+
+class ChatSettings(BaseSettings):
+    """Hosted Ollama chat API used for AI resume scoring."""
+
+    api_base: str = "https://ollama.com"  # OpenAI-compatible base; provider appends /v1/chat/completions
+    api_key: str = ""
+    model: str = "gpt-oss:120b-cloud"  # must be a hosted Ollama cloud model
+    request_timeout: float = 60.0
+
+    model_config = SettingsConfigDict(env_prefix="OLLAMA_CHAT_")
 
 
 class IngestionSettings(BaseSettings):
@@ -140,7 +196,11 @@ class AppSettings(BaseSettings):
     retrieval: RetrievalSettings = RetrievalSettings()
     reranker: RerankerSettings = RerankerSettings()
     model_gateway: ModelGatewaySettings = ModelGatewaySettings()
+    auth: AuthSettings = AuthSettings()
+    jwt: JwtSettings = JwtSettings()
     minio: MinioSettings = MinioSettings()
+    smtp: SmtpSettings = SmtpSettings()
+    chat: ChatSettings = ChatSettings()
     ingestion: IngestionSettings = IngestionSettings()
     output_safety: OutputSafetySettings = OutputSafetySettings()
     cors: CorsSettings = CorsSettings()

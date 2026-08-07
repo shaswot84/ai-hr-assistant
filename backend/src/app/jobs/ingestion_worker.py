@@ -32,7 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import AppSettings, get_settings
-from app.db.session import async_session_factory
+from app.db import session as db_session
 from app.integrations.object_store import ObjectStore, ObjectStoreError, S3ObjectStore
 from app.knowledge.ingestion.parse import IngestionFailed, build_normalized
 from app.knowledge.ingestion.persist import (
@@ -273,10 +273,10 @@ async def run_worker(
     while stop_event is None or not stop_event.is_set():
         jobs: list[IngestionJob] = []
         try:
-            async with async_session_factory() as session:
+            async with db_session.async_session_factory() as session:
                 jobs = await claim_next_jobs(session, limit)
             for job in jobs:
-                async with async_session_factory() as session:
+                async with db_session.async_session_factory() as session:
                     summary = await process_job(
                         session, job.ingestion_job_id, object_store, embedder
                     )

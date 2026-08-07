@@ -17,7 +17,6 @@ B008 is the standard FastAPI pattern (``File``/``Form``/``Depends`` in
 argument defaults); the framework treats them as parameter metadata.
 """
 
-# ruff: noqa: B008
 
 import logging
 from uuid import UUID

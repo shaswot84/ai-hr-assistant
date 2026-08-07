@@ -1,19 +1,21 @@
-# Core stack for the AI HR Assistant MVP (ingestion pipeline).
+# Core stack for the AI HR Assistant MVP (ingestion pipeline + auth/recruitment).
 #
-# Keycloak / Mailpit / Redis are intentionally NOT included (not required
-# yet). Ollama (local embeddings) is opt-in behind the `local-models` profile
-# because it pulls ~2.5 GB of model weights; by default the backend/worker
-# reuse an Ollama already running on the host via host.docker.internal.
+# Keycloak / Redis are intentionally NOT included (not required yet). Ollama
+# (local embeddings) is opt-in behind the `local-models` profile because it
+# pulls ~2.5 GB of model weights; by default the backend/worker reuse an
+# Ollama already running on the host via host.docker.internal.
 #
-#   docker compose up -d --build                # postgres + minio + backend + worker + frontend
+#   docker compose up -d --build                # full stack
 #   docker compose --profile local-models up -d # + ollama in Docker
 #   ollama pull nomic-embed-text                # first run (native or docker compose exec ollama ...)
 #
 # Host ports are overridable via .env (see .env.example). The defaults avoid
-# clashing with other local services: postgres=5433, minio=9100/9101, backend=8000, frontend=3000.
+# clashing with other local services.
 
 services:
   postgres:
+    # pgvector must be available for the Knowledge Service migration
+    # (`CREATE EXTENSION vector`); plain postgres images don't ship it.
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: hr_assistant
@@ -47,16 +49,31 @@ services:
       retries: 10
       start_period: 10s
 
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
   backend:
     build: ./backend
-    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+    env_file:
+      - .env
     environment:
+      # asyncpg driver: this is the single DATABASE_URL both the async
+      # Knowledge Service engine (db/session.py) and Alembic use directly;
+      # the sync recruitment/auth engine (db/sync_session.py) derives its
+      # own +psycopg2 URL from this one at import time.
       DATABASE_URL: postgresql+asyncpg://hr:${POSTGRES_PASSWORD:-hr}@postgres:5432/hr_assistant
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: hr-documents
       MINIO_SECURE: "false"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      AUTH_PROVIDER: jwt
       OLLAMA_URL: http://host.docker.internal:11434
       INGESTION_POLL_INTERVAL_SECONDS: "5"
       # In-process cross-encoder reranker (BAAI/bge-reranker-base). The model
@@ -69,6 +86,7 @@ services:
       RETRIEVAL_RERANK_TOP_N: "5"
       RETRIEVAL_CONFIDENCE_THRESHOLD: "0.55"
     volumes:
+      - ./backend/src:/app/src
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface
     ports:
       - "${BACKEND_HOST_PORT:-8000}:8000"
@@ -80,9 +98,13 @@ services:
       minio:
         condition: service_healthy
 
+  # Ingestion pipeline worker (Knowledge Service): claims ingestion_job rows
+  # and runs validate -> parse -> normalize -> chunk -> embed -> persist.
   worker:
     build: ./backend
     command: ["python", "-m", "app.jobs.ingestion_worker"]
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://hr:${POSTGRES_PASSWORD:-hr}@postgres:5432/hr_assistant
       MINIO_ENDPOINT: minio:9000
@@ -100,17 +122,41 @@ services:
       minio:
         condition: service_healthy
 
-  frontend:
-    build:
-      context: ./frontend
-      args:
-        # Browser-visible vars use localhost (the browser is on the host) and
-        # are inlined at build time, so they are passed as build args.
-        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
+  # Recruitment/auth outbox worker (AI resume scoring + notification emails).
+  # Separate service/name from `worker` above since they run different loops
+  # off the same backend image.
+  recruitment_worker:
+    build: ./backend
+    command: ["python", "-m", "app.jobs.worker"]
+    env_file:
+      - .env
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
+      DATABASE_URL: postgresql+asyncpg://hr:${POSTGRES_PASSWORD:-hr}@postgres:5432/hr_assistant
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: hr-documents
+      MINIO_SECURE: "false"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      AUTH_PROVIDER: jwt
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
     ports:
       - "${FRONTEND_HOST_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
     depends_on:
       - backend
 
@@ -127,4 +173,5 @@ services:
 volumes:
   pgdata:
   miniodata:
+  frontend_node_modules:
   ollamadata:
