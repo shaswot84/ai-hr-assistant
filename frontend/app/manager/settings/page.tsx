@@ -56,50 +56,49 @@ export default function ManagerSettingsPage() {
 
   return (
     <PortalGuard allowedRoles={["HR_ADMIN"]}>
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold">Settings</h1>
-        <p className="mt-1 text-sm text-muted">
-          Configure the system prompt used to instruct the AI when it reviews resumes against a
-          job posting.
-        </p>
-      </div>
-
-      {loading ? (
-        <p className="text-sm text-muted">Loading…</p>
-      ) : (
-        <div className="max-w-2xl space-y-4 rounded-xl border border-border bg-surface p-6">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Resume-review system prompt</span>
-            <span className="text-xs text-muted">{isDefault ? "Default" : "Customized"}</span>
-          </div>
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={10}
-            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-foreground"
-          />
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          {saved && <p className="text-sm text-emerald-700">Saved.</p>}
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={saving}
-              className="rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-            <button
-              type="button"
-              onClick={handleReset}
-              disabled={saving || isDefault}
-              className="rounded-lg border border-border bg-surface px-4 py-2 text-sm font-medium transition-colors hover:bg-surface-hover disabled:opacity-50"
-            >
-              Reset to default
-            </button>
-          </div>
+      <div className="animate-fade-in space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">AI Settings</h1>
+          <p className="mt-1 text-sm text-gray-500">
+            Configure the system prompt used to instruct the AI when it reviews resumes against a
+            job posting.
+          </p>
         </div>
-      )}
+
+        {loading ? (
+          <p className="text-sm text-gray-500">Loading…</p>
+        ) : (
+          <div className="card max-w-2xl p-6">
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-sm font-semibold text-gray-900">Resume-Review System Prompt</span>
+              <span className={`badge ${isDefault ? "bg-gray-100 text-gray-600" : "bg-blue-100 text-blue-700"}`}>
+                {isDefault ? "Default" : "Customized"}
+              </span>
+            </div>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={10}
+              className="input"
+            />
+            {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+            {saved && <p className="mt-3 text-sm text-green-700">Saved.</p>}
+            <div className="mt-4 flex gap-3">
+              <button type="button" onClick={handleSave} disabled={saving} className="btn-primary">
+                {saving ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={handleReset}
+                disabled={saving || isDefault}
+                className="btn-secondary"
+              >
+                Reset to Default
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </PortalGuard>
   );
 }

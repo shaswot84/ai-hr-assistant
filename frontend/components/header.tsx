@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { clearAuthToken } from "@/lib/auth";
 import type { UserContext } from "@/lib/types";
 
@@ -11,9 +12,16 @@ const ROLE_LABEL: Record<UserContext["coarse_role"], string> = {
   CANDIDATE: "Candidate",
 };
 
-/** Top navigation bar rendered inside every role-guarded portal page. */
-export function Header({ user }: { user: UserContext }) {
+/** Top bar: mobile menu trigger + user avatar dropdown, rendered above every portal page. */
+export function Header({
+  user,
+  onMenuClick,
+}: {
+  user: UserContext;
+  onMenuClick: () => void;
+}) {
   const router = useRouter();
+  const [dropdownOpen, setDropdownOpen] = useState(false);
 
   function signOut() {
     clearAuthToken();
@@ -28,51 +36,62 @@ export function Header({ user }: { user: UserContext }) {
         : "/employee";
 
   return (
-    <header className="sticky top-0 z-20 border-b border-border bg-background/80 backdrop-blur">
-      <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-3">
-        <div className="flex items-center gap-4">
-          <Link href={homeHref} className="text-sm font-semibold tracking-tight">
-            AI HR Assistant
-          </Link>
-          {user.coarse_role === "HR_ADMIN" && (
-            <nav className="hidden items-center gap-4 text-sm text-muted sm:flex">
-              <Link href="/manager" className="transition-colors hover:text-foreground">
-                Dashboard
-              </Link>
-              <Link href="/manager/vacancies" className="transition-colors hover:text-foreground">
-                Vacancies
-              </Link>
-              <Link href="/manager/settings" className="transition-colors hover:text-foreground">
-                Settings
-              </Link>
-            </nav>
-          )}
-          {user.coarse_role === "CANDIDATE" && (
-            <nav className="hidden items-center gap-4 text-sm text-muted sm:flex">
-              <Link href="/candidate" className="transition-colors hover:text-foreground">
-                Vacancies
-              </Link>
-              <Link
-                href="/candidate/applications"
-                className="transition-colors hover:text-foreground"
-              >
-                My Applications
-              </Link>
-            </nav>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="hidden text-xs text-muted sm:block">{user.display_name}</span>
-          <span className="rounded-full border border-border px-2.5 py-0.5 text-[11px] font-medium text-muted">
-            {ROLE_LABEL[user.coarse_role]}
-          </span>
+    <header className="z-30 flex h-16 shrink-0 items-center justify-between border-b border-sky-200 bg-white px-4 sm:px-6">
+      <button
+        type="button"
+        onClick={onMenuClick}
+        className="rounded-lg p-2 text-gray-500 hover:bg-sky-100 md:hidden"
+        aria-label="Open menu"
+      >
+        <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+
+      <Link href={homeHref} className="text-sm font-semibold tracking-tight md:hidden">
+        AI HR Assistant
+      </Link>
+
+      <div className="ml-auto flex items-center gap-2">
+        <div className="relative">
           <button
             type="button"
-            onClick={signOut}
-            className="rounded-full border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-surface-hover"
+            onClick={() => setDropdownOpen((o) => !o)}
+            className="flex items-center gap-2 rounded-lg p-1.5 transition-colors hover:bg-sky-100"
           >
-            Sign out
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-semibold text-white">
+              {user.display_name.charAt(0).toUpperCase()}
+            </div>
+            <div className="hidden text-left sm:block">
+              <p className="text-sm font-medium leading-tight text-gray-900">{user.display_name}</p>
+              <p className="text-xs leading-tight text-gray-500">{ROLE_LABEL[user.coarse_role]}</p>
+            </div>
+            <svg className="hidden h-4 w-4 text-gray-400 sm:block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
           </button>
+
+          {dropdownOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setDropdownOpen(false)} />
+              <div className="animate-fade-in absolute right-0 top-full z-20 mt-2 w-48 rounded-xl border border-sky-200 bg-white py-1 shadow-lg">
+                <div className="border-b border-gray-100 px-4 py-2.5">
+                  <p className="text-sm font-medium text-gray-900">{user.display_name}</p>
+                  <p className="text-xs text-gray-500">{user.email}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={signOut}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-sm text-red-600 transition-colors hover:bg-red-50"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                  </svg>
+                  Sign Out
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </header>

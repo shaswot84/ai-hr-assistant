@@ -62,10 +62,9 @@ function ApplySection({ vacancy }: { vacancy: Vacancy }) {
 
   if (existing) {
     return (
-      <div className="rounded-xl border border-border bg-surface p-5">
-        <p className="text-sm">
-          You&apos;ve already applied to this role —{" "}
-          <span className="font-medium">status: </span>
+      <div className="rounded-xl border border-blue-100 bg-blue-50 p-5">
+        <p className="text-sm text-blue-900">
+          You&apos;ve already applied to this role — status:{" "}
           <StatusBadge status={existing.application_status} />
         </p>
       </div>
@@ -74,30 +73,33 @@ function ApplySection({ vacancy }: { vacancy: Vacancy }) {
 
   if (vacancy.status !== "OPEN") {
     return (
-      <div className="rounded-xl border border-border bg-surface p-5">
-        <p className="text-sm text-muted">This vacancy is no longer accepting applications.</p>
+      <div className="card p-5">
+        <p className="text-sm text-gray-500">This vacancy is no longer accepting applications.</p>
       </div>
     );
   }
 
   return (
-    <div className="rounded-xl border border-border bg-surface p-5">
-      <h2 className="text-sm font-medium">Apply</h2>
-      <p className="mt-1 text-sm text-muted">Upload your resume (PDF or DOCX, max 10MB).</p>
-      <input
-        type="file"
-        accept=".pdf,.docx"
-        onChange={handleFileChange}
-        className="mt-3 block w-full text-sm file:mr-3 file:rounded-lg file:border file:border-border file:bg-background file:px-3 file:py-1.5 file:text-sm file:font-medium"
-      />
+    <div className="card p-5">
+      <h2 className="text-sm font-semibold text-gray-900">Apply</h2>
+      <p className="mt-1 text-sm text-gray-500">Upload your resume (PDF or DOCX, max 10MB).</p>
+      <label className="mt-3 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-300 bg-sky-50 px-4 py-8 text-center transition-colors hover:border-blue-400 hover:bg-blue-50">
+        <svg className="h-8 w-8 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+        </svg>
+        <span className="text-sm font-medium text-gray-700">
+          {file ? file.name : "Click to choose a file"}
+        </span>
+        <input type="file" accept=".pdf,.docx" onChange={handleFileChange} className="hidden" />
+      </label>
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
       <button
         type="button"
         disabled={!file || submitting}
         onClick={handleApply}
-        className="mt-3 rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
+        className="btn-primary mt-3 w-full sm:w-auto"
       >
-        {submitting ? "Submitting…" : "Submit application"}
+        {submitting ? "Submitting…" : "Submit Application"}
       </button>
     </div>
   );
@@ -117,25 +119,29 @@ export default function VacancyDetailPage() {
 
   return (
     <PortalGuard allowedRoles={["CANDIDATE"]}>
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      {!error && !vacancy && <p className="text-sm text-muted">Loading…</p>}
-      {vacancy && (
-        <div className="space-y-6">
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-xl font-semibold">{vacancy.title}</h1>
-              <StatusBadge status={vacancy.status} />
+      <div className="animate-fade-in space-y-6">
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        {!error && !vacancy && <p className="text-sm text-gray-500">Loading…</p>}
+        {vacancy && (
+          <>
+            <div className="card p-6">
+              <div className="flex items-center gap-3">
+                <h1 className="text-xl font-bold text-gray-900">{vacancy.title}</h1>
+                <StatusBadge status={vacancy.status} />
+              </div>
+              <p className="mt-1 text-sm text-gray-500">
+                {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
+              </p>
+              {vacancy.description && (
+                <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+                  {vacancy.description}
+                </p>
+              )}
             </div>
-            <p className="mt-1 text-sm text-muted">
-              {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
-            </p>
-          </div>
-          {vacancy.description && (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{vacancy.description}</p>
-          )}
-          <ApplySection vacancy={vacancy} />
-        </div>
-      )}
+            <ApplySection vacancy={vacancy} />
+          </>
+        )}
+      </div>
     </PortalGuard>
   );
 }

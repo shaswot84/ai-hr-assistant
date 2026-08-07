@@ -5,21 +5,23 @@ import { StatusBadge } from "@/components/status";
 /** A clickable summary card for one vacancy, linking into its detail page. */
 export function VacancyCard({ vacancy, href }: { vacancy: Vacancy; href: string }) {
   return (
-    <Link
-      href={href}
-      className="block rounded-xl border border-border bg-surface p-5 transition-colors hover:bg-surface-hover"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="font-medium">{vacancy.title}</h3>
-          <p className="mt-0.5 text-sm text-muted">
+    <Link href={href} className="card block p-5 transition-shadow duration-200 hover:shadow-md">
+      <div className="flex items-start gap-3">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-lg font-bold text-blue-600">
+          {vacancy.title.charAt(0)}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <p className="truncate font-semibold text-gray-900">{vacancy.title}</p>
+            <StatusBadge status={vacancy.status} />
+          </div>
+          <p className="text-sm text-gray-500">
             {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
           </p>
         </div>
-        <StatusBadge status={vacancy.status} />
       </div>
       {vacancy.description && (
-        <p className="mt-3 line-clamp-2 text-sm text-muted">{vacancy.description}</p>
+        <p className="mt-3 line-clamp-2 text-sm text-gray-600">{vacancy.description}</p>
       )}
     </Link>
   );

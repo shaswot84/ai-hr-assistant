@@ -21,21 +21,28 @@ function ApplicationsList() {
   }, []);
 
   if (error) return <p className="text-sm text-red-600">{error}</p>;
-  if (applications === null) return <p className="text-sm text-muted">Loading…</p>;
+  if (applications === null) return <p className="text-sm text-gray-500">Loading…</p>;
   if (applications.length === 0)
-    return <p className="text-sm text-muted">You haven&apos;t applied to any vacancies yet.</p>;
+    return (
+      <div className="card p-10 text-center">
+        <p className="text-sm text-gray-500">You haven&apos;t applied to any vacancies yet.</p>
+      </div>
+    );
 
   return (
-    <div className="divide-y divide-border rounded-xl border border-border bg-surface">
+    <div className="card divide-y divide-gray-100 overflow-hidden">
       {applications.map((a) => (
         <Link
           key={a.application_id}
           href={`/candidate/applications/${a.application_id}`}
-          className="flex items-center justify-between gap-3 p-4 transition-colors hover:bg-surface-hover"
+          className="flex items-center gap-3 px-6 py-4 transition-colors hover:bg-sky-50"
         >
-          <div>
-            <p className="font-medium">{a.vacancy_title ?? "Vacancy"}</p>
-            <p className="mt-0.5 text-xs text-muted">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-sm font-semibold text-blue-600">
+            {(a.vacancy_title ?? "?").charAt(0)}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-medium text-gray-900">{a.vacancy_title ?? "Vacancy"}</p>
+            <p className="mt-0.5 text-xs text-gray-500">
               Applied {new Date(a.applied_at).toLocaleDateString()}
               {a.evaluated && a.evaluation ? ` · AI score ${a.evaluation.score}` : " · evaluating…"}
             </p>
@@ -50,11 +57,13 @@ function ApplicationsList() {
 export default function MyApplicationsPage() {
   return (
     <PortalGuard allowedRoles={["CANDIDATE"]}>
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold">My applications</h1>
-        <p className="mt-1 text-sm text-muted">Track the status of the roles you&apos;ve applied to.</p>
+      <div className="animate-fade-in space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">My Applications</h1>
+          <p className="mt-1 text-sm text-gray-500">Track the status of the roles you&apos;ve applied to.</p>
+        </div>
+        <ApplicationsList />
       </div>
-      <ApplicationsList />
     </PortalGuard>
   );
 }

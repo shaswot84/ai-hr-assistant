@@ -18,11 +18,16 @@ function VacancyList() {
   }, []);
 
   if (error) return <p className="text-sm text-red-600">{error}</p>;
-  if (vacancies === null) return <p className="text-sm text-muted">Loading vacancies…</p>;
-  if (vacancies.length === 0) return <p className="text-sm text-muted">No open vacancies right now.</p>;
+  if (vacancies === null) return <p className="text-sm text-gray-500">Loading vacancies…</p>;
+  if (vacancies.length === 0)
+    return (
+      <div className="card p-10 text-center">
+        <p className="text-sm text-gray-500">No open vacancies right now — check back soon.</p>
+      </div>
+    );
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       {vacancies.map((v) => (
         <VacancyCard key={v.vacancy_id} vacancy={v} href={`/candidate/vacancies/${v.vacancy_id}`} />
       ))}
@@ -33,11 +38,13 @@ function VacancyList() {
 export default function CandidateHomePage() {
   return (
     <PortalGuard allowedRoles={["CANDIDATE"]}>
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold">Open vacancies</h1>
-        <p className="mt-1 text-sm text-muted">Browse open roles and apply with your resume.</p>
+      <div className="animate-fade-in space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Open Vacancies</h1>
+          <p className="mt-1 text-sm text-gray-500">Browse open roles and apply with your resume.</p>
+        </div>
+        <VacancyList />
       </div>
-      <VacancyList />
     </PortalGuard>
   );
 }

@@ -15,7 +15,9 @@ function ArchiveButton({ vacancy, onChange }: { vacancy: Vacancy; onChange: (v: 
     setBusy(true);
     try {
       const updated =
-        vacancy.status === "OPEN" ? await api.closeVacancy(vacancy.vacancy_id) : await api.reopenVacancy(vacancy.vacancy_id);
+        vacancy.status === "OPEN"
+          ? await api.closeVacancy(vacancy.vacancy_id)
+          : await api.reopenVacancy(vacancy.vacancy_id);
       onChange(updated);
     } finally {
       setBusy(false);
@@ -23,18 +25,13 @@ function ArchiveButton({ vacancy, onChange }: { vacancy: Vacancy; onChange: (v: 
   }
 
   return (
-    <button
-      type="button"
-      onClick={toggle}
-      disabled={busy}
-      className="rounded-lg border border-border bg-surface px-4 py-2 text-sm font-medium transition-colors hover:bg-surface-hover disabled:opacity-50"
-    >
-      {busy ? "Working…" : vacancy.status === "OPEN" ? "Close vacancy" : "Reopen vacancy"}
+    <button type="button" onClick={toggle} disabled={busy} className="btn-secondary">
+      {busy ? "Working…" : vacancy.status === "OPEN" ? "Close Vacancy" : "Reopen Vacancy"}
     </button>
   );
 }
 
-function ApplicationsTable({ vacancyId }: { vacancyId: string }) {
+function ApplicationsList({ vacancyId }: { vacancyId: string }) {
   const [applications, setApplications] = useState<ApplicationDetail[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,27 +39,32 @@ function ApplicationsTable({ vacancyId }: { vacancyId: string }) {
     api
       .vacancyApplications(vacancyId)
       .then(setApplications)
-      .catch((err) =>
-        setError(err instanceof ApiError ? err.detail : "Failed to load applications.")
-      );
+      .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load applications."));
   }, [vacancyId]);
 
   if (error) return <p className="text-sm text-red-600">{error}</p>;
-  if (applications === null) return <p className="text-sm text-muted">Loading applications…</p>;
+  if (applications === null) return <p className="text-sm text-gray-500">Loading applications…</p>;
   if (applications.length === 0)
-    return <p className="text-sm text-muted">No applications yet.</p>;
+    return (
+      <div className="card p-8 text-center">
+        <p className="text-sm text-gray-500">No applications yet.</p>
+      </div>
+    );
 
   return (
-    <div className="divide-y divide-border rounded-xl border border-border bg-surface">
+    <div className="card divide-y divide-gray-100 overflow-hidden">
       {applications.map((a) => (
         <Link
           key={a.application_id}
           href={`/manager/applications/${a.application_id}`}
-          className="flex items-center justify-between gap-3 p-4 transition-colors hover:bg-surface-hover"
+          className="flex items-center gap-3 px-6 py-4 transition-colors hover:bg-sky-50"
         >
-          <div>
-            <p className="font-medium">{a.candidate_name ?? a.candidate_email ?? "Candidate"}</p>
-            <p className="mt-0.5 text-xs text-muted">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100 text-sm font-semibold text-blue-600">
+            {(a.candidate_name ?? a.candidate_email ?? "?").charAt(0).toUpperCase()}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-medium text-gray-900">{a.candidate_name ?? a.candidate_email}</p>
+            <p className="mt-0.5 text-xs text-gray-500">
               Applied {new Date(a.applied_at).toLocaleDateString()}
               {a.evaluated && a.evaluation ? ` · AI score ${a.evaluation.score}` : " · evaluating…"}
             </p>
@@ -88,31 +90,38 @@ export default function ManagerVacancyDetailPage() {
 
   return (
     <PortalGuard allowedRoles={["HR_ADMIN"]}>
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      {!error && !vacancy && <p className="text-sm text-muted">Loading…</p>}
-      {vacancy && (
-        <div className="space-y-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-3">
-                <h1 className="text-xl font-semibold">{vacancy.title}</h1>
-                <StatusBadge status={vacancy.status} />
+      <div className="animate-fade-in space-y-6">
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        {!error && !vacancy && <p className="text-sm text-gray-500">Loading…</p>}
+        {vacancy && (
+          <>
+            <div className="card flex flex-col gap-4 p-6 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="flex items-center gap-3">
+                  <h1 className="text-xl font-bold text-gray-900">{vacancy.title}</h1>
+                  <StatusBadge status={vacancy.status} />
+                </div>
+                <p className="mt-1 text-sm text-gray-500">
+                  {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
+                </p>
+                {vacancy.description && (
+                  <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+                    {vacancy.description}
+                  </p>
+                )}
               </div>
-              <p className="mt-1 text-sm text-muted">
-                {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
-              </p>
+              <ArchiveButton vacancy={vacancy} onChange={setVacancy} />
             </div>
-            <ArchiveButton vacancy={vacancy} onChange={setVacancy} />
-          </div>
-          {vacancy.description && (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{vacancy.description}</p>
-          )}
-          <div>
-            <h2 className="mb-2 text-sm font-medium">Applications</h2>
-            <ApplicationsTable vacancyId={vacancy.vacancy_id} />
-          </div>
-        </div>
-      )}
+
+            <div>
+              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">
+                Applications
+              </h2>
+              <ApplicationsList vacancyId={vacancy.vacancy_id} />
+            </div>
+          </>
+        )}
+      </div>
     </PortalGuard>
   );
 }
