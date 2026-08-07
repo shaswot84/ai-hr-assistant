@@ -47,6 +47,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # the resume download endpoint sets the real filename (with its actual
+    # extension) via Content-Disposition; browsers hide response headers
+    # from JS on cross-origin fetches unless explicitly exposed here.
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(auth_router.router)

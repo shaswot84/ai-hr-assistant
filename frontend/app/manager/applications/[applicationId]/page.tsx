@@ -153,10 +153,7 @@ export default function ManagerApplicationDetailPage() {
     if (!application) return;
     setDownloading(true);
     try {
-      await downloadResume(
-        application.application_id,
-        `${application.candidate_name ?? "resume"}.pdf`
-      );
+      await downloadResume(application.application_id, application.candidate_name ?? "resume");
     } finally {
       setDownloading(false);
     }

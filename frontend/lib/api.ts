@@ -134,7 +134,21 @@ export const api = {
     ),
 };
 
-/** Fetch the resume as a Blob (authenticated) and trigger a browser download. */
+/** Pulls the filename out of a `Content-Disposition: attachment; filename="..."` header. */
+function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const match = /filename="?([^";]+)"?/.exec(header);
+  return match ? match[1] : null;
+}
+
+/**
+ * Fetch the resume as a Blob (authenticated) and trigger a browser download.
+ *
+ * The server knows the resume's real extension (PDF vs DOCX) from the
+ * stored object key; `filenameHint` is only a fallback for the rare case
+ * the response is missing its Content-Disposition header, so it must not
+ * assume any particular extension.
+ */
 export async function downloadResume(applicationId: string, filenameHint: string) {
   const token = getAuthToken();
   const res = await fetch(api.resumeUrl(applicationId), {
@@ -142,10 +156,11 @@ export async function downloadResume(applicationId: string, filenameHint: string
   });
   if (!res.ok) await parseError(res);
   const blob = await res.blob();
+  const filename = filenameFromContentDisposition(res.headers.get("Content-Disposition")) ?? filenameHint;
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filenameHint;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }
