@@ -13,9 +13,7 @@ citations, and confidence scoring.
 
 > Detailed design lives one level up in [`hr-project-docs/`](../hr-project-docs/)
 > (see its `README.md` for reading order) and in [`docs/`](./docs/), which has
-> ADR-0001 (`docs/adr/0001-local-model-serving.md`) plus the auth/recruitment
-> plan docs, which now live in `hr-project-docs/plans/` (`plan-auth.md`,
-> `plan-recruitment.md`) rather than in this repo.
+> ADR-0001 (`docs/adr/0001-local-model-serving.md`).
 
 ## Layout
 
@@ -53,9 +51,6 @@ ai-hr-assistant/
 └── docs/
     └── adr/                  # architecture decision records
 ```
-
-Sprint implementation plans (`plan-auth.md`, `plan-recruitment.md`) live in
-`hr-project-docs/plans/`, not in this repo.
 
 ## Stack
 
