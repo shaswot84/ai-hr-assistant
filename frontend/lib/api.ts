@@ -2,6 +2,7 @@ import type {
   Application,
   ApplicationDetail,
   ApplicationStatusView,
+  LlmConfig,
   UserContext,
   Vacancy,
 } from "@/lib/types";
@@ -132,6 +133,17 @@ export const api = {
       "/api/settings/resume-review-prompt/reset",
       { method: "POST" }
     ),
+
+  getLlmConfig: () => request<LlmConfig>("/api/settings/llm-config"),
+
+  setLlmConfig: (body: { api_base: string; model: string; api_key?: string }) =>
+    request<LlmConfig>("/api/settings/llm-config", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  resetLlmConfig: () =>
+    request<LlmConfig>("/api/settings/llm-config/reset", { method: "POST" }),
 };
 
 /** Pulls the filename out of a `Content-Disposition: attachment; filename="..."` header. */

@@ -13,21 +13,29 @@ from app.model_gateway.provider import ChatProvider, ChatProviderError
 class OllamaChatProvider(ChatProvider):
     """Hosted Ollama API via an OpenAI-compatible chat/completions endpoint.
 
-    Key and base URL come from settings (.env). Falls back gracefully by
-    raising a clear error rather than crashing the pipeline.
+    Key, base URL, and model default to settings (.env) but can each be
+    overridden per-call — the manager-editable LLM config on the Settings
+    page is stored in `app_setting` and passed in here by the worker, so
+    changes take effect on the next evaluation with no restart needed.
     """
 
-    def __init__(self) -> None:
-        """Load endpoint, model, and timeout configuration from settings."""
+    def __init__(
+        self,
+        *,
+        api_base: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        """Load endpoint, model, key, and timeout, preferring any given overrides."""
         self._settings = get_settings()
-        self._base = self._settings.chat.api_base
-        self._base = self._base.removesuffix("/")
-        self._model = self._settings.chat.model
+        self._base = (api_base or self._settings.chat.api_base).removesuffix("/")
+        self._model = model or self._settings.chat.model
+        self._api_key = api_key or self._settings.chat.api_key
         self._timeout = self._settings.chat.request_timeout
 
     def is_configured(self) -> bool:
         """Return True if a real (non-placeholder) Ollama API key is present."""
-        key = self._settings.chat.api_key
+        key = self._api_key
         # A placeholder value (e.g. "your-ollama-api-key") is not a real key.
         return bool(key) and not ("your-" in key or key.startswith("<"))
 
@@ -55,7 +63,7 @@ class OllamaChatProvider(ChatProvider):
             ],
             "response_format": {"type": "json_object"},
         }
-        headers = {"Authorization": f"Bearer {self._settings.chat.api_key}"}
+        headers = {"Authorization": f"Bearer {self._api_key}"}
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 res = await client.post(url, json=payload, headers=headers)

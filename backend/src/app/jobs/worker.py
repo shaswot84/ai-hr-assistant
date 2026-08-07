@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from app.capabilities.settings import SettingsService
 from app.db.sync_session import SessionLocal, init_db
 from app.domain.outbox import OutboxJob
 from app.domain.recruitment import Application, ApplicationEvaluation, Vacancy
@@ -74,6 +75,7 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: Objec
     vacancy = db.get(Vacancy, application.vacancy_id)
 
     system_prompt = SettingRepo(db).get_value("resume_review_system_prompt")
+    llm_overrides = SettingsService(db).resolved_llm_overrides()
 
     started = time.monotonic()
     result = await score_resume(
@@ -81,6 +83,9 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: Objec
         job_title=vacancy.title if vacancy else "",
         job_description=vacancy.description or "" if vacancy else "",
         system_prompt=system_prompt,
+        api_base=llm_overrides["api_base"],
+        model=llm_overrides["model"],
+        api_key=llm_overrides["api_key"],
     )
     latency_ms = int((time.monotonic() - started) * 1000)
 

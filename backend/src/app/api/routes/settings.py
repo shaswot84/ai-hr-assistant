@@ -55,3 +55,48 @@ def reset_resume_review_prompt(
 ):
     """Clear any customised resume-review prompt, restoring the default (manager-only)."""
     return ResumeReviewPromptOut(**svc.reset_resume_review_prompt())
+
+
+class LlmConfigIn(BaseModel):
+    """Request body for setting the LLM connection (API route, model, key)."""
+
+    api_base: str
+    model: str
+    api_key: str | None = None  # write-only; blank/omitted leaves the stored key unchanged
+
+
+class LlmConfigOut(BaseModel):
+    """Response carrying the active LLM connection settings — never the raw API key."""
+
+    api_base: str
+    model: str
+    api_key_set: bool
+    is_default: bool
+
+
+@router.get("/llm-config", response_model=LlmConfigOut)
+def get_llm_config(
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: SettingsService = Depends(_svc),
+):
+    """Return the active LLM connection settings (manager-only)."""
+    return LlmConfigOut(**svc.get_llm_config())
+
+
+@router.put("/llm-config", response_model=LlmConfigOut)
+def put_llm_config(
+    body: LlmConfigIn,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: SettingsService = Depends(_svc),
+):
+    """Persist manager-provided LLM route/model/key settings (manager-only)."""
+    return LlmConfigOut(**svc.set_llm_config(api_base=body.api_base, model=body.model, api_key=body.api_key))
+
+
+@router.post("/llm-config/reset", response_model=LlmConfigOut)
+def reset_llm_config(
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: SettingsService = Depends(_svc),
+):
+    """Clear all LLM connection overrides, restoring the .env-configured defaults (manager-only)."""
+    return LlmConfigOut(**svc.reset_llm_config())

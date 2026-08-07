@@ -81,3 +81,11 @@ export interface ApplicationDetail extends Application {
   candidate_name: string | null;
   candidate_email: string | null;
 }
+
+/** The AI provider connection used for resume screening — manager-editable, API key is write-only. */
+export interface LlmConfig {
+  api_base: string;
+  model: string;
+  api_key_set: boolean;
+  is_default: boolean;
+}

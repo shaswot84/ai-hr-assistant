@@ -173,15 +173,20 @@ async def score_resume(
     job_title: str,
     job_description: str,
     system_prompt: str | None = None,
+    api_base: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
 ) -> ScoreResult:
     """Screen a resume against a job using the Ollama hosted API.
 
     ``system_prompt`` lets a manager override the model instructions (stored in
-    settings); when None, the default constant is used. If the API key is
-    missing (local dev without secrets), falls back to a deterministic
-    keyword-match scorer so the pipeline stays demoable.
+    settings); when None, the default constant is used. ``api_base``/``model``/
+    ``api_key`` are the manager-editable LLM connection settings (also stored
+    in settings); when None, the .env-configured defaults are used. If the
+    resolved API key is missing (local dev without secrets), falls back to a
+    deterministic keyword-match scorer so the pipeline stays demoable.
     """
-    provider = OllamaChatProvider()
+    provider = OllamaChatProvider(api_base=api_base, model=model, api_key=api_key)
     if provider.is_configured():
         return await _score_with_llm(
             provider, resume_text, job_title, job_description, system_prompt
