@@ -17,7 +17,7 @@ reranking, citations, and confidence scoring.
 ai-hr-assistant/
 ├── Makefile                  # dev / test / lint (uses backend/.venv)
 ├── backend/
-│   ├── alemc/              # async Alembic migrations
+│   ├── alembic/              # async Alembic migrations
 │   ├── pyproject.toml        # deps + `reranker` extra + ruff/pytest config
 │   ├── src/app/
 │   │   ├── config/           # pydantic-settings (env-driven)
