@@ -22,15 +22,15 @@ export function PageLoader() {
 /** Pulsing bars standing in for list/table rows. */
 export function ListSkeleton({ rows = 4 }: { rows?: number }) {
   return (
-    <div className="card animate-pulse divide-y divide-gray-100 overflow-hidden">
+    <div className="card animate-pulse divide-y divide-zinc-100 overflow-hidden">
       {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 px-6 py-4">
-          <div className="h-9 w-9 shrink-0 rounded-full bg-gray-200" />
+        <div key={i} className="flex items-center gap-3 px-4 py-3.5">
+          <div className="h-8 w-8 shrink-0 rounded-full bg-zinc-100" />
           <div className="flex-1 space-y-2">
-            <div className="h-3 w-1/3 rounded bg-gray-200" />
-            <div className="h-2.5 w-1/4 rounded bg-gray-100" />
+            <div className="h-3 w-1/3 rounded bg-zinc-100" />
+            <div className="h-2.5 w-1/4 rounded bg-zinc-50" />
           </div>
-          <div className="h-5 w-16 rounded-full bg-gray-100" />
+          <div className="h-5 w-20 rounded-full bg-zinc-50" />
         </div>
       ))}
     </div>
@@ -44,29 +44,29 @@ export function GridSkeleton({ items = 4 }: { items?: number }) {
       {Array.from({ length: items }).map((_, i) => (
         <div key={i} className="card animate-pulse p-5">
           <div className="flex items-start gap-3">
-            <div className="h-12 w-12 shrink-0 rounded-xl bg-gray-200" />
+            <div className="h-12 w-12 shrink-0 rounded-lg bg-zinc-100" />
             <div className="flex-1 space-y-2">
-              <div className="h-3.5 w-2/3 rounded bg-gray-200" />
-              <div className="h-2.5 w-1/2 rounded bg-gray-100" />
+              <div className="h-3.5 w-2/3 rounded bg-zinc-100" />
+              <div className="h-2.5 w-1/2 rounded bg-zinc-50" />
             </div>
           </div>
-          <div className="mt-4 h-2.5 w-full rounded bg-gray-100" />
-          <div className="mt-2 h-2.5 w-4/5 rounded bg-gray-100" />
+          <div className="mt-4 h-2.5 w-full rounded bg-zinc-50" />
+          <div className="mt-2 h-2.5 w-4/5 rounded bg-zinc-50" />
         </div>
       ))}
     </div>
   );
 }
 
-/** Pulsing stat-card placeholders for a dashboard summary row. */
-export function StatsSkeleton({ items = 3 }: { items?: number }) {
+/** Pulsing metric-card placeholders for a dashboard summary row. */
+export function StatsSkeleton({ items = 4 }: { items?: number }) {
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       {Array.from({ length: items }).map((_, i) => (
-        <div key={i} className="card animate-pulse p-6">
-          <div className="h-3 w-1/2 rounded bg-gray-200" />
-          <div className="mt-3 h-7 w-1/3 rounded bg-gray-200" />
-          <div className="mt-3 h-2.5 w-2/3 rounded bg-gray-100" />
+        <div key={i} className="card animate-pulse p-5">
+          <div className="h-3 w-1/2 rounded bg-zinc-100" />
+          <div className="mt-3 h-6 w-1/3 rounded bg-zinc-100" />
+          <div className="mt-3 h-2.5 w-2/3 rounded bg-zinc-50" />
         </div>
       ))}
     </div>
@@ -77,12 +77,12 @@ export function StatsSkeleton({ items = 3 }: { items?: number }) {
 export function DetailSkeleton() {
   return (
     <div className="card animate-pulse p-6">
-      <div className="h-5 w-1/3 rounded bg-gray-200" />
-      <div className="mt-3 h-3 w-1/4 rounded bg-gray-100" />
+      <div className="h-5 w-1/3 rounded bg-zinc-100" />
+      <div className="mt-3 h-3 w-1/4 rounded bg-zinc-50" />
       <div className="mt-5 space-y-2">
-        <div className="h-2.5 w-full rounded bg-gray-100" />
-        <div className="h-2.5 w-5/6 rounded bg-gray-100" />
-        <div className="h-2.5 w-2/3 rounded bg-gray-100" />
+        <div className="h-2.5 w-full rounded bg-zinc-50" />
+        <div className="h-2.5 w-5/6 rounded bg-zinc-50" />
+        <div className="h-2.5 w-2/3 rounded bg-zinc-50" />
       </div>
     </div>
   );

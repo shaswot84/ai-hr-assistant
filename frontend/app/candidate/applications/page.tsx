@@ -2,8 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status";
 import { ListSkeleton } from "@/components/loading";
+import { EmptyState } from "@/components/empty-state";
 import { api, ApiError } from "@/lib/api";
 import type { ApplicationStatusView } from "@/lib/types";
 
@@ -20,35 +22,72 @@ function ApplicationsList() {
       );
   }, []);
 
-  if (error) return <p className="text-sm text-red-600">{error}</p>;
+  if (error) return <div className="notice border-red-200 bg-red-50 text-red-700">{error}</div>;
   if (applications === null) return <ListSkeleton />;
   if (applications.length === 0)
     return (
-      <div className="card p-10 text-center">
-        <p className="text-sm text-gray-500">You haven&apos;t applied to any vacancies yet.</p>
+      <div className="card">
+        <EmptyState
+          title="You haven't applied yet"
+          description="Applications you submit will show up here so you can track their status."
+          action={
+            <Link href="/candidate" className="btn-primary">
+              Browse vacancies
+            </Link>
+          }
+        />
       </div>
     );
 
   return (
-    <div className="card divide-y divide-gray-100 overflow-hidden">
-      {applications.map((a) => (
-        <Link
-          key={a.application_id}
-          href={`/candidate/applications/${a.application_id}`}
-          className="flex items-center gap-3 px-6 py-4 transition-colors hover:bg-sky-50"
-        >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-sm font-semibold text-blue-600">
-            {(a.vacancy_title ?? "?").charAt(0)}
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="truncate font-medium text-gray-900">{a.vacancy_title ?? "Vacancy"}</p>
-            <p className="mt-0.5 text-xs text-gray-500">
-              Applied {new Date(a.applied_at).toLocaleDateString()}
-            </p>
-          </div>
-          <StatusBadge status={a.application_status} />
-        </Link>
-      ))}
+    <div className="card overflow-hidden">
+      <div className="table-scroll">
+        <table className="w-full">
+          <thead className="bg-zinc-50">
+            <tr>
+              <th className="table-th">Role</th>
+              <th className="table-th">Applied</th>
+              <th className="table-th">Status</th>
+              <th className="table-th text-right">Details</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100">
+            {applications.map((a) => (
+              <tr key={a.application_id} className="table-row">
+                <td className="table-td">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-[13px] font-semibold text-blue-600">
+                      {(a.vacancy_title ?? "?").charAt(0)}
+                    </div>
+                    <p className="font-medium text-zinc-900">{a.vacancy_title ?? "Vacancy"}</p>
+                  </div>
+                </td>
+                <td className="table-td text-xs text-zinc-500">
+                  {new Date(a.applied_at).toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </td>
+                <td className="table-td">
+                  <StatusBadge status={a.application_status} />
+                </td>
+                <td className="table-td text-right">
+                  <Link
+                    href={`/candidate/applications/${a.application_id}`}
+                    className="link inline-flex items-center gap-1"
+                  >
+                    View
+                    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -56,10 +95,10 @@ function ApplicationsList() {
 export default function MyApplicationsPage() {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">My Applications</h1>
-        <p className="mt-1 text-sm text-gray-500">Track the status of the roles you&apos;ve applied to.</p>
-      </div>
+      <PageHeader
+        title="My Applications"
+        description="Track the status of the roles you've applied to."
+      />
       <ApplicationsList />
     </div>
   );

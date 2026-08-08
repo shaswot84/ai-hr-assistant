@@ -9,13 +9,15 @@ export function ComingSoon({
   description: string;
 }) {
   return (
-    <div className="card flex flex-col items-center gap-3 p-12 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-100 text-blue-600">
+    <div className="card flex flex-col items-center justify-center gap-2 px-6 py-20 text-center">
+      <div className="mb-2 flex h-11 w-11 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-50 text-zinc-400">
         {icon}
       </div>
-      <h1 className="text-lg font-semibold text-gray-900">{title}</h1>
-      <p className="max-w-sm text-sm text-gray-500">{description}</p>
-      <span className="badge bg-gray-100 text-gray-600">Coming soon</span>
+      <h1 className="text-base font-semibold text-zinc-900">{title}</h1>
+      <p className="max-w-md text-sm leading-relaxed text-zinc-500">{description}</p>
+      <span className="badge mt-3 bg-zinc-100 text-zinc-500 ring-1 ring-inset ring-zinc-500/20">
+        Coming soon
+      </span>
     </div>
   );
 }

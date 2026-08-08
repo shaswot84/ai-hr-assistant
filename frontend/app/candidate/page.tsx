@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PageHeader } from "@/components/page-header";
 import { VacancyCard } from "@/components/vacancy-card";
 import { GridSkeleton } from "@/components/loading";
+import { EmptyState } from "@/components/empty-state";
 import { api, ApiError } from "@/lib/api";
 import type { Vacancy } from "@/lib/types";
 
@@ -22,12 +24,15 @@ function VacancyList() {
       .catch(() => setAppliedVacancyIds(new Set()));
   }, []);
 
-  if (error) return <p className="text-sm text-red-600">{error}</p>;
+  if (error) return <div className="notice border-red-200 bg-red-50 text-red-700">{error}</div>;
   if (vacancies === null) return <GridSkeleton />;
   if (vacancies.length === 0)
     return (
-      <div className="card p-10 text-center">
-        <p className="text-sm text-gray-500">No open vacancies right now — check back soon.</p>
+      <div className="card">
+        <EmptyState
+          title="No open vacancies right now"
+          description="Check back soon — new roles are posted regularly."
+        />
       </div>
     );
 
@@ -48,10 +53,10 @@ function VacancyList() {
 export default function CandidateHomePage() {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Open Vacancies</h1>
-        <p className="mt-1 text-sm text-gray-500">Browse open roles and apply with your resume.</p>
-      </div>
+      <PageHeader
+        title="Open Vacancies"
+        description="Browse open roles and apply with your resume."
+      />
       <VacancyList />
     </div>
   );

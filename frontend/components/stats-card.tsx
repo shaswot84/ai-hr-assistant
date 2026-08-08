@@ -1,11 +1,16 @@
+import { MetricCard } from "@/components/metric-card";
+
 const COLORS = {
-  blue: { bg: "bg-blue-50", icon: "text-blue-600", border: "border-blue-100" },
-  green: { bg: "bg-green-50", icon: "text-green-600", border: "border-green-100" },
-  amber: { bg: "bg-amber-50", icon: "text-amber-600", border: "border-amber-100" },
-  purple: { bg: "bg-purple-50", icon: "text-purple-600", border: "border-purple-100" },
+  blue: { icon: "bg-blue-50 text-blue-600" },
+  green: { icon: "bg-emerald-50 text-emerald-600" },
+  amber: { icon: "bg-amber-50 text-amber-600" },
+  purple: { icon: "bg-violet-50 text-violet-600" },
 } as const;
 
-/** A dashboard summary tile: title, big value, optional subtitle, and a colored icon chip. */
+/**
+ * Dashboard summary tile — kept as a thin wrapper over MetricCard so any
+ * existing callers keep working with the same API (title/value/subtitle/icon).
+ */
 export function StatsCard({
   title,
   value,
@@ -19,19 +24,13 @@ export function StatsCard({
   icon: React.ReactNode;
   color?: keyof typeof COLORS;
 }) {
-  const c = COLORS[color];
   return (
-    <div className="card p-6 transition-shadow duration-200 hover:shadow-md">
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
-          <p className="text-sm font-medium text-gray-500">{title}</p>
-          <p className="mt-2 text-3xl font-bold text-gray-900">{value}</p>
-          {subtitle && <p className="mt-1 text-xs text-gray-500">{subtitle}</p>}
-        </div>
-        <div className={`rounded-xl border p-3 ${c.bg} ${c.border}`}>
-          <span className={c.icon}>{icon}</span>
-        </div>
-      </div>
-    </div>
+    <MetricCard
+      label={title}
+      value={value}
+      sub={subtitle}
+      icon={icon}
+      iconClass={COLORS[color].icon}
+    />
   );
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { BackLink } from "@/components/page-header";
 import { StatusBadge } from "@/components/status";
 import { DetailSkeleton } from "@/components/loading";
 import { api, ApiError } from "@/lib/api";
@@ -65,8 +66,8 @@ function ApplySection({ vacancy }: { vacancy: Vacancy }) {
 
   if (existing) {
     return (
-      <div className="rounded-xl border border-blue-100 bg-blue-50 p-5">
-        <p className="text-sm text-blue-900">
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-5">
+        <p className="text-sm text-emerald-900">
           You&apos;ve already applied to this role — status:{" "}
           <StatusBadge status={existing.application_status} />
         </p>
@@ -77,22 +78,28 @@ function ApplySection({ vacancy }: { vacancy: Vacancy }) {
   if (vacancy.status !== "OPEN") {
     return (
       <div className="card p-5">
-        <p className="text-sm text-gray-500">This vacancy is no longer accepting applications.</p>
+        <p className="text-sm text-zinc-500">This vacancy is no longer accepting applications.</p>
       </div>
     );
   }
 
   return (
     <div className="card p-5">
-      <h2 className="text-sm font-semibold text-gray-900">Apply</h2>
-      <p className="mt-1 text-sm text-gray-500">Upload your resume (PDF or DOCX, max 10MB).</p>
-      <label className="mt-3 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-300 bg-sky-50 px-4 py-8 text-center transition-colors hover:border-blue-400 hover:bg-blue-50">
-        <svg className="h-8 w-8 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+      <h2 className="text-sm font-semibold text-zinc-900">Apply</h2>
+      <p className="mt-1 text-sm text-zinc-500">Upload your resume (PDF or DOCX, max 10MB).</p>
+      <label className="mt-3 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-zinc-300 bg-zinc-50/50 px-4 py-8 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/40">
+        <svg className="h-7 w-7 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={1.5}
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+          />
         </svg>
-        <span className="text-sm font-medium text-gray-700">
+        <span className="text-sm font-medium text-zinc-700">
           {file ? file.name : "Click to choose a file"}
         </span>
+        <span className="text-xs text-zinc-400">Your resume is only used to screen this application.</span>
         <input type="file" accept=".pdf,.docx" onChange={handleFileChange} className="hidden" />
       </label>
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
@@ -122,20 +129,23 @@ export default function VacancyDetailPage() {
 
   return (
     <div className="space-y-6">
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <div className="notice border-red-200 bg-red-50 text-red-700">{error}</div>}
       {!error && !vacancy && <DetailSkeleton />}
       {vacancy && (
         <>
+          <BackLink href="/candidate" label="All vacancies" />
           <div className="card p-6">
-            <div className="flex items-center gap-3">
-              <h1 className="text-xl font-bold text-gray-900">{vacancy.title}</h1>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-xl font-semibold tracking-tight text-zinc-900">{vacancy.title}</h1>
               <StatusBadge status={vacancy.status} />
             </div>
-            <p className="mt-1 text-sm text-gray-500">
-              {vacancy.department_name ?? "—"} · {vacancy.employment_type.replaceAll("_", " ")}
-            </p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-zinc-500">
+              <span className="font-medium text-zinc-700">{vacancy.department_name ?? "—"}</span>
+              <span className="text-zinc-300">·</span>
+              <span>{vacancy.employment_type.replaceAll("_", " ")}</span>
+            </div>
             {vacancy.description && (
-              <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+              <p className="mt-4 max-w-3xl whitespace-pre-wrap text-sm leading-relaxed text-zinc-600">
                 {vacancy.description}
               </p>
             )}
