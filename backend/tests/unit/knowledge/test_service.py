@@ -9,7 +9,7 @@ from app.knowledge.models import DocumentCategory
 from app.knowledge.repository import RetrievalHit
 from app.knowledge.reranker import PassThroughReranker
 from app.knowledge.service import KnowledgeService
-from app.model_gateway.interfaces import Embedder, Reranker
+from app.model_gateway.interfaces import LLM, Embedder, Reranker
 
 
 def make_hit(chunk_id: str, content: str, category: str = "POLICY") -> RetrievalHit:
@@ -80,6 +80,19 @@ class ScoredReranker(Reranker):
 
     async def rerank(self, query, pairs):
         return [1.0 / (i + 1) for i in range(len(pairs))]
+
+
+class FakeLLM(LLM):
+    """Records the prompt and returns a canned, evidence-grounded answer."""
+
+    model = "fake-llm"
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, system, user):
+        self.calls.append((system, user))
+        return "Employees receive 20 days of annual leave (Leave Policy)."
 
 
 @pytest.mark.asyncio
@@ -191,3 +204,56 @@ async def test_service_empty_retrieval():
 def test_pass_through_reranker_preserves_order():
     reranker = PassThroughReranker()
     assert reranker.model == "passthrough"
+
+
+@pytest.mark.asyncio
+async def test_generate_answer_with_llm():
+    """With an LLM and sufficient evidence, a polished answer is generated."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("a", "Employees receive 20 days of annual leave.")],
+        vector_hits=[make_hit("a", "Employees receive 20 days of annual leave.")],
+    )
+    llm = FakeLLM()
+    service = KnowledgeService(repo, FakeEmbedder(), llm=llm)
+
+    result = await service.retrieve("how much annual leave?")
+    answer = await service.generate_answer("how much annual leave?", result)
+
+    assert answer == "Employees receive 20 days of annual leave (Leave Policy)."
+    assert len(llm.calls) == 1
+    system, user = llm.calls[0]
+    assert "HR assistant" in system
+    assert "how much annual leave?" in user
+    assert "Leave Policy" in user  # source documents cited in the prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_answer_skipped_when_no_llm():
+    """No LLM configured => generate_answer returns None, retrieval still works."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("a", "Employees receive 20 days of annual leave.")],
+        vector_hits=[make_hit("a", "Employees receive 20 days of annual leave.")],
+    )
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    result = await service.retrieve("how much annual leave?")
+    assert await service.generate_answer("how much annual leave?", result) is None
+
+
+@pytest.mark.asyncio
+async def test_generate_answer_skipped_on_low_confidence():
+    """Low-confidence retrieval is never handed to the LLM."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("only", "Unrelated snippet about parking.")],
+        vector_hits=[],
+    )
+    llm = FakeLLM()
+    service = KnowledgeService(
+        repo, FakeEmbedder(), llm=llm,
+        settings=RetrievalSettings(confidence_threshold=0.95),
+    )
+
+    result = await service.retrieve("nothing relevant")
+    assert result.low_confidence is True
+    assert await service.generate_answer("nothing relevant", result) is None
+    assert llm.calls == []

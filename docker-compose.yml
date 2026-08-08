@@ -81,6 +81,11 @@ services:
       # volume below, so the download survives container recreates.
       RERANKER_ENABLED: "true"
       RERANKER_MODEL: BAAI/bge-reranker-base
+      # Generation LLM (Ollama Cloud) for polished answers from retrieved chunks.
+      LLM_ENABLED: ${LLM_ENABLED:-false}
+      LLM_URL: ${LLM_URL:-https://ollama.com}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-oss:120b-cloud}
       # Retrieval funnel: fetch 30 candidates per leg, rerank 5, gate at 0.55.
       RETRIEVAL_TOP_K: "30"
       RETRIEVAL_RERANK_TOP_N: "5"

@@ -30,3 +30,19 @@ class Reranker(abc.ABC):
     async def rerank(self, query: str, pairs: list[tuple[str, str]]) -> list[float]:
         """Return one relevance score in [0, 1] per ``(query, text)`` pair."""
         raise NotImplementedError
+
+
+class LLM(abc.ABC):
+    """Generative LLM that produces the final, polished answer.
+
+    Consumes grounded context (retrieved chunks) plus the user query and
+    returns a natural-language answer. Concrete adapters (Ollama Cloud,
+    OpenAI, ...) implement this interface behind the Model Gateway.
+    """
+
+    model: str = ""
+
+    @abc.abstractmethod
+    async def complete(self, system: str, user: str) -> str:
+        """Return the model's completion for the given system/user messages."""
+        raise NotImplementedError

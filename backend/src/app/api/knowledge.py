@@ -45,8 +45,8 @@ from app.knowledge.models import (
 )
 from app.knowledge.repository import HybridRetrievalRepository
 from app.knowledge.service import KnowledgeService
-from app.model_gateway.factory import build_embedder, build_reranker
-from app.model_gateway.interfaces import Embedder, Reranker
+from app.model_gateway.factory import build_embedder, build_llm, build_reranker
+from app.model_gateway.interfaces import LLM, Embedder, Reranker
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,15 @@ def _reranker() -> Reranker:
         reranker = build_reranker()
         _reranker._reranker = reranker
     return reranker
+
+
+def _llm() -> LLM | None:
+    """Generation LLM singleton (Ollama Cloud by default); None when disabled."""
+    llm = getattr(_llm, "_llm", None)
+    if llm is None:
+        llm = build_llm()
+        _llm._llm = llm
+    return llm
 
 
 def _parse_category(raw: str | None) -> DocumentCategory:
@@ -306,21 +315,31 @@ async def search(
     q: str = Query(..., min_length=1),
     category: str | None = Query(None),
     top_k: int | None = Query(None, ge=1, le=50),
+    generate: bool = Query(True, description="Generate a polished LLM answer when configured"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Knowledge Service hybrid retrieval over INDEXED versions only."""
+    """Knowledge Service hybrid retrieval over INDEXED versions only.
+
+    When an LLM is configured (``LLM_ENABLED=true`` + ``LLM_API_KEY``) and
+    ``generate=true``, the grounded context is turned into a polished,
+    citation-aware answer by the generation model. Set ``generate=false`` for
+    the raw retrieval result only.
+    """
     service = KnowledgeService(
         HybridRetrievalRepository(session),
         _embedder(),
         reranker=_reranker(),
+        llm=_llm() if generate else None,
     )
     result = await service.retrieve(
         q,
         category=_parse_category(category) if category else None,
         top_k=top_k,
     )
+    answer = await service.generate_answer(q, result) if generate else None
     return {
         "query": q,
+        "answer": answer,
         "grounded_context": result.grounded_context,
         "confidence": round(result.confidence, 4),
         "low_confidence": result.low_confidence,

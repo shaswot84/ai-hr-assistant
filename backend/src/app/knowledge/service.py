@@ -16,9 +16,25 @@ from app.knowledge.models import DocumentCategory
 from app.knowledge.ranking import reciprocal_rank_fusion
 from app.knowledge.repository import HybridRetrievalRepository, RetrievalHit
 from app.knowledge.reranker import PassThroughReranker
-from app.model_gateway.interfaces import Embedder, Reranker
+from app.model_gateway.interfaces import LLM, Embedder, Reranker
 
 CURRENT_ONLY = True
+
+# System prompt for the generation LLM: answer only from the evidence, cite
+# the source documents, refuse gracefully when the context cannot answer.
+_GENERATION_SYSTEM = """You are an HR assistant for Summit Technologies Pvt. Ltd.
+Answer the user's question in a clear, professional, concise way using ONLY the
+grounded context below. Follow these rules strictly:
+
+1. Base every claim on the provided evidence. Never invent facts, numbers, or
+   policies that are not in the context.
+2. Cite the source document title(s) in parentheses at the end of each claim,
+   e.g. "(Leave Policy)".
+3. If the context does not contain enough information to answer the question,
+   say so honestly and suggest what additional document might help.
+4. Use plain Markdown: short paragraphs or bullets. Do not include headings,
+   citations beyond the document titles, or anything the evidence does not
+   support."""
 
 
 class KnowledgeService:
@@ -33,6 +49,7 @@ class KnowledgeService:
         *,
         settings: RetrievalSettings | None = None,
         reranker: Reranker | None = None,
+        llm: LLM | None = None,
         grounding_builder: GroundingContextBuilder | None = None,
         confidence_estimator: ConfidenceEstimator | None = None,
         low_confidence_detector: LowConfidenceDetector | None = None,
@@ -42,6 +59,7 @@ class KnowledgeService:
         self._settings = settings or RetrievalSettings()
         # Default to pass-through reranking when none is provided.
         self._reranker = reranker or PassThroughReranker()
+        self._llm = llm
         self._grounding = grounding_builder or GroundingContextBuilder(
             max_chunks=self._settings.rerank_top_n
         )
@@ -134,6 +152,26 @@ class KnowledgeService:
             chunks=final,
             low_confidence=low_confidence,
         )
+
+    async def generate_answer(self, query: str, result: KnowledgeResult) -> str | None:
+        """Produce a polished, grounded answer from a retrieval result.
+
+        Returns ``None`` when no LLM is configured, retrieval is
+        low-confidence (not enough evidence to answer safely), or generation
+        fails. The caller then serves the grounded context as-is.
+        """
+        if self._llm is None:
+            return None
+        if result.low_confidence or not result.citations:
+            return None
+        sources = ", ".join(
+            sorted({c.document_title for c in result.citations})
+        )
+        user = f"QUESTION:\n{query}\n\nSOURCES: {sources}\n\nGROUNDED CONTEXT:\n{result.grounded_context}"
+        try:
+            return await self._llm.complete(_GENERATION_SYSTEM, user)
+        except Exception:  # noqa: BLE001 - never fail search because of the LLM
+            return None
 
     @staticmethod
     def _to_retrieved_chunks(

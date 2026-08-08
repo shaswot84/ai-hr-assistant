@@ -2,6 +2,13 @@ import type {
   Application,
   ApplicationDetail,
   ApplicationStatusView,
+  KnowledgeClearResult,
+  KnowledgeDeleteResult,
+  KnowledgeDocumentDetail,
+  KnowledgeDocumentSummary,
+  KnowledgeJob,
+  KnowledgeSearchResult,
+  KnowledgeUploadResult,
   LlmConfig,
   UserContext,
   Vacancy,
@@ -144,7 +151,56 @@ export const api = {
 
   resetLlmConfig: () =>
     request<LlmConfig>("/api/settings/llm-config/reset", { method: "POST" }),
+
+  listDocuments: () =>
+    request<{ documents: KnowledgeDocumentSummary[] }>("/api/knowledge/documents"),
+
+  getDocument: (id: string) =>
+    request<KnowledgeDocumentDetail>(`/api/knowledge/documents/${id}`),
+
+  upload: (formData: FormData) =>
+    request<KnowledgeUploadResult>("/api/knowledge/documents/upload", {
+      method: "POST",
+      body: formData,
+    }),
+
+  getJob: (id: string) => request<KnowledgeJob>(`/api/knowledge/jobs/${id}`),
+
+  retryJob: (id: string) =>
+    request<KnowledgeJob>(`/api/knowledge/jobs/${id}/retry`, { method: "POST" }),
+
+  deleteDocument: (id: string) =>
+    request<KnowledgeDeleteResult>(`/api/knowledge/documents/${id}`, {
+      method: "DELETE",
+    }),
+
+  clearDocuments: () =>
+    request<KnowledgeClearResult>("/api/knowledge/documents", { method: "DELETE" }),
+
+  search: (params: { q: string; category?: string; top_k?: number; generate?: boolean }) => {
+    const query = new URLSearchParams({ q: params.q });
+    if (params.category) query.set("category", params.category);
+    if (params.top_k) query.set("top_k", String(params.top_k));
+    if (params.generate !== undefined) query.set("generate", String(params.generate));
+    return request<KnowledgeSearchResult>(`/api/knowledge/search?${query.toString()}`);
+  },
 };
+
+/** Poll an ingestion job until it reaches a terminal state (INDEXED or FAILED). */
+export async function pollJob(
+  jobId: string,
+  { intervalMs = 2000, timeoutMs = 180000 }: { intervalMs?: number; timeoutMs?: number } = {}
+): Promise<KnowledgeJob> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const job = await api.getJob(jobId);
+    if (job.status === "INDEXED" || job.status === "FAILED") return job;
+    if (Date.now() > deadline) {
+      throw new Error("Timed out waiting for the ingestion job.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
 
 /** Pulls the filename out of a `Content-Disposition: attachment; filename="..."` header. */
 function filenameFromContentDisposition(header: string | null): string | null {
