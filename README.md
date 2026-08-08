@@ -24,7 +24,7 @@ ai-hr-assistant/
 ├── scripts/
 │   └── e2e_ingestion.py      # end-to-end smoke test (needs the running stack)
 ├── backend/
-│   ├── alembic/              # migrations: RAG schema, then identity/recruitment/infra schema
+│   ├── alemc/              # async Alembic migrations
 │   ├── pyproject.toml        # deps + `reranker` extra + ruff/pytest config
 │   ├── src/app/
 │   │   ├── api/knowledge.py  # ingestion + retrieval REST endpoints

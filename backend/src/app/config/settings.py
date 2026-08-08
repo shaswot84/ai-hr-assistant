@@ -95,6 +95,21 @@ class JwtSettings(BaseSettings):
     issuer: str = "ai-hr-assistant"
 
     model_config = SettingsConfigDict(env_prefix="JWT_")
+class LLMSettings(BaseSettings):
+    """Generation LLM that turns retrieved chunks into a polished answer.
+
+    Defaults to Ollama's hosted cloud API (``https://ollama.com``) — an
+    account + API key are required (see ``OLLAMA_API_KEY``). Set ``enabled``
+    to False to serve grounded context without a generated answer.
+    """
+
+    enabled: bool = False
+    url: str = "https://ollama.com"
+    api_key: str = ""
+    model: str = "gpt-oss:120b-cloud"
+    timeout_seconds: float = 120.0
+
+    model_config = SettingsConfigDict(env_prefix="LLM_")
 
 
 class MinioSettings(BaseSettings):
@@ -198,6 +213,7 @@ class AppSettings(BaseSettings):
     model_gateway: ModelGatewaySettings = ModelGatewaySettings()
     auth: AuthSettings = AuthSettings()
     jwt: JwtSettings = JwtSettings()
+    llm: LLMSettings = LLMSettings()
     minio: MinioSettings = MinioSettings()
     smtp: SmtpSettings = SmtpSettings()
     chat: ChatSettings = ChatSettings()

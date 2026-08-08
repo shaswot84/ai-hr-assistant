@@ -1,10 +1,9 @@
 """Test setup for the auth/recruitment unit suite.
 
-Points the sync engine (`app.db.sync_session`) at a throwaway SQLite file
-instead of Postgres, so these tests need no running database. This must
-happen before any `app.*` module is imported (env vars are read once, at
-import time, via `get_settings()`), which is why it's the first thing this
-file does — pytest imports `conftest.py` before collecting test modules.
+The test-wide environment (SQLite ``DATABASE_URL``, JWT secret, MinIO
+auto-init) is bootstrapped in ``tests/conftest.py`` before any app module can
+be imported. This conftest wires the auth/recruitment routers to a throwaway
+SQLite file and provides per-test database/client fixtures.
 
 Scope: only what `test_auth.py`/`test_recruitment.py` exercise (auth +
 recruitment). `app.knowledge` (pgvector-backed RAG models) is never imported
@@ -14,15 +13,6 @@ Postgres-only `Vector` columns that SQLite can't create.
 """
 
 from __future__ import annotations
-
-import os
-import tempfile
-
-_db_file = tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False)  # noqa: SIM115 - lives for the whole test session
-os.environ["DATABASE_URL"] = f"sqlite:///{_db_file.name}"
-os.environ["AUTH_PROVIDER"] = "jwt"
-os.environ["JWT_SECRET_KEY"] = "test-only-secret-key"
-os.environ["MINIO_AUTO_INIT"] = "false"
 
 import pytest
 from fastapi import FastAPI
@@ -73,7 +63,6 @@ def _schema():
     yield
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
-    os.unlink(_db_file.name)
 
 
 @pytest.fixture(autouse=True)

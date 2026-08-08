@@ -79,12 +79,17 @@ services:
       # In-process cross-encoder reranker (BAAI/bge-reranker-base). The model
       # weights download from HuggingFace on first search into the HF cache
       # volume below, so the download survives container recreates.
-      RERANKER_ENABLED: "true"
+      RERANKER_ENABLED: "false"
       RERANKER_MODEL: BAAI/bge-reranker-base
+      # Generation LLM (Ollama Cloud) for polished answers from retrieved chunks.
+      LLM_ENABLED: ${LLM_ENABLED:-true} #was false
+      LLM_URL: ${LLM_URL:-https://ollama.com}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-oss:120b-cloud}
       # Retrieval funnel: fetch 30 candidates per leg, rerank 5, gate at 0.55.
-      RETRIEVAL_TOP_K: "30"
+      RETRIEVAL_TOP_K: "15"
       RETRIEVAL_RERANK_TOP_N: "5"
-      RETRIEVAL_CONFIDENCE_THRESHOLD: "0.55"
+      RETRIEVAL_CONFIDENCE_THRESHOLD: "0.4"
     volumes:
       - ./backend/src:/app/src
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface

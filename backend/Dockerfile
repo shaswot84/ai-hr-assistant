@@ -18,8 +18,10 @@ ENV VIRTUAL_ENV=/app/.venv \
 
 # Optional cross-encoder reranker extra (sentence-transformers + torch,
 # ~2.5GB) — installed separately from the locked base deps so uv.lock
-# doesn't need to pin the full torch dependency tree.
-RUN pip install --no-cache-dir '.[reranker]'
+# doesn't need to pin the full torch dependency tree. Install into the
+# uv-managed venv explicitly: that venv has no pip of its own, and a bare
+# `pip install` would target the system interpreter instead.
+RUN uv pip install --python /app/.venv/bin/python --no-cache '.[reranker]'
 
 EXPOSE 8000
 

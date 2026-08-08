@@ -9,7 +9,8 @@ import logging
 from app.config.settings import AppSettings, get_settings
 from app.knowledge.reranker import PassThroughReranker
 from app.model_gateway.embedder import OllamaEmbedder
-from app.model_gateway.interfaces import Embedder, Reranker
+from app.model_gateway.interfaces import LLM, Embedder, Reranker
+from app.model_gateway.llm import OllamaCloudLLM
 from app.model_gateway.reranker import SentenceTransformerReranker
 
 logger = logging.getLogger(__name__)
@@ -58,4 +59,29 @@ def build_reranker(settings: AppSettings | None = None) -> Reranker:
     return SentenceTransformerReranker(
         settings.reranker.model,
         version=settings.reranker.version,
+    )
+
+
+def build_llm(settings: AppSettings | None = None) -> LLM | None:
+    """Build the generation LLM, or None when generation is disabled.
+
+    Returns ``None`` (never raises) when ``LLM_ENABLED=false`` or no API key
+    is configured, so the search endpoint gracefully degrades to serving the
+    grounded context without a generated answer.
+    """
+    settings = settings or get_settings()
+    llm = settings.llm
+    if not llm.enabled:
+        return None
+    if not llm.api_key:
+        logger.warning(
+            "LLM_ENABLED=true but no LLM_API_KEY configured; "
+            "falling back to grounded-context-only search."
+        )
+        return None
+    return OllamaCloudLLM(
+        base_url=llm.url,
+        api_key=llm.api_key,
+        model=llm.model,
+        timeout_seconds=llm.timeout_seconds,
     )
