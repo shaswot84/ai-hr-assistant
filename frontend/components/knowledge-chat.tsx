@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { api, ApiError } from "@/lib/api";
 import type { KnowledgeSearchResult } from "@/lib/types";
 import { shortId } from "@/lib/format";
@@ -19,23 +21,53 @@ const CATEGORIES = [
 function AnswerBlock({ result }: { result: KnowledgeSearchResult }) {
   if (result.answer) {
     return (
-      <div className="space-y-2">
-        {result.answer.split("\n").map((line, i) => {
-          const trimmed = line.trim();
-          if (!trimmed) return <div key={i} className="h-2" />;
-          if (/^[-*]\s+/.test(trimmed)) {
-            return (
-              <li key={i} className="ml-5 list-disc">
-                {trimmed.replace(/^[-*]\s+/, "")}
-              </li>
-            );
-          }
-          return (
-            <p key={i} className="text-sm leading-relaxed text-gray-800">
-              {line}
-            </p>
-          );
-        })}
+      <div className="text-sm leading-relaxed text-gray-800">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            p: ({ children }) => <p className="my-1.5">{children}</p>,
+            ul: ({ children }) => (
+              <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>
+            ),
+            ol: ({ children }) => (
+              <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>
+            ),
+            li: ({ children }) => <li>{children}</li>,
+            strong: ({ children }) => (
+              <strong className="font-semibold text-gray-900">{children}</strong>
+            ),
+            em: ({ children }) => <em>{children}</em>,
+            h1: ({ children }) => (
+              <h1 className="mb-2 mt-4 text-lg font-bold text-gray-900">{children}</h1>
+            ),
+            h2: ({ children }) => (
+              <h2 className="mb-2 mt-4 text-base font-bold text-gray-900">{children}</h2>
+            ),
+            h3: ({ children }) => (
+              <h3 className="mb-2 mt-3 text-sm font-bold text-gray-900">{children}</h3>
+            ),
+            blockquote: ({ children }) => (
+              <blockquote className="my-2 border-l-4 border-blue-200 pl-3 text-gray-600">
+                {children}
+              </blockquote>
+            ),
+            a: ({ href, children }) => (
+              <a
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-600 underline"
+              >
+                {children}
+              </a>
+            ),
+            code: ({ children }) => (
+              <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">{children}</code>
+            ),
+          }}
+        >
+          {result.answer}
+        </ReactMarkdown>
       </div>
     );
   }
