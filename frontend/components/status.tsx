@@ -11,6 +11,8 @@ const COLORS: Record<string, string> = {
   PENDING: "bg-amber-50 text-amber-700 ring-amber-600/20",
   FAILED: "bg-red-50 text-red-700 ring-red-600/20",
   DELETED: "bg-zinc-100 text-zinc-600 ring-zinc-500/20",
+  ACTIVE: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  INACTIVE: "bg-zinc-100 text-zinc-600 ring-zinc-500/20",
 };
 
 /** A small status pill with a leading dot (vacancy / application / document status). */
