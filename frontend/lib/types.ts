@@ -284,3 +284,12 @@ export interface EmployeeUpdateBody {
   joining_date?: string;
   employment_status?: EmploymentStatus;
 }
+
+/** Payload for hiring a shortlisted candidate from their application. */
+export interface HireCandidateBody {
+  employee_code: string;
+  department_id: string;
+  designation_id: string;
+  manager_employee_id: string | null;
+  joining_date: string;
+}

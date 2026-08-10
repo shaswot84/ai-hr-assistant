@@ -7,6 +7,7 @@ import type {
   Employee,
   EmployeeCreateBody,
   EmployeeUpdateBody,
+  HireCandidateBody,
   KnowledgeCitation,
   KnowledgeChunk,
   KnowledgeClearResult,
@@ -236,6 +237,12 @@ export const api = {
 
   deactivateEmployee: (employeeId: string) =>
     request<Employee>(`/api/people/employees/${employeeId}/deactivate`, { method: "POST" }),
+
+  hireCandidate: (applicationId: string, body: HireCandidateBody) =>
+    request<Employee>(`/api/people/candidates/${applicationId}/hire`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   myProfile: () => request<Employee>("/api/people/me"),
 };

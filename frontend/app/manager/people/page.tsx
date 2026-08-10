@@ -926,11 +926,116 @@ function OrgTab() {
   );
 }
 
+// ---- org chart tab -------------------------------------------------------
+
+/** Build a manager → reports index plus the root nodes (no manager / manager unknown). */
+function buildOrgTree(employees: Employee[]) {
+  const byId = new Map(employees.map((e) => [e.employee_id, e]));
+  const childrenOf = new Map<string, Employee[]>();
+  const roots: Employee[] = [];
+  for (const e of employees) {
+    const manager = e.manager_employee_id ? byId.get(e.manager_employee_id) : undefined;
+    if (manager) {
+      const reports = childrenOf.get(manager.employee_id) ?? [];
+      reports.push(e);
+      childrenOf.set(manager.employee_id, reports);
+    } else {
+      roots.push(e);
+    }
+  }
+  return { roots, childrenOf };
+}
+
+/** One employee node in the org chart, rendering its direct reports recursively. */
+function OrgNode({
+  employee,
+  childrenOf,
+  ancestors,
+}: {
+  employee: Employee;
+  childrenOf: Map<string, Employee[]>;
+  ancestors: Set<string>;
+}) {
+  const reports = (childrenOf.get(employee.employee_id) ?? []).filter(
+    (r) => !ancestors.has(r.employee_id) // cycle guard — never recurse into an ancestor
+  );
+
+  return (
+    <li>
+      <div className="flex items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[13px] font-semibold text-blue-600">
+          {employee.first_name.charAt(0)}
+          {employee.last_name.charAt(0)}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-zinc-900">
+            {employee.first_name} {employee.last_name}
+          </p>
+          <p className="truncate text-xs text-zinc-400">
+            {employee.designation_title ?? "—"}
+            {employee.department_name ? ` · ${employee.department_name}` : ""}
+          </p>
+        </div>
+        <StatusBadge status={employee.employment_status} />
+      </div>
+      {reports.length > 0 && (
+        <ul className="ml-6 mt-2 space-y-2 border-l border-zinc-200 pl-4">
+          {reports.map((r) => (
+            <OrgNode
+              key={r.employee_id}
+              employee={r}
+              childrenOf={childrenOf}
+              ancestors={new Set([...ancestors, employee.employee_id])}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function OrgChartTab() {
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api
+      .listEmployees()
+      .then(setEmployees)
+      .catch(() => setEmployees([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <ListSkeleton rows={6} />;
+  if (employees.length === 0) {
+    return (
+      <div className="card">
+        <EmptyState title="No employees yet" description="Add employees to see the reporting structure." />
+      </div>
+    );
+  }
+
+  const { roots, childrenOf } = buildOrgTree(employees);
+  return (
+    <div className="card p-6">
+      <p className="mb-4 text-xs text-zinc-400">
+        Reporting lines — employees without a manager (or whose manager is inactive) appear at the top.
+      </p>
+      <ul className="space-y-2">
+        {roots.map((r) => (
+          <OrgNode key={r.employee_id} employee={r} childrenOf={childrenOf} ancestors={new Set()} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ---- page ----------------------------------------------------------------
 
 const TABS = [
   { id: "employees", label: "Employees" },
   { id: "org", label: "Departments & Designations" },
+  { id: "chart", label: "Org Chart" },
 ] as const;
 
 export default function ManagerPeoplePage() {
@@ -961,7 +1066,7 @@ export default function ManagerPeoplePage() {
         ))}
       </div>
 
-      {tab === "employees" ? <EmployeesTab /> : <OrgTab />}
+      {tab === "employees" ? <EmployeesTab /> : tab === "org" ? <OrgTab /> : <OrgChartTab />}
     </div>
   );
 }

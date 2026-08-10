@@ -9,7 +9,12 @@ import { DetailSkeleton } from "@/components/loading";
 import { Modal } from "@/components/modal";
 import { useToast } from "@/components/toast";
 import { api, ApiError, downloadResume } from "@/lib/api";
-import type { ApplicationDetail as ApplicationDetailType } from "@/lib/types";
+import type {
+  ApplicationDetail as ApplicationDetailType,
+  Department,
+  Designation,
+  Employee,
+} from "@/lib/types";
 
 function DecisionButtons({
   application,
@@ -179,11 +184,232 @@ function CandidateProfileCard({ application }: { application: ApplicationDetailT
   );
 }
 
+/** Modal for converting a shortlisted candidate into an employee (hire handoff). */
+function HireModal({
+  applicationId,
+  candidateName,
+  onClose,
+  onHired,
+}: {
+  applicationId: string;
+  candidateName: string;
+  onClose: () => void;
+  onHired: (employee: Employee) => void;
+}) {
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [designations, setDesignations] = useState<Designation[]>([]);
+  const [managers, setManagers] = useState<Employee[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [employeeCode, setEmployeeCode] = useState("");
+  const [departmentId, setDepartmentId] = useState("");
+  const [designationId, setDesignationId] = useState("");
+  const [managerId, setManagerId] = useState("");
+  const [joiningDate, setJoiningDate] = useState(() => new Date().toISOString().slice(0, 10));
+
+  // Load the org pickers (departments, designations, active employees as managers).
+  useEffect(() => {
+    Promise.all([api.listDepartments(), api.listDesignations(), api.listEmployees()])
+      .then(([depts, desigs, emps]) => {
+        setDepartments(depts);
+        setDesignations(desigs);
+        setManagers(emps.filter((e) => e.employment_status === "ACTIVE"));
+        if (depts[0]) setDepartmentId(depts[0].department_id);
+      })
+      .catch((err) =>
+        setError(err instanceof ApiError ? err.detail : "Failed to load organization data.")
+      )
+      .finally(() => setLoading(false));
+  }, []);
+
+  // Designations offered depend on the chosen department.
+  const deptDesignations = designations.filter((d) => d.department_id === departmentId);
+
+  function handleDepartmentChange(id: string) {
+    setDepartmentId(id);
+    setDesignationId(""); // a designation belongs to exactly one department
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      const employee = await api.hireCandidate(applicationId, {
+        employee_code: employeeCode,
+        department_id: departmentId,
+        designation_id: designationId,
+        manager_employee_id: managerId || null,
+        joining_date: joiningDate,
+      });
+      onHired(employee);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : "Failed to hire candidate.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal isOpen onClose={onClose} title={`Hire ${candidateName}`} size="lg">
+      {loading ? (
+        <p className="py-6 text-center text-sm text-zinc-400">Loading organization data…</p>
+      ) : (
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <p className="text-sm leading-relaxed text-zinc-600">
+            This creates an employee record for {candidateName} on their existing account and
+            grants them access to the employee portal. Their application history is kept.
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Employee Code *</label>
+              <input
+                required
+                className="input"
+                value={employeeCode}
+                onChange={(e) => setEmployeeCode(e.target.value)}
+                placeholder="EMP-042"
+              />
+            </div>
+            <div>
+              <label className="label">Joining Date *</label>
+              <input
+                required
+                type="date"
+                className="input"
+                value={joiningDate}
+                onChange={(e) => setJoiningDate(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="label">Department *</label>
+              <select
+                required
+                className="input"
+                value={departmentId}
+                onChange={(e) => handleDepartmentChange(e.target.value)}
+              >
+                <option value="">Select department…</option>
+                {departments.map((d) => (
+                  <option key={d.department_id} value={d.department_id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Designation *</label>
+              <select
+                required
+                className="input"
+                value={designationId}
+                onChange={(e) => setDesignationId(e.target.value)}
+              >
+                <option value="">Select designation…</option>
+                {deptDesignations.map((d) => (
+                  <option key={d.designation_id} value={d.designation_id}>
+                    {d.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="col-span-2">
+              <label className="label">Manager</label>
+              <select
+                className="input"
+                value={managerId}
+                onChange={(e) => setManagerId(e.target.value)}
+              >
+                <option value="">No manager</option>
+                {managers.map((m) => (
+                  <option key={m.employee_id} value={m.employee_id}>
+                    {m.first_name} {m.last_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="btn-secondary">
+              Cancel
+            </button>
+            <button type="submit" disabled={submitting} className="btn-primary">
+              {submitting ? "Hiring…" : "Hire Candidate"}
+            </button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
+/** Decision + hire actions for an application (APPLIED → shortlist/reject, SHORTLISTED → hire). */
+function DecisionCard({
+  application,
+  hired,
+  onDecide,
+  onHire,
+}: {
+  application: ApplicationDetailType;
+  hired: Employee | null;
+  onDecide: (a: ApplicationDetailType) => void;
+  onHire: () => void;
+}) {
+  // SHORTLISTED is the pre-hire state — offer the hire handoff.
+  if (application.application_status === "SHORTLISTED") {
+    if (hired) {
+      return (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="badge bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">Hired</span>
+            <span className="text-sm text-zinc-600">as {hired.first_name} {hired.last_name}</span>
+          </div>
+          <dl className="space-y-1.5 text-sm">
+            <div className="flex justify-between gap-4">
+              <dt className="text-zinc-400">Employee code</dt>
+              <dd className="font-mono text-zinc-700">{hired.employee_code}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="text-zinc-400">Department</dt>
+              <dd className="text-zinc-700">{hired.department_name ?? "—"}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="text-zinc-400">Designation</dt>
+              <dd className="text-zinc-700">{hired.designation_title ?? "—"}</dd>
+            </div>
+          </dl>
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <StatusBadge status="SHORTLISTED" />
+          <span className="text-sm text-zinc-500">Ready to make an offer?</span>
+        </div>
+        <button type="button" onClick={onHire} className="btn-primary w-full">
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          Hire Candidate
+        </button>
+      </div>
+    );
+  }
+
+  return <DecisionButtons application={application} onChange={onDecide} />;
+}
+
 export default function ManagerApplicationDetailPage() {
   const params = useParams<{ applicationId: string }>();
   const [application, setApplication] = useState<ApplicationDetailType | null>(null);
+  const [hired, setHired] = useState<Employee | null>(null);
+  const [hireOpen, setHireOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const { addToast } = useToast();
 
   useEffect(() => {
     api
@@ -262,13 +488,32 @@ export default function ManagerApplicationDetailPage() {
                   </h2>
                 </div>
                 <div className="card p-5">
-                  <DecisionButtons application={application} onChange={setApplication} />
+                  <DecisionCard
+                    application={application}
+                    hired={hired}
+                    onDecide={setApplication}
+                    onHire={() => setHireOpen(true)}
+                  />
                 </div>
               </div>
               <CandidateProfileCard application={application} />
             </div>
           </div>
         </>
+      )}
+
+      {/* Hire handoff modal (only reachable from a shortlisted application) */}
+      {hireOpen && application && (
+        <HireModal
+          applicationId={application.application_id}
+          candidateName={application.candidate_name ?? application.candidate_email ?? "Candidate"}
+          onClose={() => setHireOpen(false)}
+          onHired={(employee) => {
+            setHired(employee);
+            setHireOpen(false);
+            addToast("Candidate hired — employee portal access granted.", "success");
+          }}
+        />
       )}
     </div>
   );
