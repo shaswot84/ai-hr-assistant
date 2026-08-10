@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.knowledge import router as knowledge_router
 from app.api.routes import auth as auth_router
+from app.api.routes import people as people_router
 from app.api.routes import recruitment as recruitment_router
 from app.api.routes import settings as settings_router
 from app.config.settings import get_settings
@@ -57,6 +58,7 @@ app.include_router(auth_router.router)
 app.include_router(recruitment_router.router)
 app.include_router(settings_router.router)
 app.include_router(knowledge_router)
+app.include_router(people_router.router)
 
 
 @app.get("/health")
