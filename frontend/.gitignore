@@ -1,0 +1,16 @@
+# Next.js build output
+.next/
+out/
+
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# Next.js
+next-env.d.ts
+# clerk configuration (can include secrets)
+/.clerk/
