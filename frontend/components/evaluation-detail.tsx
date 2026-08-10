@@ -2,14 +2,14 @@ import type { Evaluation, ScoreFactor } from "@/lib/types";
 import { ScoreRing } from "@/components/score-ring";
 
 const RECOMMENDATION_STYLE: Record<string, string> = {
-  "Strong Match": "bg-green-100 text-green-700",
-  "Good Match": "bg-blue-100 text-blue-700",
-  "Possible Match": "bg-amber-100 text-amber-700",
-  "Weak Match": "bg-red-100 text-red-700",
+  "Strong Match": "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  "Good Match": "bg-blue-50 text-blue-700 ring-blue-600/20",
+  "Possible Match": "bg-amber-50 text-amber-700 ring-amber-600/20",
+  "Weak Match": "bg-red-50 text-red-700 ring-red-600/20",
 };
 
 function factorBarColor(score: number) {
-  if (score >= 70) return "bg-green-500";
+  if (score >= 70) return "bg-emerald-500";
   if (score >= 40) return "bg-amber-500";
   return "bg-red-500";
 }
@@ -18,16 +18,16 @@ function ScoreFactorRow({ factor }: { factor: ScoreFactor }) {
   return (
     <div>
       <div className="flex items-center justify-between text-sm">
-        <span className="font-medium text-gray-900">{factor.factor}</span>
-        <span className="text-gray-500">{factor.score}/100</span>
+        <span className="font-medium text-zinc-900">{factor.factor}</span>
+        <span className="tabular-nums text-zinc-500">{factor.score}/100</span>
       </div>
-      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-zinc-100">
         <div
-          className={`h-full rounded-full ${factorBarColor(factor.score)}`}
+          className={`h-full rounded-full transition-[width] duration-300 ${factorBarColor(factor.score)}`}
           style={{ width: `${Math.max(0, Math.min(100, factor.score))}%` }}
         />
       </div>
-      {factor.note && <p className="mt-1 text-xs text-gray-500">{factor.note}</p>}
+      {factor.note && <p className="mt-1 text-xs leading-relaxed text-zinc-500">{factor.note}</p>}
     </div>
   );
 }
@@ -45,21 +45,25 @@ export function EvaluationDetail({ evaluation }: { evaluation: Evaluation }) {
           <div className="flex flex-wrap items-center gap-2">
             {detail?.recommendation && (
               <span
-                className={`badge ${RECOMMENDATION_STYLE[detail.recommendation] ?? "bg-gray-100 text-gray-600"}`}
+                className={`badge ring-1 ring-inset ${RECOMMENDATION_STYLE[detail.recommendation] ?? "bg-zinc-100 text-zinc-600 ring-zinc-500/20"}`}
               >
                 {detail.recommendation}
               </span>
             )}
-            {evaluation.model && <span className="text-xs text-gray-400">via {evaluation.model}</span>}
+            {evaluation.model && (
+              <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px] text-zinc-500">
+                {evaluation.model}
+              </span>
+            )}
           </div>
-          <p className="mt-2 text-sm text-gray-700">{evaluation.overview}</p>
+          <p className="mt-2 text-sm leading-relaxed text-zinc-600">{evaluation.overview}</p>
         </div>
       </div>
 
       {detail && detail.score_factors.length > 0 && (
-        <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <h4 className="text-sm font-semibold text-gray-900">Why This Score</h4>
-          <div className="mt-3 space-y-3">
+        <div className="card p-5">
+          <h4 className="text-sm font-semibold text-zinc-900">Why This Score</h4>
+          <div className="mt-4 space-y-4">
             {detail.score_factors.map((f) => (
               <ScoreFactorRow key={f.factor} factor={f} />
             ))}
@@ -68,14 +72,14 @@ export function EvaluationDetail({ evaluation }: { evaluation: Evaluation }) {
       )}
 
       {detail && (detail.strengths.length > 0 || detail.weaknesses.length > 0) && (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2">
           {detail.strengths.length > 0 && (
-            <div className="rounded-xl border border-green-200 bg-green-50 p-4">
-              <h4 className="text-sm font-semibold text-green-800">Strengths</h4>
-              <ul className="mt-2 space-y-1.5">
+            <div className="rounded-lg border border-emerald-200/70 bg-emerald-50/60 p-4">
+              <h4 className="text-[13px] font-semibold text-emerald-800">Strengths</h4>
+              <ul className="mt-2.5 space-y-1.5">
                 {detail.strengths.map((s, i) => (
-                  <li key={i} className="flex items-start gap-1.5 text-sm text-green-800">
-                    <svg className="mt-0.5 h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <li key={i} className="flex items-start gap-1.5 text-[13px] leading-relaxed text-emerald-900">
+                    <svg className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
                     {s}
@@ -85,12 +89,12 @@ export function EvaluationDetail({ evaluation }: { evaluation: Evaluation }) {
             </div>
           )}
           {detail.weaknesses.length > 0 && (
-            <div className="rounded-xl border border-red-200 bg-red-50 p-4">
-              <h4 className="text-sm font-semibold text-red-800">Weaknesses</h4>
-              <ul className="mt-2 space-y-1.5">
+            <div className="rounded-lg border border-red-200/70 bg-red-50/60 p-4">
+              <h4 className="text-[13px] font-semibold text-red-800">Weaknesses</h4>
+              <ul className="mt-2.5 space-y-1.5">
                 {detail.weaknesses.map((w, i) => (
-                  <li key={i} className="flex items-start gap-1.5 text-sm text-red-800">
-                    <svg className="mt-0.5 h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <li key={i} className="flex items-start gap-1.5 text-[13px] leading-relaxed text-red-900">
+                    <svg className="mt-0.5 h-4 w-4 shrink-0 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                     {w}
@@ -103,16 +107,16 @@ export function EvaluationDetail({ evaluation }: { evaluation: Evaluation }) {
       )}
 
       {detail && (detail.matched_keywords.length > 0 || detail.missing_keywords.length > 0) && (
-        <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <h4 className="text-sm font-semibold text-gray-900">Keyword Match</h4>
+        <div className="card p-5">
+          <h4 className="text-sm font-semibold text-zinc-900">Keyword Match</h4>
           <div className="mt-3 flex flex-wrap gap-1.5">
             {detail.matched_keywords.map((kw) => (
-              <span key={kw} className="badge bg-green-100 text-green-700">
+              <span key={kw} className="badge bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
                 {kw}
               </span>
             ))}
             {detail.missing_keywords.map((kw) => (
-              <span key={kw} className="badge bg-red-100 text-red-700 line-through">
+              <span key={kw} className="badge bg-red-50 text-red-700 line-through ring-1 ring-inset ring-red-600/20">
                 {kw}
               </span>
             ))}

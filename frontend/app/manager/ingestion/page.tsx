@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PageHeader } from "@/components/page-header";
 import { ListSkeleton } from "@/components/loading";
+import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/components/toast";
 import { api, ApiError, pollJob } from "@/lib/api";
 import type {
@@ -250,19 +252,23 @@ export default function ManagerIngestionPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Document Ingestion</h1>
-        <p className="mt-0.5 text-sm text-gray-500">
-          Upload HR documents — the worker parses, chunks, embeds and indexes them so they become
-          searchable in the Knowledge Service.
-        </p>
-      </div>
+      <PageHeader
+        title="Document Ingestion"
+        description="Upload HR documents — the worker parses, chunks, embeds and indexes them so they become searchable in the Knowledge Service."
+        meta={
+          documents.length > 0 && (
+            <span className="badge bg-zinc-100 text-zinc-600 ring-1 ring-inset ring-zinc-500/20">
+              {documents.length} documents indexed
+            </span>
+          )
+        }
+      />
 
       {notice && (
         <div
-          className={`rounded-xl border p-4 text-sm ${
+          className={`notice ${
             notice.kind === "ok"
-              ? "border-green-200 bg-green-50 text-green-700"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
               : "border-red-200 bg-red-50 text-red-700"
           }`}
         >
@@ -271,12 +277,15 @@ export default function ManagerIngestionPage() {
       )}
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <section className="card p-6">
-          <h2 className="mb-4 text-lg font-bold text-gray-900">Upload document</h2>
+        <section className="card p-5">
+          <div className="mb-4">
+            <h2 className="text-sm font-semibold text-zinc-900">Upload document</h2>
+            <p className="text-xs text-zinc-400">PDF, DOCX, Markdown and more — multiple files allowed</p>
+          </div>
           <form onSubmit={handleUpload} className="space-y-4">
             <div>
               <label className="label" htmlFor="file">
-                File (pdf, docx, md, …) — multiple files allowed
+                File
               </label>
               <input
                 id="file"
@@ -284,10 +293,10 @@ export default function ManagerIngestionPage() {
                 multiple
                 accept=".md,.pdf,.docx,.doc,.txt,.pptx,.xlsx,text/markdown,application/pdf"
                 onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
-                className="block w-full cursor-pointer rounded-lg border border-gray-300 bg-white text-sm text-gray-700 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-3 file:py-2 file:text-sm file:font-medium file:text-blue-700"
+                className="block w-full cursor-pointer rounded-md border border-dashed border-zinc-300 bg-zinc-50/50 px-3 py-6 text-sm text-zinc-600 transition-colors file:mr-3 file:rounded-md file:border-0 file:bg-blue-50 file:px-3 file:py-1.5 file:text-[13px] file:font-medium file:text-blue-700 hover:border-zinc-400"
               />
               {files.length > 0 && (
-                <p className="mt-1.5 text-xs text-gray-500">
+                <p className="mt-1.5 text-xs text-zinc-500">
                   {files.length} file{files.length === 1 ? "" : "s"} selected:{" "}
                   {files.map((f) => f.name).join(", ")}
                 </p>
@@ -345,15 +354,20 @@ export default function ManagerIngestionPage() {
                 {uploading ? "Uploading…" : "Upload & index"}
               </button>
               {busyJobs.length > 0 && (
-                <span className="badge bg-amber-100 text-amber-700">indexing in progress…</span>
+                <span className="badge bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20">
+                  indexing in progress…
+                </span>
               )}
             </div>
           </form>
         </section>
 
         <section className="card overflow-hidden">
-          <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
-            <h2 className="text-lg font-bold text-gray-900">Document registry</h2>
+          <div className="flex items-center justify-between border-b border-zinc-100 px-5 py-3.5">
+            <div>
+              <h2 className="text-sm font-semibold text-zinc-900">Document registry</h2>
+              <p className="text-xs text-zinc-400">Click a row to inspect its versions and jobs</p>
+            </div>
             {documents.length > 0 && (
               <button type="button" onClick={handleClearAll} className="btn-danger-ghost">
                 Clear all
@@ -364,45 +378,55 @@ export default function ManagerIngestionPage() {
           {loading ? (
             <ListSkeleton rows={5} />
           ) : documents.length === 0 ? (
-            <p className="px-6 py-12 text-center text-sm text-gray-400">
-              No documents yet — upload one to get started.
-            </p>
+            <EmptyState
+              title="No documents yet"
+              description="Upload one to get started — it will be parsed, chunked, embedded and indexed automatically."
+            />
           ) : (
-            <div className="overflow-x-auto">
+            <div className="table-scroll max-h-[540px]">
               <table className="w-full">
-                <thead className="border-b border-sky-100 bg-sky-50">
+                <thead className="bg-zinc-50">
                   <tr>
                     <th className="table-th">Title</th>
                     <th className="table-th">Category</th>
                     <th className="table-th">Status</th>
-                    <th className="table-th">Versions</th>
-                    <th className="table-th">Chunks</th>
+                    <th className="table-th text-right">Versions</th>
+                    <th className="table-th text-right">Chunks</th>
                     <th className="table-th">Updated</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-zinc-100">
                   {documents.map((d) => (
                     <tr
                       key={d.document_id}
-                      className="cursor-pointer transition-colors hover:bg-sky-50"
+                      className={`table-row cursor-pointer ${
+                        d.document_id === selectedId ? "bg-blue-50/40" : ""
+                      }`}
                       onClick={() => {
                         setSelectedId(d.document_id);
                         loadDetail(d.document_id);
                       }}
                     >
-                      <td className="table-td font-medium text-gray-900">
-                        {d.title}
-                        {d.document_id === selectedId && (
-                          <span className="ml-1 text-xs text-blue-600">✓</span>
-                        )}
+                      <td className="table-td font-medium text-zinc-900">
+                        <div className="flex items-center gap-2">
+                          <svg className="h-4 w-4 shrink-0 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={1.75}
+                              d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+                            />
+                          </svg>
+                          {d.title}
+                        </div>
                       </td>
-                      <td className="table-td">{d.category}</td>
+                      <td className="table-td text-zinc-500">{d.category}</td>
                       <td className="table-td">
                         <span className={`badge ${statusBadgeClass(d.status)}`}>{d.status}</span>
                       </td>
-                      <td className="table-td">{d.versions}</td>
-                      <td className="table-td">{d.current_chunks}</td>
-                      <td className="table-td text-xs text-gray-500">{fmtDate(d.updated_at)}</td>
+                      <td className="table-td text-right tabular-nums text-zinc-500">{d.versions}</td>
+                      <td className="table-td text-right tabular-nums text-zinc-500">{d.current_chunks}</td>
+                      <td className="table-td text-xs text-zinc-500">{fmtDate(d.updated_at)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -414,10 +438,10 @@ export default function ManagerIngestionPage() {
 
       {detail && (
         <section className="card overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-6 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 px-5 py-3.5">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-lg font-bold text-gray-900">{detail.title}</h2>
-              <span className="badge bg-blue-50 text-blue-700">{detail.category}</span>
+              <h2 className="text-sm font-semibold text-zinc-900">{detail.title}</h2>
+              <span className="badge bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-600/20">{detail.category}</span>
               <span className={`badge ${statusBadgeClass(detail.status)}`}>{detail.status}</span>
             </div>
             <div className="flex items-center gap-2">
@@ -430,60 +454,62 @@ export default function ManagerIngestionPage() {
             </div>
           </div>
 
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-zinc-100">
             {detail.versions.map((v) => (
-              <div key={v.document_version_id} className="px-6 py-4">
-                <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                  <span className="font-medium text-gray-700">
+              <div key={v.document_version_id} className="px-5 py-4">
+                <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500">
+                  <span className="font-medium text-zinc-700">
                     v{v.version_number}
                     {v.is_current ? " (current)" : ""}
                   </span>
-                  <span>· {fmtDate(v.uploaded_at)}</span>
-                  <span>· {v.original_filename}</span>
-                  <code className="rounded bg-gray-100 px-1.5 py-0.5">{v.checksum.slice(0, 12)}</code>
+                  <span>·</span>
+                  <span>{fmtDate(v.uploaded_at)}</span>
+                  <span>·</span>
+                  <span>{v.original_filename}</span>
+                  <code className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px]">{v.checksum.slice(0, 12)}</code>
                 </div>
 
                 {v.change_summary && (
-                  <p className="mb-3 text-xs text-gray-500">
+                  <p className="mb-3 text-xs text-zinc-500">
                     change summary: <code>{v.change_summary}</code>
                   </p>
                 )}
 
                 {v.ingestion_jobs.length === 0 ? (
-                  <p className="text-sm text-gray-400">No ingestion job for this version.</p>
+                  <p className="text-sm text-zinc-400">No ingestion job for this version.</p>
                 ) : (
-                  <div className="overflow-x-auto">
+                  <div className="table-scroll max-h-[420px] rounded-md border border-zinc-100">
                     <table className="w-full">
-                      <thead className="border-b border-sky-100 bg-sky-50">
+                      <thead className="bg-zinc-50">
                         <tr>
                           <th className="table-th">Job</th>
                           <th className="table-th">Status</th>
                           <th className="table-th">Failure</th>
-                          <th className="table-th">Parser / Chunker / Embedder</th>
+                          <th className="table-th hidden lg:table-cell">Parser / Chunker / Embedder</th>
                           <th className="table-th">Completed</th>
                           <th className="table-th" />
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-100">
+                      <tbody className="divide-y divide-zinc-100">
                         {v.ingestion_jobs.map((j) => (
-                          <tr key={j.ingestion_job_id}>
+                          <tr key={j.ingestion_job_id} className="table-row">
                             <td className="table-td">
-                              <code>{shortId(j.ingestion_job_id)}</code>
+                              <code className="font-mono text-xs">{shortId(j.ingestion_job_id)}</code>
                             </td>
                             <td className="table-td">
                               <span className={`badge ${statusBadgeClass(j.status)}`}>{j.status}</span>
                             </td>
-                            <td className="table-td text-xs text-gray-500">
+                            <td className="table-td text-xs text-zinc-500">
                               {j.failure_reason || "—"}
-                              {j.error_message && <div>{j.error_message}</div>}
+                              {j.error_message && <div className="text-red-500">{j.error_message}</div>}
                             </td>
-                            <td className="table-td text-xs text-gray-500">
+                            <td className="table-td hidden text-xs text-zinc-500 lg:table-cell">
                               {[j.parser_version, j.chunking_strategy, j.embedding_model]
                                 .filter(Boolean)
                                 .join(" · ") || "—"}
                             </td>
-                            <td className="table-td text-xs text-gray-500">{fmtDate(j.completed_at)}</td>
-                            <td className="table-td">
+                            <td className="table-td text-xs text-zinc-500">{fmtDate(j.completed_at)}</td>
+                            <td className="table-td text-right">
                               {j.status === "FAILED" && (
                                 <button
                                   type="button"

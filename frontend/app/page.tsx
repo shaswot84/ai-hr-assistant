@@ -36,8 +36,8 @@ export default function HomePage() {
   }, [router]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-sky-100">
-      <p className="text-sm text-gray-500">Loading…</p>
+    <div className="flex min-h-screen items-center justify-center bg-zinc-50">
+      <p className="text-sm text-zinc-500">Loading…</p>
     </div>
   );
 }

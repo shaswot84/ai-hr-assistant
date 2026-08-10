@@ -37,26 +37,26 @@ export function Modal({
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="animate-fade-in fixed inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="animate-fade-in fixed inset-0 bg-zinc-950/40 backdrop-blur-[2px]" onClick={onClose} />
       <div className="flex min-h-full items-center justify-center p-4">
         <div
-          className={`animate-slide-up relative flex max-h-[90vh] w-full ${SIZES[size]} flex-col rounded-2xl border border-sky-200 bg-white shadow-xl`}
+          className={`animate-slide-up relative flex max-h-[90vh] w-full ${SIZES[size]} flex-col rounded-xl border border-zinc-200 bg-white shadow-xl`}
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="flex shrink-0 items-center justify-between border-b border-sky-200 p-6">
-            <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+          <div className="flex shrink-0 items-center justify-between border-b border-zinc-100 px-5 py-4">
+            <h2 className="text-[15px] font-semibold text-zinc-900">{title}</h2>
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+              className="rounded-md p-1 text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-600"
               aria-label="Close"
             >
-              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
-          <div className="overflow-y-auto p-6">{children}</div>
+          <div className="overflow-y-auto p-5">{children}</div>
         </div>
       </div>
     </div>

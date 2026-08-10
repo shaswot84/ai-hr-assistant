@@ -18,7 +18,7 @@ const ToastContext = createContext<ToastContextValue | null>(null);
 
 const ICONS: Record<ToastType, React.ReactNode> = {
   success: (
-    <svg className="h-5 w-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <svg className="h-5 w-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
     </svg>
   ),
@@ -35,7 +35,7 @@ const ICONS: Record<ToastType, React.ReactNode> = {
 };
 
 const STYLES: Record<ToastType, string> = {
-  success: "border-green-200 bg-green-50",
+  success: "border-emerald-200 bg-emerald-50",
   error: "border-red-200 bg-red-50",
   info: "border-blue-200 bg-blue-50",
 };
@@ -64,14 +64,14 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`animate-slide-in flex items-start gap-3 rounded-xl border p-4 shadow-lg ${STYLES[toast.type]}`}
+            className={`animate-slide-in flex items-start gap-3 rounded-lg border p-3.5 shadow-lg ${STYLES[toast.type]}`}
           >
             <span className="mt-0.5 shrink-0">{ICONS[toast.type]}</span>
-            <p className="flex-1 text-sm text-gray-800">{toast.message}</p>
+            <p className="flex-1 text-sm text-zinc-800">{toast.message}</p>
             <button
               type="button"
               onClick={() => removeToast(toast.id)}
-              className="shrink-0 text-gray-400 transition-colors hover:text-gray-600"
+              className="shrink-0 text-zinc-400 transition-colors hover:text-zinc-600"
               aria-label="Dismiss"
             >
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

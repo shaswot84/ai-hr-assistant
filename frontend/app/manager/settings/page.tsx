@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PageHeader } from "@/components/page-header";
 import { DetailSkeleton } from "@/components/loading";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
@@ -57,10 +58,13 @@ function PromptSettings() {
   if (loading) return <DetailSkeleton />;
 
   return (
-    <div className="card flex h-full flex-col p-6">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-sm font-semibold text-gray-900">Resume-Screening System Prompt</span>
-        <span className={`badge ${isDefault ? "bg-gray-100 text-gray-600" : "bg-blue-100 text-blue-700"}`}>
+    <section className="card flex h-full flex-col p-5">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-900">Resume-Screening System Prompt</h2>
+          <p className="text-xs text-zinc-400">Controls how candidates are scored and matched</p>
+        </div>
+        <span className={`badge ${isDefault ? "bg-zinc-100 text-zinc-600 ring-1 ring-inset ring-zinc-500/20" : "bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-600/20"}`}>
           {isDefault ? "Default" : "Customized"}
         </span>
       </div>
@@ -68,7 +72,7 @@ function PromptSettings() {
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
         rows={14}
-        className="input flex-1"
+        className="input flex-1 font-mono text-[13px] leading-relaxed"
       />
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
       <div className="mt-4 flex gap-3">
@@ -84,7 +88,7 @@ function PromptSettings() {
           Reset to Default
         </button>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -147,10 +151,13 @@ function LlmConnectionSettings() {
   if (loading) return <DetailSkeleton />;
 
   return (
-    <div className="card flex h-full flex-col p-6">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-sm font-semibold text-gray-900">LLM Provider Connection</span>
-        <span className={`badge ${isDefault ? "bg-gray-100 text-gray-600" : "bg-blue-100 text-blue-700"}`}>
+    <section className="card flex h-full flex-col p-5">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-900">LLM Provider Connection</h2>
+          <p className="text-xs text-zinc-400">The model used for resume screening</p>
+        </div>
+        <span className={`badge ${isDefault ? "bg-zinc-100 text-zinc-600 ring-1 ring-inset ring-zinc-500/20" : "bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-600/20"}`}>
           {isDefault ? "Default" : "Customized"}
         </span>
       </div>
@@ -173,7 +180,7 @@ function LlmConnectionSettings() {
             value={model}
             onChange={(e) => setModel(e.target.value)}
             placeholder="gpt-oss:120b-cloud"
-            className="input"
+            className="input font-mono"
           />
         </div>
         <div>
@@ -186,7 +193,7 @@ function LlmConnectionSettings() {
             className="input"
             autoComplete="off"
           />
-          <p className="mt-1 text-xs text-gray-400">
+          <p className="mt-1 text-xs text-zinc-400">
             Write-only — never displayed once saved. Leave blank to keep the current key.
           </p>
         </div>
@@ -206,21 +213,17 @@ function LlmConnectionSettings() {
           Reset to Default
         </button>
       </div>
-    </div>
+    </section>
   );
 }
 
 export default function ManagerSettingsPage() {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">AI Settings</h1>
-        <p className="mt-1 text-sm text-gray-500">
-          Configure the LLM provider and the system prompt used to screen resumes against a job
-          posting — this controls how candidates are scored and matched, not resume-writing feedback.
-        </p>
-      </div>
-
+      <PageHeader
+        title="AI Settings"
+        description="Configure the LLM provider and the system prompt used to screen resumes against a job posting — this controls how candidates are scored and matched."
+      />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <LlmConnectionSettings />
         <PromptSettings />
