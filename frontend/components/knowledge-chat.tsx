@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, ApiError } from "@/lib/api";
+import { ApiError, searchStream } from "@/lib/api";
 import type { KnowledgeSearchResult } from "@/lib/types";
 import { shortId } from "@/lib/format";
 
@@ -18,7 +18,13 @@ const CATEGORIES = [
   "OTHER",
 ];
 
-function AnswerBlock({ result }: { result: KnowledgeSearchResult }) {
+function AnswerBlock({
+  result,
+  streaming = false,
+}: {
+  result: KnowledgeSearchResult;
+  streaming?: boolean;
+}) {
   if (result.answer) {
     return (
       <div className="text-sm leading-relaxed text-zinc-700">
@@ -63,6 +69,12 @@ function AnswerBlock({ result }: { result: KnowledgeSearchResult }) {
         >
           {result.answer}
         </ReactMarkdown>
+        {streaming && (
+          <span
+            aria-hidden="true"
+            className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-[2px] bg-blue-500 align-text-bottom"
+          />
+        )}
       </div>
     );
   }
@@ -81,6 +93,7 @@ export function KnowledgeChat() {
   const [searching, setSearching] = useState(false);
   const [result, setResult] = useState<KnowledgeSearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -90,18 +103,39 @@ export function KnowledgeChat() {
     setSearching(true);
     setError(null);
     setResult(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    let answer = "";
     try {
-      const res = await api.search({
-        q,
-        category: category || undefined,
-        top_k: topK ? Number(topK) : undefined,
-        generate: true,
-      });
-      setResult(res);
+      for await (const event of searchStream(
+        { q, category: category || undefined, top_k: topK ? Number(topK) : undefined, generate: true },
+        controller.signal
+      )) {
+        if (event.type === "retrieval") {
+          setResult({
+            query: q,
+            answer: null,
+            grounded_context: event.grounded_context,
+            confidence: event.confidence,
+            low_confidence: event.low_confidence,
+            citations: event.citations,
+            chunks: event.chunks,
+          });
+        } else if (event.type === "token") {
+          answer += event.text;
+          setResult((r) => (r ? { ...r, answer } : r));
+        }
+      }
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Search failed. Is the backend running?");
+      if (err instanceof ApiError) {
+        setError(err.detail);
+      } else if (!(err instanceof Error && err.name === "AbortError")) {
+        setError("Search failed. Is the backend running?");
+      }
     } finally {
       setSearching(false);
+      abortRef.current = null;
     }
   }
 
@@ -155,7 +189,11 @@ export function KnowledgeChat() {
               className="input w-20 lg:w-20"
               aria-label="Top K results"
             />
-            <button type="submit" disabled={searching || !query.trim()} className="btn-primary shrink-0">
+            <button
+              type="submit"
+              disabled={searching || !query.trim()}
+              className="btn-primary shrink-0"
+            >
               {searching ? (
                 <>
                   <span
@@ -173,12 +211,24 @@ export function KnowledgeChat() {
                 </>
               )}
             </button>
+            {searching && (
+              <button
+                type="button"
+                onClick={() => abortRef.current?.abort()}
+                className="btn-secondary shrink-0"
+              >
+                <span aria-hidden="true" className="h-3 w-3 rounded-[2px] bg-current" />
+                Stop
+              </button>
+            )}
           </div>
         </div>
         {searching && (
           <p className="mt-2.5 flex items-center gap-2 text-xs text-zinc-400">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-            Retrieving evidence, reranking, and generating a grounded answer — this can take a few seconds.
+            {result
+              ? "Generating a grounded answer — streaming output…"
+              : "Retrieving evidence, reranking, and grounding…"}
           </p>
         )}
       </form>
@@ -213,7 +263,7 @@ export function KnowledgeChat() {
               </div>
             </div>
             <div className="px-5 py-4">
-              <AnswerBlock result={result} />
+              <AnswerBlock result={result} streaming={searching} />
             </div>
 
             {result.citations.length > 0 && (

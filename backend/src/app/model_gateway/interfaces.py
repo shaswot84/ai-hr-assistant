@@ -6,6 +6,7 @@ decoupled from where models actually run.
 """
 
 import abc
+from collections.abc import AsyncIterator
 
 
 class Embedder(abc.ABC):
@@ -46,3 +47,12 @@ class LLM(abc.ABC):
     async def complete(self, system: str, user: str) -> str:
         """Return the model's completion for the given system/user messages."""
         raise NotImplementedError
+
+    async def stream(self, system: str, user: str) -> AsyncIterator[str]:
+        """Yield the completion in chunks (token streaming).
+
+        The default implementation buffers ``complete()`` into a single chunk,
+        so adapters without native streaming still work; streaming-capable
+        adapters (e.g. Ollama) override this with a true token stream.
+        """
+        yield await self.complete(system, user)

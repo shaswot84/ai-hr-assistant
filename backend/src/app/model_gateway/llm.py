@@ -1,5 +1,8 @@
 """Ollama Cloud-backed generation LLM for the Model Gateway."""
 
+import json
+from collections.abc import AsyncIterator
+
 import httpx
 
 from app.model_gateway.interfaces import LLM
@@ -44,6 +47,37 @@ class OllamaCloudLLM(LLM):
         response.raise_for_status()
         payload = response.json()
         return payload["message"]["content"]
+
+    async def stream(self, system: str, user: str) -> AsyncIterator[str]:
+        """Yield completion chunks as the model generates them.
+
+        With ``stream=true`` Ollama's ``/api/chat`` replies with one NDJSON
+        line per token; each line carries ``message.content`` (and a trailing
+        ``done=true`` line). A non-2xx response still raises.
+        """
+        async with self._client.stream(
+            "POST",
+            "/api/chat",
+            json={
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "stream": True,
+            },
+            headers={"Authorization": f"Bearer {self._api_key}"},
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                if payload.get("done"):
+                    break
+                token = payload.get("message", {}).get("content", "")
+                if token:
+                    yield token
 
     async def aclose(self) -> None:
         await self._client.aclose()

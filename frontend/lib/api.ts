@@ -2,6 +2,8 @@ import type {
   Application,
   ApplicationDetail,
   ApplicationStatusView,
+  KnowledgeCitation,
+  KnowledgeChunk,
   KnowledgeClearResult,
   KnowledgeDeleteResult,
   KnowledgeDocumentDetail,
@@ -185,6 +187,67 @@ export const api = {
     return request<KnowledgeSearchResult>(`/api/knowledge/search?${query.toString()}`);
   },
 };
+
+/** One SSE event emitted by `GET /api/knowledge/search/stream`. */
+export type SearchStreamEvent =
+  | {
+      type: "retrieval";
+      grounded_context: string;
+      confidence: number;
+      low_confidence: boolean;
+      citations: KnowledgeCitation[];
+      chunks: KnowledgeChunk[];
+    }
+  | { type: "token"; text: string }
+  | { type: "done" };
+
+/**
+ * Stream a knowledge search over SSE: a `retrieval` event (evidence,
+ * citations, confidence) first, then `token` events as the LLM generates,
+ * then a final `done` event. When no answer is generated (no LLM configured,
+ * low confidence, or `generate: false`) only `retrieval` + `done` arrive and
+ * the caller falls back to `grounded_context`.
+ */
+export async function* searchStream(
+  params: { q: string; category?: string; top_k?: number; generate?: boolean },
+  signal?: AbortSignal
+): AsyncGenerator<SearchStreamEvent> {
+  const query = new URLSearchParams({ q: params.q });
+  if (params.category) query.set("category", params.category);
+  if (params.top_k) query.set("top_k", String(params.top_k));
+  if (params.generate !== undefined) query.set("generate", String(params.generate));
+
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/api/knowledge/search/stream?${query.toString()}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal,
+  });
+  if (!res.ok) await parseError(res);
+  if (!res.body) throw new Error("Streaming search returned no response body.");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === "[DONE]") return;
+        yield JSON.parse(payload) as SearchStreamEvent;
+      }
+    }
+  } finally {
+    // Cancels the underlying fetch when the consumer aborts or stops early.
+    await reader.cancel().catch(() => {});
+  }
+}
 
 /** Poll an ingestion job until it reaches a terminal state (INDEXED or FAILED). */
 export async function pollJob(
