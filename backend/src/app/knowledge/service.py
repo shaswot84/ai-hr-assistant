@@ -5,6 +5,7 @@ It never touches pgvector/FTS/MinIO directly — it only talks to the
 repository (PostgreSQL) and the Model Gateway (embedding + reranking).
 """
 
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from uuid import UUID
 
@@ -172,6 +173,28 @@ class KnowledgeService:
             return await self._llm.complete(_GENERATION_SYSTEM, user)
         except Exception:  # noqa: BLE001 - never fail search because of the LLM
             return None
+
+    async def stream_answer(self, query: str, result: KnowledgeResult) -> AsyncIterator[str]:
+        """Stream a grounded answer token by token.
+
+        Same gating and prompt as :meth:`generate_answer` — yields nothing
+        when no LLM is configured, retrieval is low-confidence, or generation
+        fails mid-stream. The caller (SSE endpoint) terminates the stream the
+        moment this generator is exhausted.
+        """
+        if self._llm is None:
+            return
+        if result.low_confidence or not result.citations:
+            return
+        sources = ", ".join(
+            sorted({c.document_title for c in result.citations})
+        )
+        user = f"QUESTION:\n{query}\n\nSOURCES: {sources}\n\nGROUNDED CONTEXT:\n{result.grounded_context}"
+        try:
+            async for token in self._llm.stream(_GENERATION_SYSTEM, user):
+                yield token
+        except Exception:  # noqa: BLE001 - never fail search because of the LLM
+            return
 
     @staticmethod
     def _to_retrieved_chunks(

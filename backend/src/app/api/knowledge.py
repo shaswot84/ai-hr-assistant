@@ -18,10 +18,12 @@ argument defaults); the framework treats them as parameter metadata.
 """
 
 
+import json
 import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +37,7 @@ from app.knowledge.ingestion.orchestrator import (
     register_document,
     soft_delete_document,
 )
+from app.knowledge.contracts import KnowledgeResult
 from app.knowledge.models import (
     Document,
     DocumentCategory,
@@ -272,6 +275,52 @@ async def get_document(document_id: UUID, session: AsyncSession = Depends(get_se
     }
 
 
+def _serialize_search_result(query: str, result: KnowledgeResult) -> dict:
+    """Serialize a retrieval result into the JSON shape served by the search API."""
+    return {
+        "query": query,
+        "grounded_context": result.grounded_context,
+        "confidence": round(result.confidence, 4),
+        "low_confidence": result.low_confidence,
+        "citations": [
+            {
+                "chunk_id": str(c.chunk_id),
+                "document_id": str(c.document_id),
+                "document_version_id": str(c.document_version_id),
+                "version_number": c.version_number,
+                "document_title": c.document_title,
+                "category": c.category,
+                "page": c.page,
+                "section_title": c.section_title,
+            }
+            for c in result.citations
+        ],
+        "chunks": [
+            {
+                "chunk_id": str(c.chunk_id),
+                "document_title": c.document_title,
+                "category": c.category,
+                "section_title": c.section_title,
+                "page": c.page,
+                "text": c.text,
+                "parent_context": c.parent_context,
+                "retrieval_score": round(c.retrieval_score, 4),
+                "reranker_score": round(c.reranker_score, 4) if c.reranker_score is not None else None,
+                "confidence": round(c.confidence, 4),
+                "provenance": {
+                    "parser_version": c.provenance.parser_version if c.provenance else None,
+                    "chunking_strategy": c.provenance.chunking_strategy if c.provenance else None,
+                    "embedding_model": c.provenance.embedding_model if c.provenance else None,
+                    "pipeline_version": c.provenance.pipeline_version if c.provenance else None,
+                }
+                if c.provenance
+                else None,
+            }
+            for c in result.chunks
+        ],
+    }
+
+
 def _serialize_job(job: IngestionJob) -> dict:
     return {
         "ingestion_job_id": str(job.ingestion_job_id),
@@ -337,46 +386,53 @@ async def search(
         top_k=top_k,
     )
     answer = await service.generate_answer(q, result) if generate else None
-    return {
-        "query": q,
-        "answer": answer,
-        "grounded_context": result.grounded_context,
-        "confidence": round(result.confidence, 4),
-        "low_confidence": result.low_confidence,
-        "citations": [
-            {
-                "chunk_id": str(c.chunk_id),
-                "document_id": str(c.document_id),
-                "document_version_id": str(c.document_version_id),
-                "version_number": c.version_number,
-                "document_title": c.document_title,
-                "category": c.category,
-                "page": c.page,
-                "section_title": c.section_title,
-            }
-            for c in result.citations
-        ],
-        "chunks": [
-            {
-                "chunk_id": str(c.chunk_id),
-                "document_title": c.document_title,
-                "category": c.category,
-                "section_title": c.section_title,
-                "page": c.page,
-                "text": c.text,
-                "parent_context": c.parent_context,
-                "retrieval_score": round(c.retrieval_score, 4),
-                "reranker_score": round(c.reranker_score, 4) if c.reranker_score is not None else None,
-                "confidence": round(c.confidence, 4),
-                "provenance": {
-                    "parser_version": c.provenance.parser_version if c.provenance else None,
-                    "chunking_strategy": c.provenance.chunking_strategy if c.provenance else None,
-                    "embedding_model": c.provenance.embedding_model if c.provenance else None,
-                    "pipeline_version": c.provenance.pipeline_version if c.provenance else None,
-                }
-                if c.provenance
-                else None,
-            }
-            for c in result.chunks
-        ],
-    }
+    return {**_serialize_search_result(q, result), "answer": answer}
+
+
+@router.get("/search/stream")
+async def search_stream(
+    q: str = Query(..., min_length=1),
+    category: str | None = Query(None),
+    top_k: int | None = Query(None, ge=1, le=50),
+    generate: bool = Query(True, description="Stream a generated LLM answer when configured"),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """SSE variant of ``/search``: retrieval metadata first, then answer tokens.
+
+    Wire format is one SSE event per line::
+
+        data: {"type": "retrieval", "grounded_context": ..., "citations": [...], "chunks": [...]}
+
+        data: {"type": "token", "text": "..."}
+
+        data: {"type": "done"}
+
+    When no LLM is configured, ``generate=false``, or retrieval is
+    low-confidence, only ``retrieval`` + ``done`` are emitted and the client
+    falls back to serving ``grounded_context`` — exactly like ``/search``.
+    """
+    service = KnowledgeService(
+        HybridRetrievalRepository(session),
+        _embedder(),
+        reranker=_reranker(),
+        llm=_llm() if generate else None,
+    )
+
+    async def event_stream():
+        result = await service.retrieve(
+            q,
+            category=_parse_category(category) if category else None,
+            top_k=top_k,
+        )
+        retrieval_event = {**_serialize_search_result(q, result), "type": "retrieval"}
+        yield f"data: {json.dumps(retrieval_event)}\n\n"
+        if generate:
+            async for token in service.stream_answer(q, result):
+                yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

@@ -48,6 +48,39 @@ async def test_complete_posts_chat_payload_and_returns_content():
 
 
 @pytest.mark.asyncio
+async def test_stream_yields_chunks_and_stops_at_done():
+    """stream() requests stream=true and yields each NDJSON chunk."""
+    captured = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.read())
+        lines = [
+            json.dumps({"message": {"content": "Employees get "}}),
+            json.dumps({"message": {"content": "20 days of "}}),
+            json.dumps({"message": {"content": "annual leave."}}),
+            json.dumps({"done": True}),
+        ]
+        return httpx.Response(200, text="\n".join(lines))
+
+    client = httpx.AsyncClient(
+        base_url="https://ollama.com", transport=httpx.MockTransport(handler)
+    )
+    llm = OllamaCloudLLM(
+        "https://ollama.com",
+        "sk-test",
+        "gpt-oss:120b-cloud",
+        client=client,
+    )
+
+    chunks = [c async for c in llm.stream("You are an HR assistant.", "How much leave?")]
+
+    assert captured["body"]["stream"] is True
+    assert chunks == ["Employees get ", "20 days of ", "annual leave."]
+
+    await llm.aclose()
+
+
+@pytest.mark.asyncio
 async def test_complete_raises_on_error_status():
     """Non-2xx responses raise HTTPStatusError instead of returning garbage."""
 
