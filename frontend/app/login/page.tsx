@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
@@ -424,13 +425,28 @@ export default function LoginPage() {
                 <div className="mt-4 grid grid-cols-3 gap-2">
                   {(Object.keys(DEMOS) as Array<keyof typeof DEMOS>).map((role) => {
                     const active = selectedDemo === role;
+                    const baseCls =
+                      "flex items-center justify-center gap-1.5 rounded-xl border px-2 py-2 text-xs font-medium transition";
+                    // Candidates enter through the public careers page — no
+                    // sign-in needed to browse or apply for the first time.
+                    if (role === "candidate") {
+                      return (
+                        <Link
+                          key={role}
+                          href="/candidate"
+                          className={`${baseCls} border-white/10 bg-white/5 text-white/70 hover:border-[#d4a373]/50 hover:text-white`}
+                        >
+                          {DEMO_LABELS[role]}
+                        </Link>
+                      );
+                    }
                     return (
                       <button
                         key={role}
                         type="button"
                         onClick={() => fillDemo(role)}
                         aria-pressed={active}
-                        className={`flex items-center justify-center gap-1.5 rounded-xl border px-2 py-2 text-xs font-medium transition ${
+                        className={`${baseCls} ${
                           active
                             ? "border-[#d4a373] bg-[#d4a373]/10 text-[#f5c76a]"
                             : "border-white/10 bg-white/5 text-white/70 hover:border-[#d4a373]/50 hover:text-white"
@@ -447,7 +463,12 @@ export default function LoginPage() {
                   })}
                 </div>
                 <p className="mt-2.5 text-center text-xs text-white/30">
-                  Demo credentials are filled automatically — just press Sign In.
+                  Manager / Employee demos are filled automatically — just press Sign In. Candidates
+                  can browse vacancies without signing in.
+                </p>
+                <p className="mt-1.5 text-center text-[11px] text-white/25">
+                  Returning candidate? Sign in with {DEMOS.candidate.email} / {DEMOS.candidate.password}
+                  to track your applications.
                 </p>
               </div>
             </div>
