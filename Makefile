@@ -1,4 +1,4 @@
-.PHONY: help up down start stop restart logs ps build setup migrate seed test lint dev
+.PHONY: help up fresh down start stop restart logs ps build setup migrate seed test lint dev
 
 DOCKER := docker compose
 
@@ -9,6 +9,8 @@ help:
 	@echo "  make up          One-command start: copies .env if missing, builds,"
 	@echo "                   starts infra, runs Alembic migrations, starts the"
 	@echo "                   app services, and seeds demo data"
+	@echo "  make fresh       Clean slate: stop and remove containers + volumes,"
+	@echo "                   then run 'make up' from scratch"
 	@echo ""
 	@echo "Run / stop:"
 	@echo "  make stop        Pause all containers (keeps them)"
@@ -22,7 +24,7 @@ help:
 	@echo "Setup / data:"
 	@echo "  make setup       Copy .env.example -> .env (only if .env missing)"
 	@echo "  make migrate     Run Alembic migrations against the running database"
-	@echo "  make seed        Seed demo manager + sample vacancy"
+	@echo "  make seed        Seed demo users, sample vacancies, and leave data"
 	@echo ""
 	@echo "Local backend (no Docker):"
 	@echo "  make dev         Run backend via uvicorn with reload"
@@ -38,14 +40,19 @@ up: setup
 	$(DOCKER) build
 	$(DOCKER) up -d postgres minio mailpit
 	$(MAKE) migrate
-	$(DOCKER) up -d backend worker frontend
+	$(DOCKER) up -d backend worker recruitment_worker frontend
 	@echo "Stack is up:"
-	@echo "  Frontend (candidate/manager portals): http://localhost:3000"
-	@echo "  Backend  (API docs):                  http://localhost:8000/docs"
-	@echo "  Mailpit  (dev email):                 http://localhost:8025"
-	@echo "  MinIO    (console):                   http://localhost:9001"
+	@echo "  Frontend (candidate/manager/employee portals): http://localhost:3000"
+	@echo "  Backend  (API docs):                           http://localhost:8000/docs"
+	@echo "  Mailpit  (dev email):                          http://localhost:8025"
+	@echo "  MinIO    (console):                             http://localhost:9001"
 	@echo ""
 	$(MAKE) seed
+
+# Clean slate: stop and remove containers + volumes (fresh DB/MinIO/node_modules), then bring the stack up.
+fresh:
+	$(DOCKER) down -v
+	$(MAKE) up
 
 # Copy .env.example to .env only if .env does not already exist.
 setup:

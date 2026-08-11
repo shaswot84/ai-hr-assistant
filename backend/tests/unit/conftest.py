@@ -22,7 +22,7 @@ from app.auth.passwords import hash_password
 from app.contracts.auth import UserContext
 from app.db.base import Base
 from app.db.sync_session import SessionLocal, engine
-from app.domain import audit, outbox, recruitment, setting  # noqa: F401
+from app.domain import audit, leave, outbox, recruitment, setting  # noqa: F401
 from app.domain.identity import (
     ApplicationUser,
     Candidate,
@@ -43,6 +43,7 @@ from app.shared.clock import get_clock
 # with its own (Postgres-backed) fixtures — out of scope for this one.
 def _build_test_app() -> FastAPI:
     from app.api.routes import auth as auth_router
+    from app.api.routes import leave as leave_router
     from app.api.routes import people as people_router
     from app.api.routes import recruitment as recruitment_router
     from app.api.routes import settings as settings_router
@@ -52,6 +53,7 @@ def _build_test_app() -> FastAPI:
     app.include_router(recruitment_router.router)
     app.include_router(settings_router.router)
     app.include_router(people_router.router)
+    app.include_router(leave_router.router)
     return app
 
 

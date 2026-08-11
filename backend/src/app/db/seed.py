@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
+from decimal import Decimal
 
 from sqlalchemy import select
 
@@ -15,8 +16,17 @@ from app.domain.identity import (
     Employee,
     Person,
 )
+from app.domain.leave import LeaveBalance, LeaveType
 from app.domain.recruitment import Vacancy
 from app.shared.clock import get_clock
+
+# (name, description, default_days, requires_approval, is_paid, max_consecutive_days)
+SAMPLE_LEAVE_TYPES = [
+    ("Annual Leave", "Planned time off for rest and personal use.", Decimal(20), True, True, None),
+    ("Sick Leave", "Time off to recover from illness or injury.", Decimal(10), True, True, 5),
+    ("Casual Leave", "Short-notice leave for personal matters.", Decimal(7), True, True, 3),
+    ("Unpaid Leave", "Leave beyond paid entitlements.", Decimal(0), True, False, None),
+]
 
 # (title, department, employment_type, description, days_open) — a spread of
 # roles/departments so the candidate portal and AI scoring demo have variety.
@@ -208,6 +218,51 @@ def _provision_user(
         )
 
 
+def _seed_leave_types(db) -> list[LeaveType]:
+    """Idempotently create the standard leave types, returning all active ones."""
+    for name, description, default_days, requires_approval, is_paid, max_consecutive in (
+        SAMPLE_LEAVE_TYPES
+    ):
+        if db.scalar(select(LeaveType).where(LeaveType.leave_name == name)) is not None:
+            continue
+        db.add(
+            LeaveType(
+                leave_name=name,
+                description=description,
+                default_days=default_days,
+                requires_approval=requires_approval,
+                is_paid=is_paid,
+                max_consecutive_days=max_consecutive,
+                status="ACTIVE",
+            )
+        )
+    db.flush()
+    return list(db.scalars(select(LeaveType).where(LeaveType.status == "ACTIVE")))
+
+
+def _seed_leave_balances(db, employee: Employee, leave_types: list[LeaveType], year: int) -> None:
+    """Idempotently give an employee a balance row per leave type for the given year."""
+    now = get_clock().now()
+    for leave_type in leave_types:
+        stmt = select(LeaveBalance).where(
+            LeaveBalance.employee_id == employee.employee_id,
+            LeaveBalance.leave_type_id == leave_type.leave_type_id,
+            LeaveBalance.year == year,
+        )
+        if db.scalar(stmt) is not None:
+            continue
+        db.add(
+            LeaveBalance(
+                employee_id=employee.employee_id,
+                leave_type_id=leave_type.leave_type_id,
+                year=year,
+                allocated_days=leave_type.default_days,
+                used_days=Decimal(0),
+                updated_at=now,
+            )
+        )
+
+
 def seed() -> None:
     """Idempotently seed the database with demo users and a sample vacancy."""
     init_db()
@@ -299,10 +354,20 @@ def seed() -> None:
 
         sam = _employee_by_email(db, "employee@example.com")
         priya = _employee_by_email(db, "priya@example.com")
+        arjun = _employee_by_email(db, "arjun@example.com")
         if sam is not None and manager is not None:
             sam.manager_employee_id = manager.employee_id
         if priya is not None and sam is not None:
             priya.manager_employee_id = sam.employee_id
+        db.commit()
+
+        # ---- leave management demo data: standard leave types + a starting
+        # balance per employee for the current year (idempotent).
+        leave_types = _seed_leave_types(db)
+        this_year = clock.today().year
+        for employee in (manager, sam, priya, arjun):
+            if employee is not None:
+                _seed_leave_balances(db, employee, leave_types, this_year)
         db.commit()
 
         # sample vacancies, one per title (idempotent: skip titles that already exist)
