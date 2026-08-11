@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
+from app.domain.identity import ApplicationUser, Candidate, Person
 from app.domain.outbox import OutboxJob
 from app.domain.recruitment import ApplicationEvaluation
 
@@ -164,6 +165,111 @@ def _seed_evaluation(db, application_id):
         )
     )
     db.commit()
+
+
+def test_apply_as_new_candidate_provisions_account_and_login(db, client, manager_context):
+    """First-time candidates self-register: account + application in one transaction, then can log in."""
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+
+    application = svc.apply_as_new_candidate(
+        vacancy_id=vacancy.vacancy_id,
+        cv_object_key="resumes/c.pdf",
+        first_name="New",
+        last_name="Candidate",
+        email="Newbie@Acme-Hr-Test.Dev",
+        phone="+91 90000 00000",
+        password="password-123",
+    )
+    assert application.application_status == "APPLIED"
+
+    # Person + CANDIDATE account + Candidate rows were provisioned (email normalized).
+    person = db.scalar(select(Person).where(Person.email == "newbie@acme-hr-test.dev"))
+    assert person is not None
+    app_user = db.scalar(
+        select(ApplicationUser).where(ApplicationUser.person_id == person.person_id)
+    )
+    assert app_user.coarse_role == "CANDIDATE"
+    candidate = db.scalar(select(Candidate).where(Candidate.person_id == person.person_id))
+    assert candidate is not None
+
+    # The password chosen in the form works against the login endpoint.
+    login = client.post(
+        "/api/auth/login",
+        json={"email": "newbie@acme-hr-test.dev", "password": "password-123"},
+    )
+    assert login.status_code == 200
+
+
+def test_apply_as_new_candidate_blocks_existing_email(db, manager_context, candidate_context):
+    """A duplicate email is blocked with a sign-in prompt instead of a second account."""
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    with pytest.raises(ValueError, match="already exists"):
+        svc.apply_as_new_candidate(
+            vacancy_id=vacancy.vacancy_id,
+            cv_object_key="resumes/c.pdf",
+            first_name="Alex",
+            last_name="Applicant",
+            email=candidate_context.email,
+            phone=None,
+            password="password-123",
+        )
+
+
+def test_apply_as_new_candidate_requires_open_vacancy(db, manager_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    svc.archive_vacancy(manager_context, vacancy.vacancy_id)
+    with pytest.raises(ValueError, match="not open"):
+        svc.apply_as_new_candidate(
+            vacancy_id=vacancy.vacancy_id,
+            cv_object_key="resumes/c.pdf",
+            first_name="New",
+            last_name="Candidate",
+            email="newbie2@acme-hr-test.dev",
+            phone=None,
+            password="password-123",
+        )
+
+
+def test_apply_as_new_candidate_requires_password_length(db, manager_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    with pytest.raises(ValueError, match="at least 8"):
+        svc.apply_as_new_candidate(
+            vacancy_id=vacancy.vacancy_id,
+            cv_object_key="resumes/c.pdf",
+            first_name="New",
+            last_name="Candidate",
+            email="newbie3@acme-hr-test.dev",
+            phone=None,
+            password="short",
+        )
+
+
+def test_public_vacancy_listing_shows_only_open(db, client, manager_context):
+    """Anonymous visitors can browse open vacancies without signing in."""
+    svc = RecruitmentService(db)
+    open_vacancy = _create_vacancy(svc, manager_context)
+    closed_vacancy = _create_vacancy(svc, manager_context)
+    svc.archive_vacancy(manager_context, closed_vacancy.vacancy_id)
+
+    res = client.get("/api/vacancies")  # no Authorization header
+    assert res.status_code == 200
+    ids = {v["vacancy_id"] for v in res.json()}
+    assert str(open_vacancy.vacancy_id) in ids
+    assert str(closed_vacancy.vacancy_id) not in ids
+
+
+def test_seed_candidate_apply_still_works_with_auth(db, manager_context, candidate_context):
+    """The authenticated apply flow is unchanged alongside the public one."""
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(
+        candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
+    )
+    assert application.application_status == "APPLIED"
 
 
 def test_manager_application_detail_serializes_screening_as_snake_case(
