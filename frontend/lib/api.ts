@@ -17,6 +17,12 @@ import type {
   KnowledgeJob,
   KnowledgeSearchResult,
   KnowledgeUploadResult,
+  LeaveBalance,
+  LeaveRequest,
+  LeaveRequestCreateBody,
+  LeaveRequestDetail,
+  LeaveType,
+  LeaveTypeCreateBody,
   LlmConfig,
   UserContext,
   Vacancy,
@@ -245,6 +251,46 @@ export const api = {
     }),
 
   myProfile: () => request<Employee>("/api/people/me"),
+
+  // ---- leave management ----------------------------------------------
+
+  listLeaveTypes: () => request<LeaveType[]>("/api/leave/types"),
+
+  createLeaveType: (body: LeaveTypeCreateBody) =>
+    request<LeaveType>("/api/leave/types", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  myLeaveBalance: (year?: number) =>
+    request<LeaveBalance[]>(`/api/leave/balance${year ? `?year=${year}` : ""}`),
+
+  requestLeave: (body: LeaveRequestCreateBody) =>
+    request<LeaveRequest>("/api/leave/requests", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  myLeaveRequests: () => request<LeaveRequest[]>("/api/leave/requests/mine"),
+
+  myLeaveRequest: (leaveRequestId: string) =>
+    request<LeaveRequest>(`/api/leave/requests/mine/${leaveRequestId}`),
+
+  cancelLeaveRequest: (leaveRequestId: string) =>
+    request<LeaveRequest>(`/api/leave/requests/mine/${leaveRequestId}/cancel`, {
+      method: "POST",
+    }),
+
+  allLeaveRequests: () => request<LeaveRequestDetail[]>("/api/leave/requests"),
+
+  leaveRequestDetail: (leaveRequestId: string) =>
+    request<LeaveRequestDetail>(`/api/leave/requests/${leaveRequestId}`),
+
+  decideLeaveRequest: (leaveRequestId: string, action: "approve" | "reject") =>
+    request<LeaveRequestDetail>(`/api/leave/requests/${leaveRequestId}/decision`, {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    }),
 };
 
 /** One SSE event emitted by `GET /api/knowledge/search/stream`. */
