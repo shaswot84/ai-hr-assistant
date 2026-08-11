@@ -295,3 +295,63 @@ export interface HireCandidateBody {
   manager_employee_id: string | null;
   joining_date: string;
 }
+
+// ---- Leave management -----------------------------------------------
+
+export interface LeaveType {
+  leave_type_id: string;
+  leave_name: string;
+  description: string | null;
+  default_days: string;
+  requires_approval: boolean;
+  is_paid: boolean;
+  max_consecutive_days: number | null;
+  status: "ACTIVE" | "ARCHIVED";
+}
+
+export interface LeaveTypeCreateBody {
+  leave_name: string;
+  description?: string | null;
+  default_days: string;
+  requires_approval?: boolean;
+  is_paid?: boolean;
+  max_consecutive_days?: number | null;
+}
+
+export interface LeaveBalance {
+  leave_type_id: string;
+  leave_type_name: string;
+  year: number;
+  allocated_days: string;
+  used_days: string;
+  remaining_days: string;
+}
+
+export type LeaveRequestStatus = "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
+
+export interface LeaveRequest {
+  leave_request_id: string;
+  request_number: string;
+  leave_type_id: string;
+  leave_type_name: string;
+  start_date: string;
+  end_date: string;
+  total_days: string;
+  reason: string | null;
+  status: LeaveRequestStatus;
+  submitted_at: string;
+  decided_at: string | null;
+}
+
+/** Manager-facing leave request, extended with whose request it is. */
+export interface LeaveRequestDetail extends LeaveRequest {
+  employee_name: string | null;
+  employee_email: string | null;
+}
+
+export interface LeaveRequestCreateBody {
+  leave_type_id: string;
+  start_date: string;
+  end_date: string;
+  reason?: string | null;
+}

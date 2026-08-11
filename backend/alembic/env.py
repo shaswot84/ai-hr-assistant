@@ -15,6 +15,7 @@ from app.config.settings import get_settings
 from app.db.base import Base
 import app.domain.audit  # noqa: F401  (register audit_log table)
 import app.domain.identity  # noqa: F401  (register identity + org tables)
+import app.domain.leave  # noqa: F401  (register leave management tables)
 import app.domain.outbox  # noqa: F401  (register outbox table)
 import app.domain.recruitment  # noqa: F401  (register recruitment tables)
 import app.domain.setting  # noqa: F401  (register app_setting table)
