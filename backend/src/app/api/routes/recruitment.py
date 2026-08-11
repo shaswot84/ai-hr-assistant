@@ -82,10 +82,13 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
 def _to_application_detail_out(svc: RecruitmentService, application) -> ApplicationDetailOut:
     """Build a manager-facing detail response: application + evaluation + candidate contact info."""
     evaluation = svc.latest_evaluation(application.application_id)
-    out = _to_application_out(application, evaluation)
+    payload = _to_application_out(application, evaluation).model_dump()
     candidate = svc._identity.get_candidate_for_application(application)
+    # A linked Employee row means the candidate was hired from this pipeline
+    # (the application status itself stays SHORTLISTED).
+    payload["hired"] = candidate.hired_employee_id is not None if candidate else False
     return ApplicationDetailOut(
-        **out.model_dump(),
+        **payload,
         candidate_name=_candidate_display(svc, candidate),
         candidate_email=_candidate_email(svc, candidate),
     )

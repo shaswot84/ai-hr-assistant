@@ -26,12 +26,14 @@ from app.auth.passwords import hash_password
 from app.contracts.auth import UserContext
 from app.domain.identity import (
     ApplicationUser,
+    Candidate,
     Department,
     Designation,
     Employee,
     Person,
 )
 from app.repositories.audit import AuditRepo
+from app.repositories.outbox import OutboxRepo
 from app.repositories.people import DepartmentRepo, DesignationRepo, EmployeeRepo
 from app.repositories.recruitment import ApplicationRepo
 from app.services.identity import IdentityService
@@ -75,6 +77,7 @@ class PeopleService:
         self._designations = DesignationRepo(db)
         self._employees = EmployeeRepo(db)
         self._applications = ApplicationRepo(db)
+        self._outbox = OutboxRepo(db, clock=self._clock)
         self._audit = AuditRepo(db, clock=self._clock)
         self._identity = IdentityService(db)
 
@@ -445,6 +448,17 @@ class PeopleService:
             app_user.coarse_role = ROLE_EMPLOYEE
             app_user.updated_at = now
 
+        # Close out the candidate's other open applications in the same
+        # transaction: once hired, an applicant shouldn't stay shortlisted or
+        # under review elsewhere. Each withdrawal gets a notification email
+        # via the outbox — all-or-nothing with the hire itself.
+        self._withdraw_other_applications(
+            candidate.candidate_id,
+            hired_application_id=application_id,
+            candidate_email=self._candidate_email(candidate),
+            now=now,
+        )
+
         self._audit.record(
             actor_user_id=self._actor_user_id(actor),
             action="CANDIDATE_HIRED",
@@ -520,6 +534,52 @@ class PeopleService:
             )
         )
         return int(self._db.scalar(stmt) or 0)
+
+    def _candidate_email(self, candidate: Candidate) -> str:
+        """Resolve the candidate's email for notifications ('' if the Person is missing)."""
+        person = self._db.get(Person, candidate.person_id)
+        return person.email if person else ""
+
+    def _withdraw_other_applications(
+        self,
+        candidate_id: uuid.UUID,
+        *,
+        hired_application_id: uuid.UUID,
+        candidate_email: str,
+        now,
+    ) -> None:
+        """Withdraw the candidate's remaining open applications after hiring.
+
+        Open = APPLIED or SHORTLISTED (REJECTED/WITHDRAWN are already
+        terminal). Each withdrawal is written in the current transaction and
+        enqueues a ``SEND_APPLICATION_WITHDRAWN`` notification email via the
+        outbox, so the email is only sent if the whole hire commits.
+        """
+        open_statuses = {"APPLIED", "SHORTLISTED"}
+        for application in self._applications.list_for_candidate(candidate_id):
+            if application.application_id == hired_application_id:
+                continue
+            if application.application_status not in open_statuses:
+                continue
+            vacancy_title = application.vacancy.title if application.vacancy else "the position"
+            application.application_status = "WITHDRAWN"
+            application.withdrawn_at = now
+            application.updated_at = now
+            self._outbox.enqueue(
+                "SEND_APPLICATION_WITHDRAWN",
+                {
+                    "application_id": str(application.application_id),
+                    "to_email": candidate_email,
+                    "subject": f"Application update: {vacancy_title}",
+                    "body": (
+                        f"Thank you for your application to {vacancy_title}. Since you've "
+                        "accepted a position with Summit Technologies, this application has "
+                        "been withdrawn. We appreciate your interest and wish you the best."
+                    ),
+                },
+                aggregate_type="application",
+                aggregate_id=application.application_id,
+            )
 
     def _actor_user_id(self, actor: UserContext) -> uuid.UUID | None:
         """Resolve the actor's application_user id for audit records (best-effort)."""
