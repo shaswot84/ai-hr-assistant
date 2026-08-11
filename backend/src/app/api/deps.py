@@ -38,6 +38,20 @@ def get_current_user(
     return user
 
 
+def get_optional_user(
+    request: Request,
+    provider: AuthProvider = Depends(get_auth_provider),
+) -> UserContext | None:
+    """Resolve the authenticated user, or None for public (anonymous) routes.
+
+    Used by endpoints anyone may call (e.g. browsing open vacancies): a valid
+    token still resolves to a user so the route can tailor the response, but
+    no token / an invalid token is treated as an anonymous visitor rather than
+    a 401.
+    """
+    return provider.authenticate(request)
+
+
 def require_role(*roles: str):
     """Return a FastAPI dependency that enforces that the user's coarse role is in `roles`."""
 

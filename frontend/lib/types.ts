@@ -80,6 +80,8 @@ export interface Application {
 export interface ApplicationDetail extends Application {
   candidate_name: string | null;
   candidate_email: string | null;
+  /** True once the candidate was converted into an employee (status stays SHORTLISTED). */
+  hired?: boolean;
 }
 
 /** The AI provider connection used for resume screening — manager-editable, API key is write-only. */

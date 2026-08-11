@@ -23,6 +23,7 @@ from app.capabilities.people import (
 from app.capabilities.recruitment import RecruitmentService
 from app.domain.audit import AuditLog
 from app.domain.identity import ApplicationUser, Employee, Person
+from app.domain.outbox import OutboxJob
 
 # ---- shared helpers ------------------------------------------------------
 
@@ -407,6 +408,82 @@ def test_hire_candidate_already_hired_conflicts(db, manager_context, candidate_c
             manager_employee_id=None,
             joining_date=date(2026, 2, 1),
         )
+
+
+def test_hire_candidate_withdraws_other_open_applications(db, manager_context, candidate_context):
+    """Hiring from one application withdraws the candidate's other open ones and emails them."""
+    svc = PeopleService(db)
+    recruitment = RecruitmentService(db)
+    v1 = recruitment.create_vacancy(
+        manager_context, title="Senior Backend Engineer", department_name="Engineering",
+        description="Build APIs.", employment_type="full_time", opening_date=None, closing_date=None,
+    )
+    v2 = recruitment.create_vacancy(
+        manager_context, title="Data Analyst", department_name="Data",
+        description="Analyze data.", employment_type="full_time", opening_date=None, closing_date=None,
+    )
+    hired_app = recruitment.apply(candidate_context, vacancy_id=v1.vacancy_id, cv_object_key="resumes/a.pdf")
+    other_app = recruitment.apply(candidate_context, vacancy_id=v2.vacancy_id, cv_object_key="resumes/b.pdf")
+    recruitment.decide_application(manager_context, hired_app.application_id, approve=True)
+    recruitment.decide_application(manager_context, other_app.application_id, approve=True)
+
+    department, designation = _make_dept_and_designation(svc, manager_context)
+    svc.hire_candidate(
+        manager_context,
+        hired_app.application_id,
+        employee_code="EMP-600",
+        department_id=department.department_id,
+        designation_id=designation.designation_id,
+        manager_employee_id=None,
+        joining_date=date(2026, 2, 1),
+    )
+
+    # The hired application stays SHORTLISTED; the sibling one is withdrawn.
+    db.refresh(hired_app)
+    db.refresh(other_app)
+    assert hired_app.application_status == "SHORTLISTED"
+    assert other_app.application_status == "WITHDRAWN"
+    assert other_app.withdrawn_at is not None
+
+    # One notification email was enqueued for the withdrawn application.
+    jobs = db.scalars(
+        select(OutboxJob).where(OutboxJob.job_type == "SEND_APPLICATION_WITHDRAWN")
+    ).all()
+    assert len(jobs) == 1
+    assert jobs[0].payload["to_email"] == candidate_context.email
+    assert jobs[0].payload["application_id"] == str(other_app.application_id)
+
+
+def test_application_detail_exposes_hired_flag(
+    db, client, manager_context, candidate_context, manager_password
+):
+    """The manager API marks an application as hired once the candidate was converted."""
+    svc = PeopleService(db)
+    recruitment = RecruitmentService(db)
+    vacancy = recruitment.create_vacancy(
+        manager_context, title="Product Designer", department_name="Design",
+        description="Design products.", employment_type="full_time",
+        opening_date=None, closing_date=None,
+    )
+    application = recruitment.apply(
+        candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
+    )
+    recruitment.decide_application(manager_context, application.application_id, approve=True)
+    department, designation = _make_dept_and_designation(svc, manager_context)
+    svc.hire_candidate(
+        manager_context,
+        application.application_id,
+        employee_code="EMP-700",
+        department_id=department.department_id,
+        designation_id=designation.designation_id,
+        manager_employee_id=None,
+        joining_date=date(2026, 2, 1),
+    )
+
+    headers = _login(client, manager_context.email, manager_password)
+    res = client.get(f"/api/applications/{application.application_id}", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["hired"] is True
 
 
 # ---- HTTP layer ----------------------------------------------------------

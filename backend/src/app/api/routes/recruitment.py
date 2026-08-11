@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
+from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import get_optional_user, require_role
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
 from app.contracts.auth import UserContext
 from app.db.sync_session import get_db
@@ -82,10 +83,13 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
 def _to_application_detail_out(svc: RecruitmentService, application) -> ApplicationDetailOut:
     """Build a manager-facing detail response: application + evaluation + candidate contact info."""
     evaluation = svc.latest_evaluation(application.application_id)
-    out = _to_application_out(application, evaluation)
+    payload = _to_application_out(application, evaluation).model_dump()
     candidate = svc._identity.get_candidate_for_application(application)
+    # A linked Employee row means the candidate was hired from this pipeline
+    # (the application status itself stays SHORTLISTED).
+    payload["hired"] = candidate.hired_employee_id is not None if candidate else False
     return ApplicationDetailOut(
-        **out.model_dump(),
+        **payload,
         candidate_name=_candidate_display(svc, candidate),
         candidate_email=_candidate_email(svc, candidate),
     )
@@ -149,10 +153,10 @@ def _vacancy_out(v) -> VacancyOut:
 
 @router.get("/vacancies", response_model=list[VacancyOut])
 def list_vacancies(
-    user: UserContext = Depends(get_current_user),
+    user: UserContext | None = Depends(get_optional_user),
     svc: RecruitmentService = Depends(_svc),
 ):
-    """List vacancies; candidates see only open ones, employees/managers see all."""
+    """List vacancies; anonymous visitors and candidates see only open ones."""
     vacancies = svc.list_vacancies(user)
     depts = {v.department_id: _department_name(svc, v.department_id) for v in vacancies}
     out = []
@@ -190,10 +194,10 @@ def create_vacancy(
 @router.get("/vacancies/{vacancy_id}", response_model=VacancyOut)
 def get_vacancy(
     vacancy_id: uuid.UUID,
-    user: UserContext = Depends(get_current_user),
+    user: UserContext | None = Depends(get_optional_user),
     svc: RecruitmentService = Depends(_svc),
 ):
-    """Return a single vacancy by id, or 404 if not found."""
+    """Return a single vacancy by id, or 404 if not found (public — job postings)."""
     vacancy = svc.get_vacancy(vacancy_id)
     if vacancy is None:
         raise HTTPException(status_code=404, detail="Vacancy not found.")
@@ -278,6 +282,69 @@ def apply_to_vacancy(
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
+
+    return _to_status_out(application)
+
+
+@router.post(
+    "/vacancies/{vacancy_id}/apply",
+    response_model=ApplicationStatusOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def apply_as_new_candidate(
+    vacancy_id: uuid.UUID,
+    file: UploadFile,
+    first_name: str = Form(...),
+    last_name: str = Form(...),
+    email: str = Form(...),
+    phone: str | None = Form(None),
+    password: str = Form(...),
+    svc: RecruitmentService = Depends(_svc),
+):
+    """Apply to an open vacancy as a new (anonymous) candidate.
+
+    No login required: the candidate's details + resume are collected here and
+    their account (password chosen in the form) is provisioned in the same
+    transaction as the application. Blocks when the email already exists —
+    that person should sign in and use the authenticated apply flow instead.
+
+    Plain `def` (not `async def`) so FastAPI runs the blocking MinIO upload
+    and DB commit in its threadpool instead of on the shared event loop.
+    """
+    data = file.file.read()
+    if len(data) == 0:
+        raise HTTPException(status_code=400, detail="The uploaded resume is empty.")
+    if len(data) > MAX_RESUME_BYTES:
+        raise HTTPException(status_code=400, detail="Resume too large. Max size is 10MB.")
+    filename = file.filename or ""
+    if not filename.lower().endswith(ALLOWED_RESUME_TYPES):
+        raise HTTPException(status_code=400, detail="Only PDF or DOCX resumes are accepted.")
+
+    # upload to MinIO FIRST; only then provision the account + application row
+    try:
+        object_key = SyncS3ObjectStore().put_resume(data, filename, file.content_type or "")
+    except Exception as err:
+        raise HTTPException(status_code=500, detail="Failed to store resume.") from err
+
+    try:
+        application = svc.apply_as_new_candidate(
+            vacancy_id=vacancy_id,
+            cv_object_key=object_key,
+            first_name=first_name,
+            last_name=last_name,
+            email=email,
+            phone=phone,
+            password=password,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    except IntegrityError as err:
+        # Two concurrent submissions with the same email racing the unique
+        # constraint on Person.email — the duplicate-email guard above usually
+        # catches it, this is the last-resort backstop.
+        raise HTTPException(
+            status_code=409, detail="An account already exists for this email — sign in instead."
+        ) from err
 
     return _to_status_out(application)
 

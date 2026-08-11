@@ -8,6 +8,9 @@ import { ListSkeleton } from "@/components/loading";
 import { EmptyState } from "@/components/empty-state";
 import { Pagination } from "@/components/pagination";
 import { SortableTh, Th, toggleSort, type SortState } from "@/components/table";
+import { Modal } from "@/components/modal";
+import { HireModal } from "@/components/hire-modal";
+import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
 import type { ApplicationDetail, ApplicationStatus } from "@/lib/types";
 
@@ -18,6 +21,7 @@ const STATUS_FILTERS: Array<{ label: string; value: ApplicationStatus | "ALL" }>
   { label: "Applied", value: "APPLIED" },
   { label: "Shortlisted", value: "SHORTLISTED" },
   { label: "Rejected", value: "REJECTED" },
+  { label: "Withdrawn", value: "WITHDRAWN" },
 ];
 
 function scoreTone(score: number) {
@@ -64,13 +68,40 @@ export default function ManagerAllApplicationsPage() {
   const [statusFilter, setStatusFilter] = useState<ApplicationStatus | "ALL">("ALL");
   const [sort, setSort] = useState<SortState>({ key: "applied", dir: "desc" });
   const [page, setPage] = useState(1);
+  const [rejecting, setRejecting] = useState<ApplicationDetail | null>(null);
+  const [rejectBusy, setRejectBusy] = useState(false);
+  const [hireTarget, setHireTarget] = useState<ApplicationDetail | null>(null);
+  const { addToast } = useToast();
+
+  const refresh = useMemo(
+    () => () =>
+      api
+        .allApplications()
+        .then(setApplications)
+        .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load applications.")),
+    []
+  );
 
   useEffect(() => {
-    api
-      .allApplications()
-      .then(setApplications)
-      .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load applications."));
-  }, []);
+    refresh();
+  }, [refresh]);
+
+  /** Reject an APPLIED application inline from the list (terminal, emails the candidate). */
+  async function handleReject() {
+    if (!rejecting) return;
+    setRejectBusy(true);
+    try {
+      await api.decide(rejecting.application_id, "reject");
+      addToast(`${rejecting.candidate_name ?? "Application"} rejected.`, "success");
+      setRejecting(null);
+      await refresh();
+    } catch (err) {
+      addToast(err instanceof ApiError ? err.detail : "Failed to reject application.", "error");
+      setRejecting(null);
+    } finally {
+      setRejectBusy(false);
+    }
+  }
 
   const filtered = useMemo(() => {
     if (!applications) return [];
@@ -248,18 +279,45 @@ export default function ManagerAllApplicationsPage() {
                           })}
                         </td>
                         <td className="table-td">
-                          <StatusBadge status={a.application_status} />
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <StatusBadge status={a.application_status} />
+                            {a.hired && (
+                              <span className="badge bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
+                                Hired
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="table-td text-right">
-                          <Link
-                            href={`/manager/applications/${a.application_id}`}
-                            className="link inline-flex items-center gap-1"
-                          >
-                            Review
-                            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                            </svg>
-                          </Link>
+                          <div className="inline-flex items-center gap-3">
+                            {a.application_status === "APPLIED" && (
+                              <button
+                                type="button"
+                                className="link text-red-600 hover:text-red-700"
+                                onClick={() => setRejecting(a)}
+                              >
+                                Reject
+                              </button>
+                            )}
+                            {a.application_status === "SHORTLISTED" && !a.hired && (
+                              <button
+                                type="button"
+                                className="link text-emerald-600 hover:text-emerald-700"
+                                onClick={() => setHireTarget(a)}
+                              >
+                                Hire
+                              </button>
+                            )}
+                            <Link
+                              href={`/manager/applications/${a.application_id}`}
+                              className="link inline-flex items-center gap-1"
+                            >
+                              Review
+                              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                              </svg>
+                            </Link>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -270,6 +328,57 @@ export default function ManagerAllApplicationsPage() {
             </div>
           )}
         </>
+      )}
+
+      {/* Reject confirmation (inline on APPLIED rows) */}
+      {rejecting && (
+        <Modal isOpen onClose={() => !rejectBusy && setRejecting(null)} title="Reject this application?" size="sm">
+          <div className="space-y-4">
+            <p className="text-sm leading-relaxed text-zinc-600">
+              <span className="font-medium text-zinc-900">
+                {rejecting.candidate_name ?? rejecting.candidate_email}
+              </span>{" "}
+              will be emailed that their application for{" "}
+              <span className="font-medium text-zinc-900">{rejecting.vacancy_title ?? "this role"}</span>{" "}
+              wasn&apos;t selected. This decision can&apos;t be changed afterwards.
+            </p>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={rejectBusy}
+                onClick={() => setRejecting(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary bg-red-600 hover:bg-red-700"
+                disabled={rejectBusy}
+                onClick={handleReject}
+              >
+                {rejectBusy ? "Rejecting…" : "Reject"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Hire handoff (inline on SHORTLISTED rows) */}
+      {hireTarget && (
+        <HireModal
+          applicationId={hireTarget.application_id}
+          candidateName={hireTarget.candidate_name ?? hireTarget.candidate_email ?? "Candidate"}
+          onClose={() => setHireTarget(null)}
+          onHired={(employee) => {
+            setHireTarget(null);
+            addToast(
+              `${hireTarget.candidate_name ?? "Candidate"} hired as ${employee.first_name} ${employee.last_name} — other applications withdrawn.`,
+              "success"
+            );
+            refresh();
+          }}
+        />
       )}
     </div>
   );
