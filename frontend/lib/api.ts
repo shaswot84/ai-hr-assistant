@@ -2,6 +2,12 @@ import type {
   Application,
   ApplicationDetail,
   ApplicationStatusView,
+  Department,
+  Designation,
+  Employee,
+  EmployeeCreateBody,
+  EmployeeUpdateBody,
+  HireCandidateBody,
   KnowledgeCitation,
   KnowledgeChunk,
   KnowledgeClearResult,
@@ -186,6 +192,59 @@ export const api = {
     if (params.generate !== undefined) query.set("generate", String(params.generate));
     return request<KnowledgeSearchResult>(`/api/knowledge/search?${query.toString()}`);
   },
+
+  // ---- people (org directory) --------------------------------------
+
+  listDepartments: () => request<Department[]>("/api/people/departments"),
+
+  createDepartment: (name: string) =>
+    request<Department>("/api/people/departments", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+
+  listDesignations: (departmentId?: string) =>
+    request<Designation[]>(
+      `/api/people/designations${departmentId ? `?department_id=${departmentId}` : ""}`
+    ),
+
+  createDesignation: (body: { department_id: string; title: string; level?: number | null }) =>
+    request<Designation>("/api/people/designations", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  listEmployees: (params?: { search?: string; department_id?: string; employment_status?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.search) query.set("search", params.search);
+    if (params?.department_id) query.set("department_id", params.department_id);
+    if (params?.employment_status) query.set("employment_status", params.employment_status);
+    const qs = query.toString();
+    return request<Employee[]>(`/api/people/employees${qs ? `?${qs}` : ""}`);
+  },
+
+  createEmployee: (body: EmployeeCreateBody) =>
+    request<Employee>("/api/people/employees", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateEmployee: (employeeId: string, body: EmployeeUpdateBody) =>
+    request<Employee>(`/api/people/employees/${employeeId}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  deactivateEmployee: (employeeId: string) =>
+    request<Employee>(`/api/people/employees/${employeeId}/deactivate`, { method: "POST" }),
+
+  hireCandidate: (applicationId: string, body: HireCandidateBody) =>
+    request<Employee>(`/api/people/candidates/${applicationId}/hire`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  myProfile: () => request<Employee>("/api/people/me"),
 };
 
 /** One SSE event emitted by `GET /api/knowledge/search/stream`. */

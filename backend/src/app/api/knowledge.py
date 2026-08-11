@@ -31,13 +31,13 @@ from app.config.settings import get_settings
 from app.db.session import get_session
 from app.integrations.object_store import ObjectStoreError, S3ObjectStore
 from app.jobs.ingestion_worker import retry_job as retry_ingestion_job
+from app.knowledge.contracts import KnowledgeResult
 from app.knowledge.ingestion.orchestrator import (
     DocumentNotFoundError,
     clear_all_documents,
     register_document,
     soft_delete_document,
 )
-from app.knowledge.contracts import KnowledgeResult
 from app.knowledge.models import (
     Document,
     DocumentCategory,

@@ -43,6 +43,7 @@ from app.shared.clock import get_clock
 # with its own (Postgres-backed) fixtures — out of scope for this one.
 def _build_test_app() -> FastAPI:
     from app.api.routes import auth as auth_router
+    from app.api.routes import people as people_router
     from app.api.routes import recruitment as recruitment_router
     from app.api.routes import settings as settings_router
 
@@ -50,6 +51,7 @@ def _build_test_app() -> FastAPI:
     app.include_router(auth_router.router)
     app.include_router(recruitment_router.router)
     app.include_router(settings_router.router)
+    app.include_router(people_router.router)
     return app
 
 
@@ -145,6 +147,40 @@ def manager_context(db, manager_password) -> UserContext:
     db.commit()
     return UserContext(
         subject="mgr-subject", email=person.email, display_name="Hiring Manager", coarse_role="HR_ADMIN"
+    )
+
+
+@pytest.fixture()
+def employee_password() -> str:
+    return "employee-secret-1"
+
+
+@pytest.fixture()
+def employee_context(db, employee_password) -> UserContext:
+    """Seed a full employee identity (Person/Employee/ApplicationUser) and return its UserContext."""
+    now = get_clock().now()
+    person = _seed_person(db, email="employee@acme-hr-test.dev", first="Sam", last="Staff")
+    dept = Department(name="Engineering")
+    db.add(dept)
+    db.flush()
+    designation = Designation(department_id=dept.department_id, title="Engineer")
+    db.add(designation)
+    db.flush()
+    db.add(
+        Employee(
+            person_id=person.person_id,
+            employee_code="EMP-TEST-001",
+            department_id=dept.department_id,
+            designation_id=designation.designation_id,
+            joining_date=get_clock().today(),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    _seed_app_user(db, person=person, subject="emp-subject", role="EMPLOYEE", password=employee_password)
+    db.commit()
+    return UserContext(
+        subject="emp-subject", email=person.email, display_name="Sam Staff", coarse_role="EMPLOYEE"
     )
 
 

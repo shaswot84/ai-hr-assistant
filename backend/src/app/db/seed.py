@@ -258,6 +258,53 @@ def seed() -> None:
             .where(Person.email == "manager@example.com")
         )
 
+        # ---- people module demo data: a small org tree ------------------
+        # Two more employees (Engineering lead + Finance analyst) plus
+        # reporting lines: Priya -> Sam -> Hiring Manager. Idempotent: the
+        # user/employee rows are created once, the manager links are
+        # re-applied every run.
+        eng_lead_designation = _get_or_create_designation(db, eng_dept, "Engineering Lead")
+        finance_dept = _get_or_create_department(db, "Finance")
+        analyst_designation = _get_or_create_designation(db, finance_dept, "Financial Analyst")
+
+        _provision_user(
+            db,
+            email="priya@example.com",
+            first="Priya",
+            last="Chen",
+            password="priya123",
+            role="EMPLOYEE",
+            department=eng_dept,
+            designation=eng_lead_designation,
+            employee_code="EMP-ENG-001",
+        )
+        _provision_user(
+            db,
+            email="arjun@example.com",
+            first="Arjun",
+            last="Patel",
+            password="arjun123",
+            role="EMPLOYEE",
+            department=finance_dept,
+            designation=analyst_designation,
+            employee_code="EMP-FIN-001",
+        )
+
+        def _employee_by_email(db, email):
+            return db.scalar(
+                select(Employee)
+                .join(Person, Employee.person_id == Person.person_id)
+                .where(Person.email == email)
+            )
+
+        sam = _employee_by_email(db, "employee@example.com")
+        priya = _employee_by_email(db, "priya@example.com")
+        if sam is not None and manager is not None:
+            sam.manager_employee_id = manager.employee_id
+        if priya is not None and sam is not None:
+            priya.manager_employee_id = sam.employee_id
+        db.commit()
+
         # sample vacancies, one per title (idempotent: skip titles that already exist)
         created = 0
         if manager is not None:

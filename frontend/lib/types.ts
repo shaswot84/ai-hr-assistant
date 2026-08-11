@@ -221,3 +221,75 @@ export interface KnowledgeSearchResult {
   citations: KnowledgeCitation[];
   chunks: KnowledgeChunk[];
 }
+
+// ---- People (org directory) ---------------------------------------------
+
+export interface Department {
+  department_id: string;
+  name: string;
+}
+
+export interface Designation {
+  designation_id: string;
+  department_id: string;
+  department_name: string | null;
+  title: string;
+  level: number | null;
+  is_active: boolean;
+}
+
+export type EmploymentStatus = "ACTIVE" | "INACTIVE";
+
+export interface Employee {
+  employee_id: string;
+  employee_code: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone: string | null;
+  department_id: string;
+  department_name: string | null;
+  designation_id: string;
+  designation_title: string | null;
+  manager_employee_id: string | null;
+  manager_name: string | null;
+  joining_date: string;
+  employment_status: EmploymentStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Payload for ad-hoc employee creation (HR provides the login credentials). */
+export interface EmployeeCreateBody {
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone: string | null;
+  employee_code: string;
+  department_id: string;
+  designation_id: string;
+  manager_employee_id: string | null;
+  joining_date: string;
+  password: string;
+}
+
+/** Payload for patching an existing employee (omit fields to leave unchanged). */
+export interface EmployeeUpdateBody {
+  first_name?: string;
+  last_name?: string;
+  phone?: string | null;
+  department_id?: string;
+  designation_id?: string;
+  manager_employee_id?: string | null;
+  joining_date?: string;
+  employment_status?: EmploymentStatus;
+}
+
+/** Payload for hiring a shortlisted candidate from their application. */
+export interface HireCandidateBody {
+  employee_code: string;
+  department_id: string;
+  designation_id: string;
+  manager_employee_id: string | null;
+  joining_date: string;
+}
