@@ -35,6 +35,10 @@ async def process_job(db: Session, job: OutboxJob, object_store: SyncS3ObjectSto
         "SEND_APPLICATION_REJECTED",
         "SEND_APPLICATION_RECEIVED",
         "SEND_NEW_APPLICATION_ALERT",
+        "SEND_LEAVE_REQUEST_RECEIVED",
+        "SEND_NEW_LEAVE_REQUEST_ALERT",
+        "SEND_LEAVE_APPROVAL_EMAIL",
+        "SEND_LEAVE_REJECTED",
     }:
         _send_email(db, job, email)
     else:
