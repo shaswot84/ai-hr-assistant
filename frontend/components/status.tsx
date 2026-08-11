@@ -13,6 +13,8 @@ const COLORS: Record<string, string> = {
   DELETED: "bg-zinc-100 text-zinc-600 ring-zinc-500/20",
   ACTIVE: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
   INACTIVE: "bg-zinc-100 text-zinc-600 ring-zinc-500/20",
+  APPROVED: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  CANCELLED: "bg-zinc-100 text-zinc-600 ring-zinc-500/20",
 };
 
 /** A small status pill with a leading dot (vacancy / application / document status). */
