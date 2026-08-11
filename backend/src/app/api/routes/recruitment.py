@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import get_current_user, get_optional_user, require_role
+from app.api.deps import get_optional_user, require_role
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
 from app.contracts.auth import UserContext
 from app.db.sync_session import get_db
@@ -194,10 +194,10 @@ def create_vacancy(
 @router.get("/vacancies/{vacancy_id}", response_model=VacancyOut)
 def get_vacancy(
     vacancy_id: uuid.UUID,
-    user: UserContext = Depends(get_current_user),
+    user: UserContext | None = Depends(get_optional_user),
     svc: RecruitmentService = Depends(_svc),
 ):
-    """Return a single vacancy by id, or 404 if not found."""
+    """Return a single vacancy by id, or 404 if not found (public — job postings)."""
     vacancy = svc.get_vacancy(vacancy_id)
     if vacancy is None:
         raise HTTPException(status_code=404, detail="Vacancy not found.")

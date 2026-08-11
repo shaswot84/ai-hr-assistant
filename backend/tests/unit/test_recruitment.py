@@ -262,6 +262,17 @@ def test_public_vacancy_listing_shows_only_open(db, client, manager_context):
     assert str(closed_vacancy.vacancy_id) not in ids
 
 
+def test_public_vacancy_detail_is_accessible(db, client, manager_context):
+    """Anonymous visitors can open a single vacancy (the candidate apply page needs it)."""
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+
+    res = client.get(f"/api/vacancies/{vacancy.vacancy_id}")  # no Authorization header
+    assert res.status_code == 200
+    assert res.json()["vacancy_id"] == str(vacancy.vacancy_id)
+    assert res.json()["status"] == "OPEN"
+
+
 def test_seed_candidate_apply_still_works_with_auth(db, manager_context, candidate_context):
     """The authenticated apply flow is unchanged alongside the public one."""
     svc = RecruitmentService(db)
