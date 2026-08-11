@@ -102,7 +102,7 @@ class LeaveService:
         for leave_type in self._leave_types.list_active():
             balance = existing.get(leave_type.leave_type_id)
             allocated = balance.allocated_days if balance else leave_type.default_days
-            used = balance.used_days if balance else Decimal("0")
+            used = balance.used_days if balance else Decimal(0)
             rows.append(
                 {
                     "leave_type": leave_type,
@@ -125,7 +125,7 @@ class LeaveService:
                 leave_type_id=leave_type.leave_type_id,
                 year=year,
                 allocated_days=leave_type.default_days,
-                used_days=Decimal("0"),
+                used_days=Decimal(0),
                 updated_at=self._clock.now(),
             )
             self._balances.create(balance)

@@ -52,7 +52,7 @@ class LeaveBalance(Base):
     leave_type_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("leave_type.leave_type_id"))
     year: Mapped[int] = mapped_column(Integer)
     allocated_days: Mapped[Decimal] = mapped_column(Numeric(5, 1))
-    used_days: Mapped[Decimal] = mapped_column(Numeric(5, 1), default=Decimal("0"))
+    used_days: Mapped[Decimal] = mapped_column(Numeric(5, 1), default=Decimal(0))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
