@@ -128,6 +128,13 @@ export const api = {
     });
   },
 
+  /** Public (no-login) apply: details + CV provision the candidate's account. */
+  applyAsNewCandidate: (vacancyId: string, formData: FormData) =>
+    request<ApplicationStatusView>(`/api/vacancies/${vacancyId}/apply`, {
+      method: "POST",
+      body: formData,
+    }),
+
   decide: (applicationId: string, action: "approve" | "reject") =>
     request<Application>(`/api/applications/${applicationId}/decision`, {
       method: "POST",

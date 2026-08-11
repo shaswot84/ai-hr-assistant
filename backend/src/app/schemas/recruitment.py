@@ -101,6 +101,9 @@ class ApplicationOut(BaseModel):
     applied_at: datetime
     evaluated: bool = False
     evaluation: EvaluationOut | None = None
+    # True once the candidate was converted into an employee via the hire
+    # handoff — the application status itself stays SHORTLISTED.
+    hired: bool = False
 
 
 class ApplicationDetailOut(ApplicationOut):

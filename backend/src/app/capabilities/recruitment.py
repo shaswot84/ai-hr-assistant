@@ -5,8 +5,9 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.passwords import hash_password
 from app.contracts.auth import UserContext
-from app.domain.identity import Department, Employee, Person
+from app.domain.identity import ApplicationUser, Candidate, Department, Employee, Person
 from app.domain.recruitment import Application, ApplicationEvaluation, Vacancy
 from app.repositories.audit import AuditRepo
 from app.repositories.outbox import OutboxRepo
@@ -84,9 +85,9 @@ class RecruitmentService:
         self._db.commit()
         return vacancy
 
-    def list_vacancies(self, actor: UserContext) -> list[Vacancy]:
-        """List vacancies; candidates see only open ones, others see everything."""
-        if actor.coarse_role == "CANDIDATE":
+    def list_vacancies(self, actor: UserContext | None) -> list[Vacancy]:
+        """List vacancies; candidates and anonymous visitors see only open ones."""
+        if actor is None or actor.coarse_role == "CANDIDATE":
             return self._vacancies.list_open()
         return self._vacancies.list_all()
 
@@ -225,6 +226,131 @@ class RecruitmentService:
         self._db.commit()
         return application
 
+    def apply_as_new_candidate(
+        self,
+        *,
+        vacancy_id: uuid.UUID,
+        cv_object_key: str,
+        first_name: str,
+        last_name: str,
+        email: str,
+        phone: str | None,
+        password: str,
+    ) -> Application:
+        """Apply to a vacancy as a brand-new, self-registering candidate.
+
+        Provisions the Person + ApplicationUser (CANDIDATE role, password
+        chosen in the apply form) + Candidate rows in the same transaction as
+        the Application, so first-time candidates can apply without a prior
+        account — they browse anonymously and only identify themselves (and
+        create their login) when they apply.
+
+        Blocks when the email already exists: that person already has an
+        account and should sign in and apply from it instead. Enqueues the
+        same AI-evaluation + confirmation emails as the authenticated apply.
+        """
+        if len(password) < 8:
+            raise ValueError("Password must be at least 8 characters.")
+        vacancy = self._vacancies.get(vacancy_id)
+        if vacancy is None or vacancy.status != "OPEN":
+            raise ValueError("Vacancy is not open for applications.")
+        normalized_email = email.strip().lower()
+        if self._person_by_email(normalized_email) is not None:
+            raise ValueError(
+                "An account already exists for this email — sign in and apply from there."
+            )
+
+        now = self._clock.now()
+        person = Person(
+            first_name=first_name.strip(),
+            last_name=last_name.strip(),
+            email=normalized_email,
+            phone=phone.strip() if phone else None,
+            created_at=now,
+            updated_at=now,
+        )
+        self._db.add(person)
+        self._db.flush()
+        app_user = ApplicationUser(
+            external_subject=str(uuid.uuid4()),
+            person_id=person.person_id,
+            coarse_role="CANDIDATE",
+            password_hash=hash_password(password),
+            created_at=now,
+            updated_at=now,
+        )
+        self._db.add(app_user)
+        self._db.flush()
+        candidate = Candidate(
+            person_id=person.person_id,
+            registration_date=self._clock.today(),
+            created_at=now,
+            updated_at=now,
+        )
+        self._db.add(candidate)
+        self._db.flush()
+
+        application = Application(
+            candidate_id=candidate.candidate_id,
+            vacancy_id=vacancy_id,
+            cv_object_key=cv_object_key,
+            application_status="APPLIED",
+            applied_at=now,
+            updated_at=now,
+        )
+        self._applications.create(application)
+        # Same-transaction outbox jobs as the authenticated apply: AI evaluation
+        # + confirmation email to the new candidate + alert to the manager.
+        self._outbox.enqueue(
+            "EVALUATE_APPLICATION",
+            {"application_id": str(application.application_id), "cv_object_key": cv_object_key},
+            aggregate_type="application",
+            aggregate_id=application.application_id,
+        )
+        self._outbox.enqueue(
+            "SEND_APPLICATION_RECEIVED",
+            {
+                "application_id": str(application.application_id),
+                "to_email": normalized_email,
+                "subject": f"Application received: {vacancy.title}",
+                "body": (
+                    f"Thanks for applying to {vacancy.title}. We've received your resume and "
+                    "will notify you once it's been reviewed."
+                ),
+            },
+            aggregate_type="application",
+            aggregate_id=application.application_id,
+        )
+        manager_email = self._manager_email(vacancy)
+        if manager_email:
+            self._outbox.enqueue(
+                "SEND_NEW_APPLICATION_ALERT",
+                {
+                    "application_id": str(application.application_id),
+                    "to_email": manager_email,
+                    "subject": f"New application: {vacancy.title}",
+                    "body": (
+                        f"A new candidate applied to {vacancy.title}. Review the application "
+                        "in the manager portal."
+                    ),
+                },
+                aggregate_type="application",
+                aggregate_id=application.application_id,
+            )
+        self._audit.record(
+            actor_user_id=None,  # self-service provisioning — no logged-in actor
+            action="CANDIDATE_SELF_REGISTERED",
+            target_type="candidate",
+            target_id=candidate.candidate_id,
+            new_state={
+                "application_id": str(application.application_id),
+                "vacancy_id": str(vacancy_id),
+                "status": "APPLIED",
+            },
+        )
+        self._db.commit()
+        return application
+
     def list_my_applications(self, actor: UserContext) -> list[Application]:
         """List the current candidate's own applications."""
         if actor.coarse_role != "CANDIDATE":
@@ -328,6 +454,11 @@ class RecruitmentService:
         return self._applications.latest_evaluation(application_id)
 
     # ---- helpers -----------------------------------------------------
+
+    def _person_by_email(self, email: str) -> Person | None:
+        """Return the Person with the given (normalized) email, or None (duplicate guard)."""
+        stmt = select(Person).where(Person.email == email.strip().lower())
+        return self._db.scalar(stmt)
 
     def _actor_user_id(self, actor: UserContext) -> uuid.UUID | None:
         """Resolve the actor's application_user id for audit records (best-effort)."""
