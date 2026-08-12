@@ -20,12 +20,19 @@ os.environ["AUTH_PROVIDER"] = "jwt"
 os.environ["JWT_SECRET_KEY"] = "test-only-secret-key-0123456789abcdef0123456789abcdef"
 os.environ["MINIO_AUTO_INIT"] = "false"
 
+# EnvFileSettingRepo (app_settings) reads/writes a real file on disk — point
+# it at a throwaway temp file so tests never touch the project's real .env
+# (which holds live secrets), matching the DB temp-file pattern above.
+_settings_env_file = tempfile.NamedTemporaryFile(suffix=".env", delete=False)  # noqa: SIM115
+os.environ["SETTINGS_ENV_FILE_PATH"] = _settings_env_file.name
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _cleanup_test_database_file():
-    """Remove the throwaway SQLite file once the test session is done."""
+    """Remove the throwaway SQLite file and settings-env file once the test session is done."""
     yield
-    try:
-        os.unlink(_db_file.name)
-    except FileNotFoundError:
-        pass
+    for path in (_db_file.name, _settings_env_file.name):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass

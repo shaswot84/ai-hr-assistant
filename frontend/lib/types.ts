@@ -129,11 +129,13 @@ export interface ApplicationDetail extends Application {
   hired?: boolean;
 }
 
-/** The AI provider connection used for resume screening — manager-editable, API key is write-only. */
+/** The AI provider connection used for resume screening — manager-editable.
+ * Persisted directly to `.env` and read fresh on every use, so a change here
+ * takes effect on the very next resume evaluation with no restart needed. */
 export interface LlmConfig {
   api_base: string;
   model: string;
-  api_key_set: boolean;
+  api_key: string;
   is_default: boolean;
 }
 

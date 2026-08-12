@@ -164,7 +164,7 @@ export const api = {
 
   getLlmConfig: () => request<LlmConfig>("/api/settings/llm-config"),
 
-  setLlmConfig: (body: { api_base: string; model: string; api_key?: string }) =>
+  setLlmConfig: (body: { api_base: string; model: string; api_key: string }) =>
     request<LlmConfig>("/api/settings/llm-config", {
       method: "PUT",
       body: JSON.stringify(body),

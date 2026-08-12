@@ -19,7 +19,6 @@ from app.integrations.email.smtp import SmtpEmailProvider
 from app.integrations.object_store import SyncS3ObjectStore
 from app.knowledge.resume_extraction import extract_text
 from app.repositories.outbox import OutboxRepo
-from app.repositories.settings import SettingRepo
 
 log = logging.getLogger("worker")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
@@ -80,8 +79,9 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: SyncS
 
     vacancy = db.get(Vacancy, application.vacancy_id)
 
-    system_prompt = SettingRepo(db).get_value("resume_review_system_prompt")
-    llm_overrides = SettingsService(db).resolved_llm_overrides()
+    settings_svc = SettingsService()
+    system_prompt = settings_svc.resolved_prompt()
+    llm_overrides = settings_svc.resolved_llm_overrides()
 
     started = time.monotonic()
     # Structured extraction runs first, as its own step, so scoring is

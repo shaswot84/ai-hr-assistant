@@ -6,14 +6,13 @@ from pydantic import BaseModel
 from app.api.deps import require_role
 from app.capabilities.settings import SettingsService
 from app.contracts.auth import UserContext
-from app.db.sync_session import get_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
-def _svc(db=Depends(get_db)) -> SettingsService:
-    """FastAPI dependency that builds a SettingsService bound to the request's DB session."""
-    return SettingsService(db)
+def _svc() -> SettingsService:
+    """FastAPI dependency that builds a SettingsService (reads/writes .env directly)."""
+    return SettingsService()
 
 
 class ResumeReviewPromptIn(BaseModel):
@@ -58,19 +57,28 @@ def reset_resume_review_prompt(
 
 
 class LlmConfigIn(BaseModel):
-    """Request body for setting the LLM connection (API route, model, key)."""
+    """Request body for setting the LLM connection (API route, model, key).
+
+    The form always shows the real current key (see LlmConfigOut), so this
+    is the manager's actual intent, not a write-only diff — an empty
+    api_key here means "no key configured", not "leave it unchanged".
+    """
 
     api_base: str
     model: str
-    api_key: str | None = None  # write-only; blank/omitted leaves the stored key unchanged
+    api_key: str = ""
 
 
 class LlmConfigOut(BaseModel):
-    """Response carrying the active LLM connection settings — never the raw API key."""
+    """Response carrying the active LLM connection settings, including the real API key.
+
+    Shown as-is on the manager-only Settings page (behind a show/hide
+    toggle in the UI) — it's the same key the manager themselves entered.
+    """
 
     api_base: str
     model: str
-    api_key_set: bool
+    api_key: str
     is_default: bool
 
 

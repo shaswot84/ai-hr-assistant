@@ -12,10 +12,14 @@ def test_get_llm_config_defaults_to_env_settings(client, manager_context, manage
     assert res.status_code == 200
     body = res.json()
     assert body["is_default"] is True
-    assert "api_key" not in body  # never sent to the client, only whether one is set
+    assert "api_key" in body  # shown as-is now, not masked behind a boolean
 
 
-def test_put_llm_config_overrides_and_masks_key(client, manager_context, manager_password):
+def test_put_llm_config_overrides_and_shows_the_real_key(client, manager_context, manager_password):
+    """Regression case for the redesign: the settings form now shows the
+    manager's own key back to them (an HR_ADMIN-only internal page), rather
+    than the old write-only/masked design.
+    """
     token = _login(client, manager_context.email, manager_password)
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -28,20 +32,35 @@ def test_put_llm_config_overrides_and_masks_key(client, manager_context, manager
     body = res.json()
     assert body["api_base"] == "https://custom-llm.example.com"
     assert body["model"] == "custom-model"
-    assert body["api_key_set"] is True
+    assert body["api_key"] == "sk-secret-123"
     assert body["is_default"] is False
-    assert "sk-secret-123" not in res.text  # the raw key must never round-trip to the client
 
-    # a blank api_key on a later save must not clear the previously stored key
-    res2 = client.put(
+    # fetching again returns the same real value, not a masked placeholder
+    res2 = client.get("/api/settings/llm-config", headers=headers)
+    assert res2.json()["api_key"] == "sk-secret-123"
+
+
+def test_put_llm_config_empty_key_clears_it(client, manager_context, manager_password):
+    """The form is no longer write-only, so submitting a blank key now means
+    'no key configured' — there's no more 'blank leaves it unchanged' magic.
+    """
+    token = _login(client, manager_context.email, manager_password)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    client.put(
+        "/api/settings/llm-config",
+        headers=headers,
+        json={"api_base": "https://custom-llm.example.com", "model": "custom-model", "api_key": "sk-secret-123"},
+    )
+    res = client.put(
         "/api/settings/llm-config",
         headers=headers,
         json={"api_base": "https://custom-llm.example.com", "model": "updated-model", "api_key": ""},
     )
-    assert res2.status_code == 200
-    body2 = res2.json()
-    assert body2["model"] == "updated-model"
-    assert body2["api_key_set"] is True
+    assert res.status_code == 200
+    body = res.json()
+    assert body["model"] == "updated-model"
+    assert body["api_key"] == ""
 
 
 def test_reset_llm_config_clears_overrides(client, manager_context, manager_password):
@@ -63,3 +82,27 @@ def test_llm_config_requires_hr_admin(client, candidate_context, candidate_passw
     token = _login(client, candidate_context.email, candidate_password)
     res = client.get("/api/settings/llm-config", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 403
+
+
+def test_resume_review_prompt_round_trips_through_env_file(client, manager_context, manager_password):
+    token = _login(client, manager_context.email, manager_password)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    get_res = client.get("/api/settings/resume-review-prompt", headers=headers)
+    assert get_res.status_code == 200
+    assert get_res.json()["is_default"] is True
+
+    custom = "Line one.\nLine two with a \"quote\" in it."
+    put_res = client.put(
+        "/api/settings/resume-review-prompt", headers=headers, json={"prompt": custom}
+    )
+    assert put_res.status_code == 200
+    assert put_res.json()["prompt"] == custom
+    assert put_res.json()["is_default"] is False
+
+    get_res2 = client.get("/api/settings/resume-review-prompt", headers=headers)
+    assert get_res2.json()["prompt"] == custom
+
+    reset_res = client.post("/api/settings/resume-review-prompt/reset", headers=headers)
+    assert reset_res.status_code == 200
+    assert reset_res.json()["is_default"] is True
