@@ -58,10 +58,12 @@ class FakeKnowledgeService:
     async def retrieve(self, query: str, **kwargs) -> KnowledgeResult:
         return self.result
 
-    async def generate_answer(self, query: str, result: KnowledgeResult) -> str | None:
+    async def generate_answer(
+        self, query: str, result: KnowledgeResult, *, history=None
+    ) -> str | None:
         return self.answer
 
-    async def stream_answer(self, query: str, result: KnowledgeResult):
+    async def stream_answer(self, query: str, result: KnowledgeResult, *, history=None):
         if self.answer:
             yield self.answer
 
@@ -113,7 +115,7 @@ def fake_graph_builder(session):
     """The graph the chat route runs: real supervisor graph, faked models."""
     from app.agents.supervisor.graph import build_supervisor_graph
 
-    service = FakeKnowledgeService(make_result(), answer="A grounded answer.")
+    service = FakeKnowledgeService(make_result(), answer="A grounded answer. [1]")
     return build_supervisor_graph(llm=fake_llm, knowledge_service=service)
 
 
@@ -125,6 +127,28 @@ def low_confidence_graph_builder(session):
         make_result(low_confidence=True), answer="should not be used"
     )
     return build_supervisor_graph(llm=FakeLLM("knowledge"), knowledge_service=service)
+
+
+class RepairingChatLLM(ChatFakeLLM):
+    """ChatFakeLLM that also repairs uncited drafts with [N] markers."""
+
+    async def complete(self, system: str, user: str) -> str:
+        if "EVERY claim" in system:  # the repair prompt
+            return "The policy grants 15 sick days. [1]"
+        return await super().complete(system, user)
+
+
+def claim_tracking_graph_builder(session):
+    """A graph whose answers lack markers, wired to the citation-coverage guard."""
+    from app.agents.supervisor.graph import build_supervisor_graph
+    from app.safety.output.guards.citations import CitationCoverageCheck
+    from app.safety.pipeline import OutputSafetyPipeline
+
+    service = FakeKnowledgeService(make_result(), answer="The policy grants 15 sick days.")
+    guard = OutputSafetyPipeline(checks=[CitationCoverageCheck()])
+    return build_supervisor_graph(
+        llm=RepairingChatLLM(), knowledge_service=service, guard=guard
+    )
 
 
 # --- helpers ---------------------------------------------------------------
@@ -226,7 +250,7 @@ async def test_first_message_creates_conversation_and_persists(chat_env):
     assert resp.status_code == 200
     body = resp.json()
     assert body["agent"] == "knowledge"
-    assert body["message"] == "A grounded answer."
+    assert body["message"] == "A grounded answer. [1]"
     assert body["confidence"] == 0.92
     assert body["low_confidence"] is False
     assert body["citations"][0]["document_title"] == "Leave Policy"
@@ -241,11 +265,12 @@ async def test_first_message_creates_conversation_and_persists(chat_env):
 
         messages = await repo.list_messages(conversation_id)
         assert [m.role for m in messages] == ["user", "assistant"]
-        assert messages[1].content == "A grounded answer."
+        assert messages[1].content == "A grounded answer. [1]"
         assert messages[1].meta == {
             "agent": "knowledge",
             "confidence": 0.92,
             "low_confidence": False,
+            "safety": "PASS",
         }
         assert messages[1].citations[0]["document_title"] == "Leave Policy"
 
@@ -389,10 +414,10 @@ async def test_chat_stream_emits_event_sequence(chat_env):
     assert events[2]["rewritten_query"] == "What is the annual leave policy?"
     assert events[2]["citations"][0]["document_title"] == "Leave Policy"
     assert events[2]["confidence"] == 0.92
-    assert events[3]["text"] == "A grounded answer."
+    assert events[3]["text"] == "A grounded answer. [1]"
 
     done = events[4]
-    assert done["message"] == "A grounded answer."
+    assert done["message"] == "A grounded answer. [1]"
     assert done["agent"] == "knowledge"
     assert done["confidence"] == 0.92
     assert done["low_confidence"] is False
@@ -404,11 +429,12 @@ async def test_chat_stream_emits_event_sequence(chat_env):
     async with chat_env.factory() as session:
         messages = await ConversationRepo(session).list_messages(conversation_id)
         assert [m.role for m in messages] == ["user", "assistant"]
-        assert messages[1].content == "A grounded answer."
+        assert messages[1].content == "A grounded answer. [1]"
         assert messages[1].meta == {
             "agent": "knowledge",
             "confidence": 0.92,
             "low_confidence": False,
+            "safety": "PASS",
         }
 
 
@@ -466,6 +492,33 @@ async def test_chat_stream_blank_message_422(chat_env):
     """Blank messages are rejected with a proper HTTP error, not an SSE stream."""
     async with chat_env.client.stream("POST", "/api/chat/stream", json={"message": "   "}) as resp:
         assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_claim_tracking_repairs_uncited_answer(chat_env, monkeypatch):
+    """An uncited draft is flagged, repaired with [N] markers, and only the
+    verified citation is persisted (claims == citations, end to end)."""
+    monkeypatch.setattr(chat_module, "build_chat_graph", claim_tracking_graph_builder)
+
+    async with chat_env.client.stream(
+        "POST", "/api/chat/stream", json={"message": "sick leave policy"}
+    ) as resp:
+        events = await _sse_events(resp)
+
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["message"] == "The policy grants 15 sick days. [1]"
+    assert len(done["citations"]) == 1
+    assert done["citations"][0]["document_title"] == "Leave Policy"
+
+    conversation_id = uuid.UUID(done["conversation_id"])
+    async with chat_env.factory() as session:
+        messages = await ConversationRepo(session).list_messages(conversation_id)
+        assistant = messages[1]
+        assert assistant.content == "The policy grants 15 sick days. [1]"
+        assert assistant.meta["safety"] == "PASS"
+        assert len(assistant.citations) == 1
+        assert assistant.citations[0]["document_title"] == "Leave Policy"
 
 
 @pytest.mark.asyncio

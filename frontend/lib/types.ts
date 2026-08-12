@@ -258,7 +258,12 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   citations: ChatCitation[] | null;
-  meta: { agent?: string; confidence?: number; low_confidence?: boolean } | null;
+  meta: {
+    agent?: string;
+    confidence?: number;
+    low_confidence?: boolean;
+    safety?: "PASS" | "REDACTED" | "BLOCKED" | "FLAGGED_FOR_REVIEW";
+  } | null;
   created_at: string;
 }
 

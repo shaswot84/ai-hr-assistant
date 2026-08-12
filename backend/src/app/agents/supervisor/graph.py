@@ -30,6 +30,7 @@ from app.agents.supervisor.route_intent import route_intent
 from app.agents.supervisor.state import SupervisorState
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.interfaces import LLM
+from app.safety.interfaces import ResponseGuard
 
 ROUTE_TO_NODE = {
     "knowledge": "knowledge",
@@ -51,12 +52,13 @@ def make_route_node(llm: LLM | None):
     return route_node
 
 
-def make_knowledge_node(llm: LLM | None, service: KnowledgeService):
+def make_knowledge_node(llm: LLM | None, service: KnowledgeService, guard: ResponseGuard | None = None):
     """Answer the current question from the knowledge base (rewrite + RAG).
 
     Streams retrieval/token events through LangGraph's ``writer`` so the chat
     endpoint can forward them as SSE while the node still returns the full
-    state update for persistence.
+    state update for persistence. ``guard`` is the output-safety pipeline
+    applied to the completed answer (claim tracking + evidence gating).
     """
 
     async def knowledge_node(state: SupervisorState, writer: StreamWriter) -> dict:
@@ -66,6 +68,7 @@ def make_knowledge_node(llm: LLM | None, service: KnowledgeService):
             query=state["current_query"],
             history=state.get("messages", []),
             writer=writer,
+            guard=guard,
         )
 
     return knowledge_node
@@ -80,11 +83,12 @@ def build_supervisor_graph(
     *,
     llm: LLM | None,
     knowledge_service: KnowledgeService,
+    guard: ResponseGuard | None = None,
 ) -> CompiledStateGraph:
-    """Assemble the supervisor graph with the given LLM and knowledge service."""
+    """Assemble the supervisor graph with the given LLM, knowledge service, and safety guard."""
     builder = StateGraph(SupervisorState)
     builder.add_node("route", make_route_node(llm))
-    builder.add_node("knowledge", make_knowledge_node(llm, knowledge_service))
+    builder.add_node("knowledge", make_knowledge_node(llm, knowledge_service, guard))
     builder.add_node("leave", make_leave_node())
     builder.add_node("recruitment", make_recruitment_node())
     builder.add_node("clarify", make_clarify_node())
