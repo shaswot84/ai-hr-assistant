@@ -56,12 +56,21 @@ class Requirement(BaseModel):
 
 
 class WorkExperienceOut(BaseModel):
-    """One work-history entry pulled from the resume, dates kept as written."""
+    """One work-history entry pulled from the resume, dates kept as written.
+
+    `start_year`/`end_year` are the same parsed values the years-of-experience
+    math is computed from (see `evaluation.resume_structuring`) — None means
+    that date string didn't contain a recognizable year (e.g. a garbled
+    extraction), so a UI shouldn't display the raw string as if it were
+    reliable, the way it would for a date that parsed cleanly.
+    """
 
     title: str = ""
     company: str = ""
     start_date: str = ""
     end_date: str = ""
+    start_year: int | None = None
+    end_year: int | None = None
     is_current: bool = False
 
 

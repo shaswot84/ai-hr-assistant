@@ -48,6 +48,11 @@ export interface WorkExperienceEntry {
   company: string;
   start_date: string;
   end_date: string;
+  /** Parsed year behind start_date/end_date, or null if that date string
+   * didn't contain a recognizable year (e.g. a garbled extraction) — the
+   * same signal the years-of-experience math is computed from. */
+  start_year: number | null;
+  end_year: number | null;
   is_current: boolean;
 }
 

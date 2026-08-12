@@ -42,8 +42,9 @@ def _to_structured_resume(raw: dict | None) -> StructuredResumeOut | None:
     Unlike the rest of `raw_payload` (LLM output, camelCase), this comes
     from `resume_structuring.StructuredResume.to_dict()` — already
     snake_case, but extracted explicitly here (not `**raw`) since that dict
-    also carries internal-only fields (`start_year`/`end_year`) the API
-    doesn't need to expose.
+    also carries the parsed `start_year`/`end_year` alongside the raw date
+    strings — passed through (not dropped) so the UI can tell a cleanly
+    parsed date from a garbled one instead of displaying either the same way.
     """
     if not isinstance(raw, dict):
         return None
@@ -54,6 +55,8 @@ def _to_structured_resume(raw: dict | None) -> StructuredResumeOut | None:
                 company=e.get("company", ""),
                 start_date=e.get("start_date", ""),
                 end_date=e.get("end_date", ""),
+                start_year=e.get("start_year"),
+                end_year=e.get("end_year"),
                 is_current=bool(e.get("is_current", False)),
             )
             for e in raw.get("work_experience", [])

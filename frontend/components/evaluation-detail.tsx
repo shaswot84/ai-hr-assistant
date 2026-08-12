@@ -99,8 +99,11 @@ function RequirementsGate({
 }
 
 function formatDateRange(entry: WorkExperienceEntry) {
-  const start = entry.start_date || "?";
-  const end = entry.is_current ? "Present" : entry.end_date || "?";
+  // Only trust the raw date string if it parsed to a real year — a garbled
+  // extraction (no recognizable year) shows as "?" instead of the raw
+  // text, matching what the years-of-experience total already excludes it from.
+  const start = entry.start_year !== null ? entry.start_date || "?" : "?";
+  const end = entry.is_current ? "Present" : entry.end_year !== null ? entry.end_date || "?" : "?";
   return `${start} – ${end}`;
 }
 
