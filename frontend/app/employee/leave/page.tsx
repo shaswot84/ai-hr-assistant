@@ -21,6 +21,14 @@ function formatDate(value: string) {
   });
 }
 
+function todayISO() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function BalanceGrid({ balances, loading }: { balances: LeaveBalance[]; loading: boolean }) {
   if (loading) return <StatsSkeleton items={balances.length || 4} />;
   if (balances.length === 0) return null;
@@ -117,6 +125,7 @@ function RequestLeaveForm({
             <input
               required
               type="date"
+              min={todayISO()}
               className="input"
               value={form.startDate}
               onChange={(e) => setForm({ ...form, startDate: e.target.value })}
@@ -127,6 +136,7 @@ function RequestLeaveForm({
             <input
               required
               type="date"
+              min={todayISO()}
               className="input"
               value={form.endDate}
               onChange={(e) => setForm({ ...form, endDate: e.target.value })}

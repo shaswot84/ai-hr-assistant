@@ -42,6 +42,13 @@ def test_create_leave_type_success(db, manager_context):
     assert leave_type in svc.list_leave_types()
 
 
+def test_create_leave_type_rejects_case_insensitive_duplicate(db, manager_context):
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    with pytest.raises(ValueError, match="already exists"):
+        _create_leave_type(svc, manager_context, name="annual leave")
+
+
 def test_balance_defaults_to_leave_type_default_before_any_request(db, manager_context, employee_context):
     svc = LeaveService(db)
     _create_leave_type(svc, manager_context, default_days=Decimal(12))
@@ -103,6 +110,102 @@ def test_request_leave_enforces_remaining_balance(db, manager_context, employee_
             end_date=date(2026, 9, 5),  # 5 days requested, only 2 allocated
             reason=None,
         )
+
+
+def test_request_leave_rejects_past_dates(db, manager_context, employee_context):
+    svc = LeaveService(db)
+    leave_type = _create_leave_type(svc, manager_context)
+    with pytest.raises(ValueError, match="past"):
+        svc.request_leave(
+            employee_context,
+            leave_type_id=leave_type.leave_type_id,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 2),
+            reason=None,
+        )
+
+
+def test_request_leave_rejects_overlap_diff_type(db, manager_context, employee_context):
+    svc = LeaveService(db)
+    annual = _create_leave_type(svc, manager_context, name="Annual Leave")
+    sick = _create_leave_type(svc, manager_context, name="Sick Leave", default_days=Decimal(10))
+    svc.request_leave(
+        employee_context,
+        leave_type_id=annual.leave_type_id,
+        start_date=date(2026, 9, 1),
+        end_date=date(2026, 9, 3),
+        reason=None,
+    )
+    with pytest.raises(ValueError, match="overlap"):
+        svc.request_leave(
+            employee_context,
+            leave_type_id=sick.leave_type_id,
+            start_date=date(2026, 9, 3),
+            end_date=date(2026, 9, 5),  # shares the 2026-09-03 boundary
+            reason=None,
+        )
+
+
+def test_request_leave_rejects_overlap_same_type(db, manager_context, employee_context):
+    svc = LeaveService(db)
+    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(20))
+    svc.request_leave(
+        employee_context,
+        leave_type_id=leave_type.leave_type_id,
+        start_date=date(2026, 9, 1),
+        end_date=date(2026, 9, 5),
+        reason=None,
+    )
+    with pytest.raises(ValueError, match="overlap"):
+        svc.request_leave(
+            employee_context,
+            leave_type_id=leave_type.leave_type_id,
+            start_date=date(2026, 9, 4),  # inside the first request
+            end_date=date(2026, 9, 7),
+            reason=None,
+        )
+
+
+def test_request_leave_rejects_consecutive_run_over_cap(db, manager_context, employee_context):
+    """3 days + back-to-back 3 days must trip the 3-day max-consecutive cap."""
+    svc = LeaveService(db)
+    leave_type = _create_leave_type(svc, manager_context, max_consecutive_days=3, default_days=Decimal(20))
+    svc.request_leave(
+        employee_context,
+        leave_type_id=leave_type.leave_type_id,
+        start_date=date(2026, 9, 1),
+        end_date=date(2026, 9, 3),  # 3 days, exactly at the cap — allowed
+        reason=None,
+    )
+    with pytest.raises(ValueError, match="consecutive"):
+        svc.request_leave(
+            employee_context,
+            leave_type_id=leave_type.leave_type_id,
+            start_date=date(2026, 9, 4),
+            end_date=date(2026, 9, 6),  # makes a 6-day run
+            reason=None,
+        )
+
+
+def test_request_leave_allows_gap_between_requests(db, manager_context, employee_context):
+    """A 1+ day gap breaks the run: 3 + 3 with a rest day must stay allowed."""
+    svc = LeaveService(db)
+    leave_type = _create_leave_type(svc, manager_context, max_consecutive_days=3, default_days=Decimal(20))
+    svc.request_leave(
+        employee_context,
+        leave_type_id=leave_type.leave_type_id,
+        start_date=date(2026, 9, 1),
+        end_date=date(2026, 9, 3),
+        reason=None,
+    )
+    second = svc.request_leave(
+        employee_context,
+        leave_type_id=leave_type.leave_type_id,
+        start_date=date(2026, 9, 5),  # 2026-09-04 off — gap breaks the run
+        end_date=date(2026, 9, 7),
+        reason=None,
+    )
+    assert second.status == "PENDING"
 
 
 def test_request_leave_success_generates_sequential_reference(db, manager_context, employee_context):

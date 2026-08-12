@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.domain.leave import LeaveBalance, LeaveRequest, LeaveType
@@ -28,6 +28,11 @@ class LeaveTypeRepo:
     def get_by_name(self, leave_name: str) -> LeaveType | None:
         """Fetch a leave type by its unique name, or None if it does not exist."""
         stmt = select(LeaveType).where(LeaveType.leave_name == leave_name)
+        return self._db.scalar(stmt)
+
+    def get_by_name_ci(self, leave_name: str) -> LeaveType | None:
+        """Fetch a leave type by name, case-insensitively, or None if none matches."""
+        stmt = select(LeaveType).where(func.lower(LeaveType.leave_name) == leave_name.strip().lower())
         return self._db.scalar(stmt)
 
     def list_active(self) -> list[LeaveType]:

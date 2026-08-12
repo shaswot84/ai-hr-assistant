@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -64,8 +64,15 @@ class LeaveService:
         """Create a new leave type (manager-only)."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can create leave types.")
+        name = leave_name.strip()
+        existing = self._leave_types.get_by_name_ci(name)
+        if existing is not None:
+            raise ValueError(
+                f"A leave type named '{existing.leave_name}' already exists "
+                "(names are case-insensitive)."
+            )
         leave_type = LeaveType(
-            leave_name=leave_name.strip(),
+            leave_name=name,
             description=description,
             default_days=default_days,
             requires_approval=requires_approval,
@@ -151,6 +158,8 @@ class LeaveService:
             raise ValueError("Leave type not found.")
         if end_date < start_date:
             raise ValueError("End date must be on or after the start date.")
+        if start_date < self._clock.today():
+            raise ValueError("Leave cannot start in the past.")
 
         total_days = Decimal((end_date - start_date).days + 1)
         if leave_type.max_consecutive_days and total_days > leave_type.max_consecutive_days:
@@ -158,6 +167,28 @@ class LeaveService:
                 f"{leave_type.leave_name} cannot be taken for more than "
                 f"{leave_type.max_consecutive_days} consecutive day(s)."
             )
+
+        active_requests = self._active_requests(employee.employee_id)
+        overlap = self._overlapping_request(active_requests, start_date, end_date)
+        if overlap is not None:
+            raise ValueError(
+                f"Dates overlap your existing "
+                f"{self._leave_name_of(overlap)} request "
+                f"({overlap.start_date} to {overlap.end_date})."
+            )
+
+        if leave_type.max_consecutive_days:
+            run_days = self._consecutive_run_days(
+                [r for r in active_requests if r.leave_type_id == leave_type_id],
+                start_date,
+                end_date,
+            )
+            if run_days > leave_type.max_consecutive_days:
+                raise ValueError(
+                    f"{leave_type.leave_name} cannot be taken for more than "
+                    f"{leave_type.max_consecutive_days} consecutive day(s) "
+                    f"in one run."
+                )
 
         year = start_date.year
         balance = self._get_or_create_balance(employee.employee_id, leave_type, year)
@@ -347,6 +378,70 @@ class LeaveService:
         return request
 
     # ---- helpers -----------------------------------------------------
+
+    def _active_requests(self, employee_id: uuid.UUID) -> list[LeaveRequest]:
+        """The employee's current, live leave requests — PENDING or APPROVED,
+        never CANCELLED/REJECTED/deleted (those end the run or free the days)."""
+        return [
+            r
+            for r in self._requests.list_for_employee(employee_id)
+            if r.status in ("PENDING", "APPROVED")
+        ]
+
+    def _overlapping_request(
+        self, requests: list[LeaveRequest], start_date: date, end_date: date
+    ) -> LeaveRequest | None:
+        """Return the first request whose date range intersects [start_date, end_date]."""
+        for existing in requests:
+            if existing.start_date <= end_date and existing.end_date >= start_date:
+                return existing
+        return None
+
+    def _consecutive_run_days(
+        self, requests: list[LeaveRequest], start_date: date, end_date: date
+    ) -> int:
+        """Total days of the contiguous leave run this new request joins.
+
+        Merge the existing same-type requests that are adjacent to or
+        overlapping the new range (a 1-day gap breaks the run), then return
+        the merged run's length. Used so applying 3+3 back-to-back days
+        against a 3-day cap is caught even though no single request exceeds
+        it.
+        """
+        runs: list[list[date]] = []
+        for existing in requests:
+            if (
+                existing.end_date + timedelta(days=1) < start_date
+                or existing.start_date - timedelta(days=1) > end_date
+            ):
+                continue
+            runs.append([existing.start_date, existing.end_date])
+        runs.append([start_date, end_date])
+
+        merged = True
+        while merged:
+            merged = False
+            for i in range(len(runs)):
+                for j in range(i + 1, len(runs)):
+                    a, b = runs[i], runs[j]
+                    if (
+                        a[0] <= b[1] + timedelta(days=1)
+                        and b[0] <= a[1] + timedelta(days=1)
+                    ):
+                        runs[i] = [min(a[0], b[0]), max(a[1], b[1])]
+                        runs.pop(j)
+                        merged = True
+                        break
+                if merged:
+                    break
+
+        run = max(runs, key=lambda r: (r[1] - r[0]).days)
+        return (run[1] - run[0]).days + 1
+
+    def _leave_name_of(self, request: LeaveRequest) -> str:
+        """Resolve a request's leave type name, or a generic fallback."""
+        leave_type = self._leave_types.get(request.leave_type_id)
+        return leave_type.leave_name if leave_type else "leave"
 
     def _actor_user_id(self, actor: UserContext) -> uuid.UUID | None:
         """Resolve the actor's application_user id for audit records (best-effort)."""
