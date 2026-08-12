@@ -53,7 +53,14 @@ def init_db() -> None:
     still has usable tables. It's idempotent and a no-op once migrations
     have already created the tables.
     """
-    from app.domain import audit, identity, outbox, recruitment, setting  # noqa: F401
+    from app.domain import (  # noqa: F401
+        audit,
+        conversation,
+        identity,
+        outbox,
+        recruitment,
+        setting,
+    )
 
     Base.metadata.create_all(bind=engine)
 
