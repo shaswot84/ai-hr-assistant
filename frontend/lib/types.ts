@@ -25,6 +25,14 @@ export interface ScoreFactor {
   note: string;
 }
 
+/** One explicit must-have from the job description, checked against the resume — a hard
+ * pass/fail gate, distinct from the soft `score_factors` ranking dimensions. */
+export interface Requirement {
+  requirement: string;
+  met: boolean;
+  evidence: string;
+}
+
 /** Identity/contact info the AI extracted directly from the resume text (best-effort). */
 export interface CandidateProfile {
   name: string;
@@ -34,8 +42,39 @@ export interface CandidateProfile {
   headline: string;
 }
 
+/** One work-history entry pulled from the resume, dates kept as written. */
+export interface WorkExperienceEntry {
+  title: string;
+  company: string;
+  start_date: string;
+  end_date: string;
+  is_current: boolean;
+}
+
+export interface EducationEntry {
+  degree: string;
+  institution: string;
+  graduation_year: number | null;
+}
+
+/** Structured facts extracted from the resume, separate from the job-fit score.
+ * `total_years_experience` is always computed deterministically from the parsed
+ * work-history dates — never the model's own guess. */
+export interface StructuredResumeSummary {
+  work_experience: WorkExperienceEntry[];
+  education: EducationEntry[];
+  skills: string[];
+  total_years_experience: number;
+}
+
+/** Recommendation forced whenever a candidate fails one or more hard requirements —
+ * distinct from a merely-low score band, so it can be styled/filtered separately. */
+export const DOES_NOT_MEET_REQUIREMENTS = "Does Not Meet Requirements";
+
 /** ATS-style screening result: does this resume match the job, and why — not a resume review. */
 export interface EvaluationDetail {
+  requirements: Requirement[];
+  requirements_met: boolean;
   match_score: number;
   recommendation: string;
   summary: string;
@@ -45,6 +84,7 @@ export interface EvaluationDetail {
   matched_keywords: string[];
   missing_keywords: string[];
   candidate_profile: CandidateProfile | null;
+  structured_resume: StructuredResumeSummary | null;
 }
 
 export interface Evaluation {

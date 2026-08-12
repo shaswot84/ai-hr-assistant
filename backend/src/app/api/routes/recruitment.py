@@ -19,18 +19,58 @@ from app.schemas.recruitment import (
     ApplicationStatusOut,
     CandidateProfile,
     DecisionRequest,
+    EducationOut,
     EvaluationDetail,
     EvaluationOut,
     Requirement,
     ScoreFactor,
+    StructuredResumeOut,
     VacancyCreate,
     VacancyOut,
+    WorkExperienceOut,
 )
 
 router = APIRouter(prefix="/api", tags=["recruitment"])
 
 MAX_RESUME_BYTES = 10 * 1024 * 1024  # 10MB
 ALLOWED_RESUME_TYPES = (".pdf", ".docx")
+
+
+def _to_structured_resume(raw: dict | None) -> StructuredResumeOut | None:
+    """Build a typed StructuredResumeOut from the stored structuring result, or None if absent.
+
+    Unlike the rest of `raw_payload` (LLM output, camelCase), this comes
+    from `resume_structuring.StructuredResume.to_dict()` — already
+    snake_case, but extracted explicitly here (not `**raw`) since that dict
+    also carries internal-only fields (`start_year`/`end_year`) the API
+    doesn't need to expose.
+    """
+    if not isinstance(raw, dict):
+        return None
+    return StructuredResumeOut(
+        work_experience=[
+            WorkExperienceOut(
+                title=e.get("title", ""),
+                company=e.get("company", ""),
+                start_date=e.get("start_date", ""),
+                end_date=e.get("end_date", ""),
+                is_current=bool(e.get("is_current", False)),
+            )
+            for e in raw.get("work_experience", [])
+            if isinstance(e, dict)
+        ],
+        education=[
+            EducationOut(
+                degree=e.get("degree", ""),
+                institution=e.get("institution", ""),
+                graduation_year=e.get("graduation_year"),
+            )
+            for e in raw.get("education", [])
+            if isinstance(e, dict)
+        ],
+        skills=raw.get("skills", []),
+        total_years_experience=raw.get("total_years_experience", 0.0),
+    )
 
 
 def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
@@ -60,6 +100,7 @@ def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
         matched_keywords=raw_payload.get("matchedKeywords", []),
         missing_keywords=raw_payload.get("missingKeywords", []),
         candidate_profile=CandidateProfile(**profile) if isinstance(profile, dict) else None,
+        structured_resume=_to_structured_resume(raw_payload.get("structuredResume")),
     )
 
 

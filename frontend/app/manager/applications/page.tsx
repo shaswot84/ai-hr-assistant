@@ -262,11 +262,18 @@ export default function ManagerAllApplicationsPage() {
                         </td>
                         <td className="table-td hidden text-right sm:table-cell">
                           {a.evaluated && a.evaluation ? (
-                            <span
-                              className={`badge tabular-nums ${scoreTone(a.evaluation.score)}`}
-                            >
-                              {a.evaluation.score}
-                            </span>
+                            a.evaluation.detail && !a.evaluation.detail.requirements_met ? (
+                              <span
+                                className="badge bg-red-100 text-red-800 ring-1 ring-inset ring-red-600/30"
+                                title={`Match score: ${a.evaluation.score}`}
+                              >
+                                Doesn&apos;t meet reqs
+                              </span>
+                            ) : (
+                              <span className={`badge tabular-nums ${scoreTone(a.evaluation.score)}`}>
+                                {a.evaluation.score}
+                              </span>
+                            )
                           ) : (
                             <span className="text-xs text-zinc-400">screening…</span>
                           )}

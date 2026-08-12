@@ -55,6 +55,37 @@ class Requirement(BaseModel):
     evidence: str = ""
 
 
+class WorkExperienceOut(BaseModel):
+    """One work-history entry pulled from the resume, dates kept as written."""
+
+    title: str = ""
+    company: str = ""
+    start_date: str = ""
+    end_date: str = ""
+    is_current: bool = False
+
+
+class EducationOut(BaseModel):
+    degree: str = ""
+    institution: str = ""
+    graduation_year: int | None = None
+
+
+class StructuredResumeOut(BaseModel):
+    """Structured facts extracted from the resume, separate from the job-fit score.
+
+    `total_years_experience` is always computed deterministically from the
+    parsed work-history dates (see `evaluation.resume_structuring`), never
+    the model's own arithmetic — shown here so a manager can see the actual
+    basis for the "Experience Level" factor and any years-based requirement.
+    """
+
+    work_experience: list[WorkExperienceOut] = []
+    education: list[EducationOut] = []
+    skills: list[str] = []
+    total_years_experience: float = 0.0
+
+
 class CandidateProfile(BaseModel):
     """Identity/contact info the AI extracted directly from the resume text.
 
@@ -90,6 +121,7 @@ class EvaluationDetail(BaseModel):
     matched_keywords: list[str] = []
     missing_keywords: list[str] = []
     candidate_profile: CandidateProfile | None = None
+    structured_resume: StructuredResumeOut | None = None
 
 
 class EvaluationOut(BaseModel):
