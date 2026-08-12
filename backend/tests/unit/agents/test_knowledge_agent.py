@@ -1,4 +1,4 @@
-"""Unit tests for the knowledge agent node (rewrite -> retrieve -> answer).
+"""Unit tests for the knowledge agent (rewrite -> retrieve -> stream -> answer).
 
 Uses a fake LLM and a fake KnowledgeService so nothing touches a model
 server or a database.
@@ -12,9 +12,8 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agents.knowledge_agent.agent import (
-    fallback_message,
     rewrite_query,
-    run_knowledge_turn,
+    stream_knowledge_turn,
 )
 from app.knowledge.contracts import Citation, KnowledgeResult
 from app.model_gateway.interfaces import LLM
@@ -45,15 +44,16 @@ class FakeKnowledgeService:
         self.result = result
         self.answer = answer
         self.retrieve_queries: list[str] = []
-        self.generate_queries: list[str] = []
+        self.stream_queries: list[str] = []
 
     async def retrieve(self, query: str, **kwargs) -> KnowledgeResult:
         self.retrieve_queries.append(query)
         return self.result
 
-    async def generate_answer(self, query: str, result: KnowledgeResult) -> str | None:
-        self.generate_queries.append(query)
-        return self.answer
+    async def stream_answer(self, query: str, result: KnowledgeResult):
+        self.stream_queries.append(query)
+        if self.answer:
+            yield self.answer
 
 
 def make_result(*, low_confidence: bool = False, confidence: float = 0.9) -> KnowledgeResult:
@@ -75,6 +75,16 @@ def make_result(*, low_confidence: bool = False, confidence: float = 0.9) -> Kno
         chunks=[],
         low_confidence=low_confidence,
     )
+
+
+class EventCollector:
+    """Captures the events the turn streams through its writer."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def __call__(self, event: dict) -> None:
+        self.events.append(event)
 
 
 @pytest.mark.asyncio
@@ -112,44 +122,59 @@ async def test_rewrite_query_falls_back_on_failure():
 
 
 @pytest.mark.asyncio
-async def test_run_knowledge_turn_rewrites_then_retrieves():
-    """The node retrieves on the REWRITTEN query, not the raw one."""
+async def test_stream_knowledge_turn_rewrites_then_retrieves():
+    """The turn retrieves on the REWRITTEN query and streams tokens + state."""
     llm = FakeLLM("What is the sick leave policy?")
     service = FakeKnowledgeService(make_result())
+    writer = EventCollector()
 
-    turn = await run_knowledge_turn(
-        service=service, llm=llm, query="what about sick leave?", history=[]
+    state_update = await stream_knowledge_turn(
+        service=service, llm=llm, query="what about sick leave?", history=[], writer=writer
     )
 
     assert service.retrieve_queries == ["What is the sick leave policy?"]
-    assert service.generate_queries == ["What is the sick leave policy?"]
-    assert turn.answer == "Grounded answer from the policy."
-    assert turn.result.confidence == 0.9
+    assert service.stream_queries == ["What is the sick leave policy?"]
+
+    # Streamed events: retrieval metadata first, then the answer token.
+    types = [e["type"] for e in writer.events]
+    assert types == ["retrieval", "token"]
+    assert writer.events[0]["rewritten_query"] == "What is the sick leave policy?"
+    assert writer.events[0]["result"] is service.result
+    assert writer.events[1]["text"] == "Grounded answer from the policy."
+
+    # The state update carries the final answer + structured facts.
+    assert state_update["answer"] == "Grounded answer from the policy."
+    assert state_update["agent"] == "knowledge"
+    assert state_update["confidence"] == 0.9
+    assert len(state_update["citations"]) == 1
+    assert state_update["messages"][-1].content == "Grounded answer from the policy."
 
 
 @pytest.mark.asyncio
-async def test_low_confidence_yields_honest_fallback():
-    """Low-confidence retrieval never fabricates an answer — even if the
-    service returns one anyway (defense in depth at the node)."""
-    from app.agents.supervisor.graph import build_supervisor_graph
-
+async def test_low_confidence_streams_honest_message():
+    """Low-confidence retrieval streams a message, never tokens or a fake answer."""
     service = FakeKnowledgeService(make_result(low_confidence=True), answer="should not be used")
-    graph = build_supervisor_graph(llm=FakeLLM("knowledge"), knowledge_service=service)
+    writer = EventCollector()
 
-    state = await graph.ainvoke({"messages": [], "current_query": "annual leave policy"})
+    state_update = await stream_knowledge_turn(
+        service=service, llm=FakeLLM("rewritten"), query="q", history=[], writer=writer
+    )
 
-    assert "couldn't find enough evidence" in state["answer"]
-    assert "should not be used" not in state["answer"]
+    assert [e["type"] for e in writer.events] == ["retrieval", "message"]
+    assert "couldn't find enough evidence" in writer.events[1]["text"]
+    assert "should not be used" not in writer.events[1]["text"]
+    assert "couldn't find enough evidence" in state_update["answer"]
 
 
 @pytest.mark.asyncio
 async def test_no_answer_with_evidence_serves_grounded_context():
-    """Evidence found but no generated answer -> grounded context fallback."""
-    turn = await run_knowledge_turn(
-        service=FakeKnowledgeService(make_result(), answer=None),
-        llm=None,
-        query="annual leave accrual",
-        history=[],
+    """Evidence found but no generated answer -> grounded-context message."""
+    service = FakeKnowledgeService(make_result(), answer=None)
+    writer = EventCollector()
+
+    state_update = await stream_knowledge_turn(
+        service=service, llm=None, query="annual leave accrual", history=[], writer=writer
     )
-    assert turn.answer is None
-    assert fallback_message(turn) == "Annual leave accrues at 1.5 days per month. (Leave Policy)"
+
+    assert [e["type"] for e in writer.events] == ["retrieval", "message"]
+    assert state_update["answer"] == "Annual leave accrues at 1.5 days per month. (Leave Policy)"
