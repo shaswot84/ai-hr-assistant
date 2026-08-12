@@ -26,11 +26,18 @@ class OllamaChatProvider(ChatProvider):
         model: str | None = None,
         api_key: str | None = None,
     ) -> None:
-        """Load endpoint, model, key, and timeout, preferring any given overrides."""
+        """Load endpoint, model, key, and timeout, preferring any given overrides.
+
+        `None` means "no override was given" (fall back to the .env-configured
+        default); an empty string is a real, explicit override (a manager
+        cleared the field in Settings) and must be honored as blank rather
+        than silently falling back — `or` can't tell those two cases apart
+        since `""` and `None` are both falsy.
+        """
         self._settings = get_settings()
-        self._base = (api_base or self._settings.chat.api_base).removesuffix("/")
-        self._model = model or self._settings.chat.model
-        self._api_key = api_key or self._settings.chat.api_key
+        self._base = (self._settings.chat.api_base if api_base is None else api_base).removesuffix("/")
+        self._model = self._settings.chat.model if model is None else model
+        self._api_key = self._settings.chat.api_key if api_key is None else api_key
         self._timeout = self._settings.chat.request_timeout
 
     def is_configured(self) -> bool:
