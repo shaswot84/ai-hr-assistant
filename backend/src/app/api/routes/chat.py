@@ -211,6 +211,7 @@ async def _persist_reply(
     citations: list[dict],
     agent: str,
     confidence: float,
+    low_confidence: bool = False,
 ) -> None:
     """Append the assistant reply and bump the conversation's activity time."""
     await repo.append_message(
@@ -218,7 +219,11 @@ async def _persist_reply(
         role="assistant",
         content=answer,
         citations=citations,
-        meta={"agent": agent, "confidence": confidence},
+        meta={
+            "agent": agent,
+            "confidence": confidence,
+            "low_confidence": low_confidence,
+        },
     )
     await repo.touch(conversation_id)
 
@@ -329,7 +334,17 @@ async def chat_stream(
         confidence = final.get("confidence", 0.0)
         knowledge_result = final.get("knowledge_result")
 
-        await _persist_reply(repo, conversation_id, answer, citations, agent, confidence)
+        await _persist_reply(
+            repo,
+            conversation_id,
+            answer,
+            citations,
+            agent,
+            confidence,
+            low_confidence=bool(
+                knowledge_result is not None and knowledge_result.low_confidence
+            ),
+        )
         await session.commit()
 
         yield sse(

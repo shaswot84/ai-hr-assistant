@@ -242,7 +242,11 @@ async def test_first_message_creates_conversation_and_persists(chat_env):
         messages = await repo.list_messages(conversation_id)
         assert [m.role for m in messages] == ["user", "assistant"]
         assert messages[1].content == "A grounded answer."
-        assert messages[1].meta == {"agent": "knowledge", "confidence": 0.92}
+        assert messages[1].meta == {
+            "agent": "knowledge",
+            "confidence": 0.92,
+            "low_confidence": False,
+        }
         assert messages[1].citations[0]["document_title"] == "Leave Policy"
 
 
@@ -401,7 +405,11 @@ async def test_chat_stream_emits_event_sequence(chat_env):
         messages = await ConversationRepo(session).list_messages(conversation_id)
         assert [m.role for m in messages] == ["user", "assistant"]
         assert messages[1].content == "A grounded answer."
-        assert messages[1].meta == {"agent": "knowledge", "confidence": 0.92}
+        assert messages[1].meta == {
+            "agent": "knowledge",
+            "confidence": 0.92,
+            "low_confidence": False,
+        }
 
 
 @pytest.mark.asyncio
