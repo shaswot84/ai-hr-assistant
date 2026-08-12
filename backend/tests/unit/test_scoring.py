@@ -5,6 +5,7 @@ from app.evaluation.scoring import (
     DOES_NOT_MEET_REQUIREMENTS,
     _apply_deterministic_requirement_checks,
     _normalize_review,
+    _reconcile_keywords_with_taxonomy,
     _requirements,
     _score_deterministic,
 )
@@ -125,3 +126,60 @@ def test_score_deterministic_includes_requirements_fields_for_schema_consistency
     result = _score_deterministic("Python developer with FastAPI experience.", "Backend Engineer", "Need Python and FastAPI skills.")
     assert result.raw_payload["requirements"] == []
     assert result.raw_payload["requirementsMet"] is True
+
+
+def test_reconcile_keywords_moves_taxonomy_recognized_alias_from_missing_to_matched():
+    """Regression case for the core ask: the model said 'Kubernetes' was
+    missing, but the resume says 'K8s' — same skill, different spelling.
+    """
+    matched, missing = _reconcile_keywords_with_taxonomy(
+        matched=["Python"],
+        missing=["Kubernetes", "Some Unrelated Thing"],
+        resume_text="Experienced with Python and K8s in production.",
+    )
+    assert "Kubernetes" in matched
+    assert "Kubernetes" not in missing
+    assert "Some Unrelated Thing" in missing  # not in the taxonomy, left untouched
+
+
+def test_reconcile_keywords_leaves_missing_when_alias_truly_absent():
+    matched, missing = _reconcile_keywords_with_taxonomy(
+        matched=[], missing=["Kubernetes"], resume_text="Experienced with Python only.",
+    )
+    assert missing == ["Kubernetes"]
+    assert matched == []
+
+
+def test_normalize_review_reconciles_missing_keyword_using_resume_text():
+    data = {
+        "matchScore": 70,
+        "recommendation": "Good Match",
+        "matchedKeywords": ["Python"],
+        "missingKeywords": ["Kubernetes"],
+    }
+    review = _normalize_review(data, structured=None, resume_text="Deployed services on K8s using Python.")
+    assert "Kubernetes" in review["matchedKeywords"]
+    assert "Kubernetes" not in review["missingKeywords"]
+
+
+def test_score_deterministic_matches_skill_alias_not_just_literal_substring():
+    """The naive old behavior (`kw in resume_lower`) would fail here since
+    'kubernetes' never literally appears in the resume — only its alias 'k8s'.
+    """
+    result = _score_deterministic(
+        resume_text="Backend engineer with Python and K8s experience.",
+        job_title="Backend Engineer",
+        job_description="Requires Python and Kubernetes.",
+    )
+    assert "kubernetes" in result.raw_payload["matchedKeywords"]
+
+
+def test_score_deterministic_recognizes_multi_word_skill_phrase():
+    """A single-word tokenizer alone could never produce 'machine learning'
+    as one keyword — it must come from the taxonomy-phrase merge."""
+    result = _score_deterministic(
+        resume_text="5 years of machine learning experience with Python.",
+        job_title="ML Engineer",
+        job_description="Looking for strong machine learning and Python skills.",
+    )
+    assert "machine learning" in result.raw_payload["matchedKeywords"]

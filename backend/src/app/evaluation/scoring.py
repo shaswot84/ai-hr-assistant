@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.evaluation.resume_structuring import StructuredResume
+from app.evaluation.skills_taxonomy import find_skills_in_text, normalize_skill
 from app.model_gateway.ollama import OllamaChatProvider
 from app.model_gateway.provider import ChatProviderError
 
@@ -248,7 +249,33 @@ def _apply_deterministic_requirement_checks(
     return requirements
 
 
-def _normalize_review(data: dict[str, Any], structured: StructuredResume | None = None) -> dict[str, Any]:
+def _reconcile_keywords_with_taxonomy(
+    matched: list[str], missing: list[str], resume_text: str
+) -> tuple[list[str], list[str]]:
+    """Cross-check the model's missingKeywords against known skill aliases actually in the resume.
+
+    The model can mark "Kubernetes" missing when the resume only says "K8s"
+    — same skill, different spelling, easy to miss in a single free-text
+    pass. Anything the skills taxonomy recognizes gets deterministically
+    re-checked here; keywords outside the taxonomy are left as the model
+    judged them (unchanged behavior for terms we don't have curated).
+    """
+    resume_skills = find_skills_in_text(resume_text)
+    corrected_matched = list(matched)
+    still_missing = []
+    for keyword in missing:
+        canonical = normalize_skill(keyword)
+        if canonical is not None and canonical in resume_skills:
+            if keyword not in corrected_matched:
+                corrected_matched.append(keyword)
+        else:
+            still_missing.append(keyword)
+    return corrected_matched, still_missing
+
+
+def _normalize_review(
+    data: dict[str, Any], structured: StructuredResume | None = None, resume_text: str = ""
+) -> dict[str, Any]:
     """Coerce a raw model payload into a well-typed, defensively-parsed screening object.
 
     Missing/odd-shaped fields fall back to empty/safe defaults so the UI never
@@ -265,6 +292,10 @@ def _normalize_review(data: dict[str, Any], structured: StructuredResume | None 
     if not requirements_met:
         recommendation = DOES_NOT_MEET_REQUIREMENTS
 
+    matched_keywords, missing_keywords = _reconcile_keywords_with_taxonomy(
+        _str_list(data.get("matchedKeywords")), _str_list(data.get("missingKeywords")), resume_text
+    )
+
     return {
         "requirements": requirements,
         "requirementsMet": requirements_met,
@@ -274,8 +305,8 @@ def _normalize_review(data: dict[str, Any], structured: StructuredResume | None 
         "scoreFactors": _score_factors(data.get("scoreFactors")),
         "strengths": _str_list(data.get("strengths")),
         "weaknesses": _str_list(data.get("weaknesses")),
-        "matchedKeywords": _str_list(data.get("matchedKeywords")),
-        "missingKeywords": _str_list(data.get("missingKeywords")),
+        "matchedKeywords": matched_keywords,
+        "missingKeywords": missing_keywords,
         "candidateProfile": _candidate_profile(data.get("candidateProfile")),
     }
 
@@ -336,7 +367,7 @@ async def _score_with_llm(
         # graceful degradation per error-handling principles: fall back, never crash
         return _score_deterministic(resume_text, job_title, job_description)
 
-    review = _normalize_review(data, structured)
+    review = _normalize_review(data, structured, resume_text)
     return ScoreResult(
         score=review["matchScore"],
         overview=review["summary"],
@@ -379,23 +410,43 @@ def _extract_contact_profile(resume_text: str) -> dict[str, str]:
     }
 
 
+def _keyword_present_in_resume(keyword: str, resume_lower: str, resume_skills: set[str]) -> bool:
+    """Check a job keyword against the resume, alias-aware for recognized skills.
+
+    A keyword the skills taxonomy recognizes (e.g. "Kubernetes") matches if
+    *any* known variation is in the resume (e.g. "K8s"), not only the exact
+    literal string — the plain substring check only applies to keywords
+    outside the taxonomy, where no alias information exists.
+    """
+    canonical = normalize_skill(keyword)
+    if canonical is not None:
+        return canonical in resume_skills
+    return keyword in resume_lower
+
+
 def _score_deterministic(
     resume_text: str,
     job_title: str,
     job_description: str,
 ) -> ScoreResult:
-    """Zero-dependency fallback: term-overlap matching when no Ollama key is set.
+    """Zero-dependency fallback: taxonomy-aware term-overlap matching when no Ollama key is set.
 
-    Tokenizes the job description into keywords, counts how many appear in the
-    resume, and produces a heuristic score. Explicitly a fallback — the real
-    screening (score factors, strengths/weaknesses) is the LLM path; this only
-    ever produces a single "Keyword Coverage" factor.
+    Tokenizes the job description into keywords, counts how many appear in
+    the resume (recognized skills matched by any known alias, everything
+    else by plain substring), and produces a heuristic score. Explicitly a
+    fallback — the real screening (score factors, strengths/weaknesses) is
+    the LLM path; this only ever produces a single "Keyword Coverage" factor.
     """
     resume_lower = resume_text.lower()
     job_lower = job_description.lower() if job_description else job_title.lower()
     candidate_profile = _extract_contact_profile(resume_text)
+    resume_skills = find_skills_in_text(resume_text)
 
-    keywords = _extract_keywords(job_lower)
+    # Single-word tokenization alone can't catch multi-word skills (e.g.
+    # "machine learning", "project management") since it never joins two
+    # tokens back together — merge in taxonomy-recognized phrases found
+    # directly in the job text so those aren't silently invisible.
+    keywords = sorted(set(_extract_keywords(job_lower)) | find_skills_in_text(job_lower))
     if not keywords:
         summary = (
             "No job description was provided, so this is a neutral estimate. "
@@ -424,8 +475,8 @@ def _score_deterministic(
             prompt_version=PROMPT_VERSION,
         )
 
-    matched = [kw for kw in keywords if kw in resume_lower]
-    missing = [kw for kw in keywords if kw not in resume_lower]
+    matched = [kw for kw in keywords if _keyword_present_in_resume(kw, resume_lower, resume_skills)]
+    missing = [kw for kw in keywords if not _keyword_present_in_resume(kw, resume_lower, resume_skills)]
     score = round(100 * len(matched) / len(keywords))
 
     summary = (
