@@ -87,6 +87,7 @@ class _StrictArgs(BaseModel):
 
 class GetLeaveBalanceArgs(_StrictArgs):
     year: int | None = None
+    leave_type_name: str | None = None
 
 
 class ListLeaveTypesArgs(_StrictArgs):
@@ -283,14 +284,50 @@ def preflight_submit(
         )
 
 
+def mentioned_leave_type(service: LeaveService, text: str) -> str | None:
+    """If `text` names exactly one of the employee's active leave types,
+    return its name; None when it names none or several.
+
+    Deterministic helper — lets agent.py focus a get_leave_balance call on
+    a single type ("how many causal leave do I have?") without trusting the
+    model to pass leave_type_name itself. Same conservative matching rules
+    as `_resolve_leave_type`: a type counts only when its full name appears
+    in the text or the text's words are a subset of the type's words.
+    """
+    types = service.list_leave_types()
+    if not types:
+        return None
+    lower_text = text.lower()
+    text_tokens = set(lower_text.split())
+
+    matches = [
+        t
+        for t in types
+        if t.leave_name.lower() in lower_text
+        or (text_tokens and text_tokens <= set(t.leave_name.lower().split()))
+    ]
+    return matches[0].leave_name if len(matches) == 1 else None
+
+
 # ---- read tools (no confirmation) -----------------------------------------
 
 
-def get_leave_balance(service: LeaveService, actor: UserContext, *, year: int | None = None) -> list[dict]:
-    """Return the employee's allocated/used/remaining days per leave type."""
+def get_leave_balance(
+    service: LeaveService,
+    actor: UserContext,
+    *,
+    year: int | None = None,
+    leave_type_name: str | None = None,
+) -> list[dict]:
+    """Return the employee's allocated/used/remaining days per leave type.
+
+    When `leave_type_name` is given, only that type's row is returned so
+    a specific question like "how many unpaid leave do I have?" gets a
+    focused answer instead of the full grid.
+    """
     _require_employee_access(actor)
     rows = _call_service(service.list_my_balance, actor, year)
-    return [
+    serialized = [
         {
             "leave_type_name": row["leave_type"].leave_name,
             "year": row["year"],
@@ -300,6 +337,10 @@ def get_leave_balance(service: LeaveService, actor: UserContext, *, year: int | 
         }
         for row in rows
     ]
+    if leave_type_name:
+        needle = leave_type_name.strip().lower()
+        serialized = [r for r in serialized if r["leave_type_name"].lower() == needle]
+    return serialized
 
 
 def list_leave_types(service: LeaveService, actor: UserContext) -> list[dict]:
@@ -432,8 +473,11 @@ class ToolSpec:
 TOOLS: dict[str, ToolSpec] = {
     "get_leave_balance": ToolSpec(
         name="get_leave_balance",
-        description="Get the employee's remaining leave balance per leave type.",
-        parameters={"year": "integer, optional — defaults to the current year"},
+        description="Get the employee's remaining leave balance per leave type; pass leave_type_name to check one specific type.",
+        parameters={
+            "year": "integer, optional — defaults to the current year",
+            "leave_type_name": "string, optional — e.g. 'Unpaid Leave'; returns only that type's row",
+        },
         handler=get_leave_balance,
         requires_confirmation=False,
     ),

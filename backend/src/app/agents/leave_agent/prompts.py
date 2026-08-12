@@ -17,7 +17,7 @@ import json
 
 from app.agents.leave_agent.tools import TOOLS
 
-PROMPT_VERSION = "leave-agent-v3"
+PROMPT_VERSION = "leave-agent-v4"
 
 _SYSTEM_PREAMBLE = """You are the Leave Agent, a focused assistant that helps an employee \
 check their leave balance, submit a leave request, view their past requests, or cancel a \
@@ -56,7 +56,12 @@ verified it against their ACTUAL balance. If they ask something like "can I get 
 leave?", always call get_leave_balance first (tool: "get_leave_balance", args: {}) and \
 answer only from its returned numbers — e.g. "You have 0.0 days of Unpaid Leave \
 remaining." Never assume, estimate, or promise a type is usable based only on its \
-existence."""
+existence.
+10. When the employee asks to START a request for a specific leave type, call \
+get_leave_balance first with that type's name (tool: "get_leave_balance", args: \
+{"leave_type_name": "<name>"}). If the returned balance is 0.0 (or not present), tell \
+them immediately and do NOT ask for dates — there is nothing to request. Only collect \
+dates once the balance confirms the type is usable."""
 
 _RESPONSE_SCHEMA_TEMPLATE = """Respond with a single JSON object of exactly this shape:
 {{
