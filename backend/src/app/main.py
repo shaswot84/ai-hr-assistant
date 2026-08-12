@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.knowledge import router as knowledge_router
 from app.api.routes import auth as auth_router
+from app.api.routes import chat as chat_router
 from app.api.routes import leave as leave_router
 from app.api.routes import people as people_router
 from app.api.routes import recruitment as recruitment_router
@@ -56,6 +57,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router.router)
+app.include_router(chat_router.router)
 app.include_router(recruitment_router.router)
 app.include_router(settings_router.router)
 app.include_router(knowledge_router)

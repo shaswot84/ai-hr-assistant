@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.config.settings import get_settings
 from app.db.base import Base
 import app.domain.audit  # noqa: F401  (register audit_log table)
+import app.domain.conversation  # noqa: F401  (register conversation tables)
 import app.domain.identity  # noqa: F401  (register identity + org tables)
 import app.domain.leave  # noqa: F401  (register leave management tables)
 import app.domain.outbox  # noqa: F401  (register outbox table)

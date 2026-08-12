@@ -34,6 +34,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.6.0",
+    "aiosqlite>=0.20.0",
 ]
 # In-process cross-encoder reranker (BAAI/bge-reranker-base). Heavy (torch);
 # kept optional so the base install stays lean.
