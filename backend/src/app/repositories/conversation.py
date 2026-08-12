@@ -24,13 +24,11 @@ class ConversationRepo:
         """Bind the repository to an async DB session."""
         self._db = db
 
-    async def create(
-        self, *, employee_id: uuid.UUID | None = None, title: str | None = None
-    ) -> Conversation:
-        """Persist a new conversation and flush to obtain its generated id."""
+    async def create(self, *, user_id: uuid.UUID, title: str | None = None) -> Conversation:
+        """Persist a new conversation for an authenticated user and flush."""
         now = get_clock().utc_now()
         conversation = Conversation(
-            employee_id=employee_id, title=title, created_at=now, updated_at=now
+            user_id=user_id, title=title, created_at=now, updated_at=now
         )
         self._db.add(conversation)
         await self._db.flush()
@@ -40,14 +38,16 @@ class ConversationRepo:
         """Fetch a conversation by id, or None if it does not exist."""
         return await self._db.get(Conversation, conversation_id)
 
-    async def list_for_employee(
-        self, employee_id: uuid.UUID, *, limit: int = 50
-    ) -> list[Conversation]:
-        """List an employee's conversations, most recently active first."""
+    async def list_for_user(self, user_id: uuid.UUID, *, limit: int = 50) -> list[Conversation]:
+        """List a user's conversations, most recently active first.
+
+        ``conversation_id`` breaks ties on equal timestamps so pagination
+        order is deterministic.
+        """
         stmt = (
             select(Conversation)
-            .where(Conversation.employee_id == employee_id)
-            .order_by(Conversation.updated_at.desc())
+            .where(Conversation.user_id == user_id)
+            .order_by(Conversation.updated_at.desc(), Conversation.conversation_id.desc())
             .limit(limit)
         )
         return list((await self._db.scalars(stmt)).all())
