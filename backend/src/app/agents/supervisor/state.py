@@ -40,3 +40,6 @@ class SupervisorState(TypedDict, total=False):
     confidence: float
     # Which sub-agent handled the turn.
     agent: str
+    # Output-safety verdict for the generated answer: PASS | REDACTED |
+    # BLOCKED | FLAGGED_FOR_REVIEW (see safety/contracts.py).
+    safety: str

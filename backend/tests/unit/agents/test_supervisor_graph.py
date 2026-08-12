@@ -31,17 +31,17 @@ class FakeLLM(LLM):
 class FakeKnowledgeService:
     """A KnowledgeService stub returning a fixed retrieval result."""
 
-    def __init__(self, result: KnowledgeResult, answer: str | None = "A grounded answer.") -> None:
+    def __init__(self, result: KnowledgeResult, answer: str | None = "A grounded answer. [1]") -> None:
         self.result = result
         self.answer = answer
 
     async def retrieve(self, query: str, **kwargs) -> KnowledgeResult:
         return self.result
 
-    async def generate_answer(self, query: str, result: KnowledgeResult) -> str | None:
+    async def generate_answer(self, query: str, result: KnowledgeResult, *, history=None) -> str | None:
         return self.answer
 
-    async def stream_answer(self, query: str, result: KnowledgeResult):
+    async def stream_answer(self, query: str, result: KnowledgeResult, *, history=None):
         if self.answer:
             yield self.answer
 
@@ -78,12 +78,13 @@ async def test_routes_to_knowledge_and_answers():
 
     assert state["agent"] == "knowledge"
     assert state["route"] == "knowledge"
-    assert state["answer"] == "A grounded answer."
+    assert state["answer"] == "A grounded answer. [1]"
     assert state["confidence"] == 0.92
+    assert state["safety"] == "PASS"
     assert len(state["citations"]) == 1
     assert state["citations"][0].document_title == "Leave Policy"
     assert state["messages"][-1].type == "ai"
-    assert state["messages"][-1].content == "A grounded answer."
+    assert state["messages"][-1].content == "A grounded answer. [1]"
     assert state["knowledge_result"] is not None
 
 
@@ -192,7 +193,7 @@ async def test_knowledge_node_streams_events():
     assert types[0] == "retrieval"
     assert types[1:] == ["token"]
     assert events[0]["rewritten_query"] == "annual leave policy?"
-    assert events[1]["text"] == "A grounded answer."
+    assert events[1]["text"] == "A grounded answer. [1]"
 
 
 @pytest.mark.asyncio
@@ -229,5 +230,5 @@ async def test_history_is_preserved_and_passed_to_routing():
     # The graph keeps prior turns and appends the assistant reply.
     assert [m.content for m in state["messages"]] == [
         "How much annual leave do I have?",
-        "A grounded answer.",
+        "A grounded answer. [1]",
     ]

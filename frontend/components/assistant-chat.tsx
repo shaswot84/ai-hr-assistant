@@ -11,7 +11,12 @@ interface ViewMessage {
   role: "user" | "assistant" | "system";
   content: string;
   citations: ChatCitation[] | null;
-  meta: { agent?: string; confidence?: number; low_confidence?: boolean } | null;
+  meta: {
+    agent?: string;
+    confidence?: number;
+    low_confidence?: boolean;
+    safety?: "PASS" | "REDACTED" | "BLOCKED" | "FLAGGED_FOR_REVIEW";
+  } | null;
   streaming?: boolean;
 }
 
@@ -135,6 +140,14 @@ function MessageBubble({ message }: { message: ViewMessage }) {
             {lowConfidence && (
               <span className="badge bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20">
                 low confidence
+              </span>
+            )}
+            {message.meta.safety === "FLAGGED_FOR_REVIEW" && (
+              <span
+                title="Some claims could not be verified against the sources."
+                className="badge bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20"
+              >
+                claims flagged for review
               </span>
             )}
             {message.meta.agent && (

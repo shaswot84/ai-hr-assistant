@@ -42,6 +42,7 @@ from app.knowledge.service import KnowledgeService
 from app.model_gateway.factory import build_embedder, build_llm, build_reranker
 from app.model_gateway.interfaces import LLM, Embedder, Reranker
 from app.repositories.conversation import ConversationRepo
+from app.safety.factory import build_output_guard
 from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
@@ -63,6 +64,10 @@ _TITLE_MAX = 80
 # Terminal nodes in the supervisor graph — their state update is the final
 # answer the chat layer persists.
 _TERMINAL_NODES = ("knowledge", "leave", "recruitment", "clarify")
+
+# Bounded history window fed to the graph per turn (messages; the prompts
+# then trim further by token budget — see agents/context.py).
+_HISTORY_MESSAGE_WINDOW = 60
 
 
 def _embedder() -> Embedder:
@@ -97,7 +102,9 @@ def build_chat_graph(session: AsyncSession):
 
     Request-scoped like the search endpoints: the KnowledgeService binds the
     repository to this request's session, and the graph holds no state
-    between turns (durability lives in the conversation tables).
+    between turns (durability lives in the conversation tables). The
+    output-safety pipeline (claim tracking, evidence gate, PII, topics) is
+    wired from settings and applied to every generated answer.
     """
     service = KnowledgeService(
         HybridRetrievalRepository(session),
@@ -105,7 +112,9 @@ def build_chat_graph(session: AsyncSession):
         reranker=_reranker(),
         llm=_llm(),
     )
-    return build_supervisor_graph(llm=_llm(), knowledge_service=service)
+    return build_supervisor_graph(
+        llm=_llm(), knowledge_service=service, guard=build_output_guard()
+    )
 
 
 async def _resolve_user_id(session: AsyncSession, user: UserContext) -> uuid.UUID:
@@ -198,8 +207,8 @@ async def _prepare_turn(
     # Persist the user turn before the graph runs: durable even on crash.
     await repo.append_message(conversation_id=conversation_id, role="user", content=message)
 
-    # History = everything before this turn (current_query is separate).
-    transcript = await repo.list_messages(conversation_id)
+    # History = the bounded window before this turn (current_query is separate).
+    transcript = await repo.recent_messages(conversation_id, _HISTORY_MESSAGE_WINDOW + 1)
     history_messages = _history_messages(transcript[:-1])
     return repo, conversation_id, history_messages, message
 
@@ -212,6 +221,7 @@ async def _persist_reply(
     agent: str,
     confidence: float,
     low_confidence: bool = False,
+    safety: str = "PASS",
 ) -> None:
     """Append the assistant reply and bump the conversation's activity time."""
     await repo.append_message(
@@ -223,6 +233,7 @@ async def _persist_reply(
             "agent": agent,
             "confidence": confidence,
             "low_confidence": low_confidence,
+            "safety": safety,
         },
     )
     await repo.touch(conversation_id)
@@ -245,8 +256,18 @@ async def chat(
     agent = result.get("agent", "unknown")
     confidence = result.get("confidence", 0.0)
     knowledge_result = result.get("knowledge_result")
+    safety = result.get("safety", "PASS")
 
-    await _persist_reply(repo, conversation_id, answer, citations, agent, confidence)
+    await _persist_reply(
+        repo,
+        conversation_id,
+        answer,
+        citations,
+        agent,
+        confidence,
+        low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
+        safety=safety,
+    )
     await session.commit()
 
     return ChatResponse(
@@ -333,6 +354,7 @@ async def chat_stream(
         agent = final.get("agent", "unknown")
         confidence = final.get("confidence", 0.0)
         knowledge_result = final.get("knowledge_result")
+        safety = final.get("safety", "PASS")
 
         await _persist_reply(
             repo,
@@ -344,6 +366,7 @@ async def chat_stream(
             low_confidence=bool(
                 knowledge_result is not None and knowledge_result.low_confidence
             ),
+            safety=safety,
         )
         await session.commit()
 
