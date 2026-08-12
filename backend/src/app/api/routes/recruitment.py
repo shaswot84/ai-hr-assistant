@@ -21,6 +21,7 @@ from app.schemas.recruitment import (
     DecisionRequest,
     EvaluationDetail,
     EvaluationOut,
+    Requirement,
     ScoreFactor,
     VacancyCreate,
     VacancyOut,
@@ -44,6 +45,10 @@ def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
         return None
     profile = raw_payload.get("candidateProfile")
     return EvaluationDetail(
+        requirements=[
+            Requirement(**r) for r in raw_payload.get("requirements", []) if isinstance(r, dict)
+        ],
+        requirements_met=raw_payload.get("requirementsMet", True),
         match_score=raw_payload.get("matchScore", 0),
         recommendation=raw_payload.get("recommendation", ""),
         summary=raw_payload.get("summary", ""),

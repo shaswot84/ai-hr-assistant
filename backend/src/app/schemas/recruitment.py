@@ -41,6 +41,20 @@ class ScoreFactor(BaseModel):
     note: str = ""
 
 
+class Requirement(BaseModel):
+    """One explicit must-have from the job description, checked against the resume.
+
+    Distinct from `score_factors` — this is a hard pass/fail gate, not a
+    soft ranking dimension. `met` for a years-of-experience requirement is
+    computed deterministically from extracted work-history dates rather
+    than left to the model's own arithmetic.
+    """
+
+    requirement: str
+    met: bool = False
+    evidence: str = ""
+
+
 class CandidateProfile(BaseModel):
     """Identity/contact info the AI extracted directly from the resume text.
 
@@ -65,6 +79,8 @@ class EvaluationDetail(BaseModel):
     here, only whether and why the candidate matches this specific role.
     """
 
+    requirements: list[Requirement] = []
+    requirements_met: bool = True
     match_score: int = 0
     recommendation: str = ""
     summary: str = ""

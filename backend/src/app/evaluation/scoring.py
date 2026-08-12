@@ -39,7 +39,17 @@ RESUME TEXT (raw-extracted, may have imperfect spacing/line breaks — look past
 {structured_context}
 Return a single JSON object with exactly this shape:
 {{
-  "matchScore": number,                 // 0-100, overall fit for THIS job
+  "requirements": [                     // ONLY explicit must-haves stated in the job description
+    {{
+      "requirement": string,            // the must-have, as stated, e.g. "3+ years of Python experience"
+      "met": boolean,                   // does this candidate clearly meet it, per the resume?
+      "evidence": string                // what in the resume supports this verdict (or why it's missing)
+    }}
+    // Do NOT include "preferred"/"nice to have"/general skills here — only things
+    // stated as required, minimum, must-have, or mandatory. Empty array if the job
+    // description states no explicit hard requirements.
+  ],
+  "matchScore": number,                 // 0-100, overall fit for THIS job (soft ranking, independent of requirements)
   "recommendation": string,             // one of: "Strong Match", "Good Match", "Possible Match", "Weak Match"
   "summary": string,                    // 2-3 sentences: does this candidate match the role, and why
   "scoreFactors": [                     // 3-5 factors that explain the score, each independently
@@ -61,9 +71,10 @@ Return a single JSON object with exactly this shape:
 }}
 Rules:
 - Ground every claim in the resume text. Do not fabricate skills or experience.
+- "requirements" is a hard gate: judge each conservatively — only mark "met": true when the resume clearly supports it.
 - "weaknesses" must be specific gaps against THIS job's requirements, not generic writing critiques.
 - "candidateProfile" fields must be copied verbatim from the resume text, never invented; use "" for anything not present.
-- If verified structured data is provided above, use its total-years-of-experience figure for the "Experience Level" factor instead of estimating your own from the raw text.
+- If verified structured data is provided above, use its total-years-of-experience figure for the "Experience Level" factor and for any years-of-experience requirement, instead of estimating your own from the raw text.
 - Output raw JSON only."""
 
 
@@ -181,16 +192,82 @@ def _candidate_profile(value: Any) -> dict[str, str]:
     }
 
 
-def _normalize_review(data: dict[str, Any]) -> dict[str, Any]:
+_YEARS_REQUIREMENT_RE = re.compile(r"(\d+)\s*\+?\s*years?", re.IGNORECASE)
+
+#: Recommendation forced whenever a candidate fails one or more hard
+#: requirements — distinct from the score-band labels below "Weak Match"
+#: so a manager can tell "didn't meet the bar" apart from "met the bar,
+#: just isn't a great fit" at a glance, instead of both looking like a
+#: merely-low fuzzy score.
+DOES_NOT_MEET_REQUIREMENTS = "Does Not Meet Requirements"
+
+
+def _requirements(value: Any) -> list[dict[str, Any]]:
+    """Normalize the requirements list into [{requirement, met, evidence}]."""
+    result: list[dict[str, Any]] = []
+    if not isinstance(value, list):
+        return result
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        requirement = _str(item.get("requirement"))
+        if not requirement:
+            continue
+        result.append(
+            {
+                "requirement": requirement,
+                "met": bool(item.get("met")),
+                "evidence": _str(item.get("evidence")),
+            }
+        )
+    return result
+
+
+def _apply_deterministic_requirement_checks(
+    requirements: list[dict[str, Any]], structured: StructuredResume | None
+) -> list[dict[str, Any]]:
+    """Override the LLM's own verdict on years-of-experience requirements with a deterministic check.
+
+    Mirrors the reasoning in `resume_structuring`: a specific number
+    ("3+ years") is exactly the kind of claim that shouldn't be trusted to
+    the model's own arithmetic when a verified figure is available.
+    """
+    if structured is None:
+        return requirements
+    for req in requirements:
+        match = _YEARS_REQUIREMENT_RE.search(req["requirement"])
+        if match is None:
+            continue
+        required_years = int(match.group(1))
+        met = structured.total_years_experience >= required_years
+        req["met"] = met
+        req["evidence"] = (
+            f"Verified: {structured.total_years_experience:g} years of experience computed "
+            f"from work history dates (requires {required_years}+)."
+        )
+    return requirements
+
+
+def _normalize_review(data: dict[str, Any], structured: StructuredResume | None = None) -> dict[str, Any]:
     """Coerce a raw model payload into a well-typed, defensively-parsed screening object.
 
     Missing/odd-shaped fields fall back to empty/safe defaults so the UI never
-    breaks on a partially malformed model response.
+    breaks on a partially malformed model response. Hard requirements are
+    checked first: a candidate who fails one is given the
+    `DOES_NOT_MEET_REQUIREMENTS` recommendation regardless of matchScore, so
+    a categorical gate isn't blended into the fuzzy 0-100 ranking.
     """
     score = _clamp_score(data.get("matchScore"))
     recommendation = _str(data.get("recommendation")) or _recommendation_for(score)
 
+    requirements = _apply_deterministic_requirement_checks(_requirements(data.get("requirements")), structured)
+    requirements_met = all(r["met"] for r in requirements)
+    if not requirements_met:
+        recommendation = DOES_NOT_MEET_REQUIREMENTS
+
     return {
+        "requirements": requirements,
+        "requirementsMet": requirements_met,
         "matchScore": score,
         "recommendation": recommendation,
         "summary": _str(data.get("summary"), "No summary provided."),
@@ -259,7 +336,7 @@ async def _score_with_llm(
         # graceful degradation per error-handling principles: fall back, never crash
         return _score_deterministic(resume_text, job_title, job_description)
 
-    review = _normalize_review(data)
+    review = _normalize_review(data, structured)
     return ScoreResult(
         score=review["matchScore"],
         overview=review["summary"],
@@ -325,6 +402,8 @@ def _score_deterministic(
             "Add a job description for a meaningful AI screening."
         )
         review = {
+            "requirements": [],
+            "requirementsMet": True,
             "matchScore": 50,
             "recommendation": _recommendation_for(50),
             "summary": summary,
@@ -354,6 +433,8 @@ def _score_deterministic(
         "(keyword-based fallback, not a full AI screening)."
     )
     review = {
+        "requirements": [],
+        "requirementsMet": True,
         "matchScore": score,
         "recommendation": _recommendation_for(score),
         "summary": summary,
