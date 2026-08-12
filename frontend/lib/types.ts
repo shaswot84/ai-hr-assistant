@@ -7,6 +7,17 @@ export interface UserContext {
   coarse_role: CoarseRole;
 }
 
+/** How much a scoring keyword counts toward `Evaluation.keyword_score` —
+ * fixed weights (critical=5, important=3, nice_to_have=1), not a raw number
+ * the manager sets directly, so the ratio can change without touching
+ * stored vacancy data. */
+export type KeywordTier = "critical" | "important" | "nice_to_have";
+
+export interface ScoringKeyword {
+  keyword: string;
+  tier: KeywordTier;
+}
+
 export interface Vacancy {
   vacancy_id: string;
   title: string;
@@ -16,6 +27,9 @@ export interface Vacancy {
   opening_date: string | null;
   closing_date: string | null;
   status: "DRAFT" | "OPEN" | "CLOSED";
+  /** The rubric applications are scored against — required at creation, so
+   * every vacancy has a real, explainable score once applications come in. */
+  scoring_keywords: ScoringKeyword[];
   created_at: string;
 }
 
@@ -78,6 +92,16 @@ export interface StructuredResumeSummary {
  * distinct from a merely-low score band, so it can be styled/filtered separately. */
 export const DOES_NOT_MEET_REQUIREMENTS = "Does Not Meet Requirements";
 
+/** Whether one of the vacancy's configured scoring keywords was found in the
+ * resume. The tier (and its weight) lives on `Vacancy.scoring_keywords`, not
+ * here — this is purely the per-resume presence judgment `keyword_score` is
+ * computed from. */
+export interface KeywordMatch {
+  keyword: string;
+  present: boolean;
+  evidence: string;
+}
+
 /** ATS-style screening result: does this resume match the job, and why — not a resume review. */
 export interface EvaluationDetail {
   requirements: Requirement[];
@@ -89,16 +113,20 @@ export interface EvaluationDetail {
   weaknesses: string[];
   matched_keywords: string[];
   missing_keywords: string[];
+  keyword_matches: KeywordMatch[];
   candidate_profile: CandidateProfile | null;
   structured_resume: StructuredResumeSummary | null;
 }
 
 /** `failed` marks a screening that couldn't run at all (AI provider
  * unavailable) — show an error + retry action instead of treating it as a
- * real result. */
+ * real result. `keyword_score` is 0-100, deterministically computed from
+ * the vacancy's weighted scoring keywords — every point is auditable via
+ * `detail.keyword_matches`, unlike the free-generated score this replaced. */
 export interface Evaluation {
   overview: string;
   failed: boolean;
+  keyword_score: number | null;
   model: string | null;
   evaluated_at: string;
   detail: EvaluationDetail | null;

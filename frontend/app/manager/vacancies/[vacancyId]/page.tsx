@@ -9,7 +9,13 @@ import { DetailSkeleton, ListSkeleton } from "@/components/loading";
 import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
-import type { ApplicationDetail, Vacancy } from "@/lib/types";
+import type { ApplicationDetail, KeywordTier, Vacancy } from "@/lib/types";
+
+const KEYWORD_TIER_TONE: Record<KeywordTier, string> = {
+  critical: "bg-red-50 text-red-700 ring-red-600/20",
+  important: "bg-amber-50 text-amber-700 ring-amber-600/20",
+  nice_to_have: "bg-zinc-100 text-zinc-600 ring-zinc-500/20",
+};
 
 function ArchiveButton({ vacancy, onChange }: { vacancy: Vacancy; onChange: (v: Vacancy) => void }) {
   const { addToast } = useToast();
@@ -46,29 +52,31 @@ const RECOMMENDATION_TONE: Record<string, string> = {
   "Weak Match": "bg-red-50 text-red-700 ring-red-600/20",
 };
 
-function ApplicationsList({ vacancyId }: { vacancyId: string }) {
-  const [applications, setApplications] = useState<ApplicationDetail[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function scoreTone(score: number) {
+  if (score >= 70) return "text-emerald-600";
+  if (score >= 40) return "text-amber-600";
+  return "text-red-600";
+}
 
-  useEffect(() => {
-    api
-      .vacancyApplications(vacancyId)
-      .then(setApplications)
-      .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load applications."));
-  }, [vacancyId]);
+/** Ranking within a single list (requirements-met and requirements-failed
+ * are now entirely separate lists, so this only ever ranks within one
+ * tier at a time): higher weighted keyword score first; unscored/failed
+ * screenings sink to the bottom. */
+function matchQuality(a: ApplicationDetail): number {
+  if (!a.evaluated || !a.evaluation || a.evaluation.failed) return -1;
+  return a.evaluation.keyword_score ?? 0;
+}
 
-  if (error) return <div className="notice border-red-200 bg-red-50 text-red-700">{error}</div>;
-  if (applications === null) return <ListSkeleton rows={3} />;
-  if (applications.length === 0)
-    return (
-      <div className="card">
-        <EmptyState
-          title="No applications yet"
-          description="Candidates will appear here once they start applying to this role."
-        />
-      </div>
-    );
+/** A candidate who clearly failed a stated hard requirement — kept in a
+ * separate list entirely from everyone else, so a manager scanning who's
+ * still in the running doesn't have to look past eliminated candidates. */
+function failsRequirements(a: ApplicationDetail): boolean {
+  return (
+    a.evaluated && !!a.evaluation && !a.evaluation.failed && a.evaluation.detail?.requirements_met === false
+  );
+}
 
+function ApplicationsTable({ rows }: { rows: ApplicationDetail[] }) {
   return (
     <div className="card overflow-hidden">
       <div className="table-scroll">
@@ -82,7 +90,7 @@ function ApplicationsList({ vacancyId }: { vacancyId: string }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100">
-            {applications.map((a) => (
+            {rows.map((a) => (
               <tr key={a.application_id} className="table-row">
                 <td className="table-td">
                   <Link
@@ -121,9 +129,9 @@ function ApplicationsList({ vacancyId }: { vacancyId: string }) {
                     >
                       Failed
                     </span>
-                  ) : a.evaluation.detail && !a.evaluation.detail.requirements_met ? (
-                    <span className="badge bg-red-100 text-red-800 ring-1 ring-inset ring-red-600/30">
-                      Doesn&apos;t meet reqs
+                  ) : a.evaluation.keyword_score !== null ? (
+                    <span className={`font-semibold tabular-nums ${scoreTone(a.evaluation.keyword_score)}`}>
+                      {a.evaluation.keyword_score}%
                     </span>
                   ) : (
                     <span
@@ -141,6 +149,56 @@ function ApplicationsList({ vacancyId }: { vacancyId: string }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function ApplicationsList({ vacancyId }: { vacancyId: string }) {
+  const [applications, setApplications] = useState<ApplicationDetail[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .vacancyApplications(vacancyId)
+      .then(setApplications)
+      .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load applications."));
+  }, [vacancyId]);
+
+  if (error) return <div className="notice border-red-200 bg-red-50 text-red-700">{error}</div>;
+  if (applications === null) return <ListSkeleton rows={3} />;
+  if (applications.length === 0)
+    return (
+      <div className="card">
+        <EmptyState
+          title="No applications yet"
+          description="Candidates will appear here once they start applying to this role."
+        />
+      </div>
+    );
+
+  const meeting = applications
+    .filter((a) => !failsRequirements(a))
+    .sort((a, b) => matchQuality(b) - matchQuality(a));
+  const failing = applications.filter(failsRequirements).sort((a, b) => matchQuality(b) - matchQuality(a));
+
+  return (
+    <div className="space-y-4">
+      {meeting.length > 0 && <ApplicationsTable rows={meeting} />}
+
+      {/* Kept as a fully separate section (not just sorted below) — a
+          manager scanning who's still in the running shouldn't have to
+          look past eliminated candidates to find them. */}
+      {failing.length > 0 && (
+        <div>
+          <div className="mb-3 flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-red-800">Doesn&apos;t Meet Requirements</h3>
+            <span className="badge bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20">
+              {failing.length}
+            </span>
+          </div>
+          <ApplicationsTable rows={failing} />
+        </div>
+      )}
     </div>
   );
 }
@@ -192,6 +250,23 @@ export default function ManagerVacancyDetailPage() {
                   <p className="mt-4 max-w-3xl whitespace-pre-wrap text-sm leading-relaxed text-zinc-600">
                     {vacancy.description}
                   </p>
+                )}
+                {vacancy.scoring_keywords.length > 0 && (
+                  <div className="mt-4">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                      Scoring Keywords
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {vacancy.scoring_keywords.map((kw) => (
+                        <span
+                          key={kw.keyword}
+                          className={`badge ring-1 ring-inset ${KEYWORD_TIER_TONE[kw.tier]}`}
+                        >
+                          {kw.keyword}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
               <div className="shrink-0">

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Application, Evaluation, KeyFactor, Requirement, WorkExperienceEntry } from "@/lib/types";
+import type { Application, Evaluation, KeyFactor, KeywordMatch, Requirement, WorkExperienceEntry } from "@/lib/types";
 import { DOES_NOT_MEET_REQUIREMENTS } from "@/lib/types";
 import { api, ApiError } from "@/lib/api";
 
@@ -80,6 +80,53 @@ function RequirementsGate({
       <div className="mt-4 space-y-3">
         {requirements.map((r, i) => (
           <RequirementRow key={i} requirement={r} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function keywordScoreTone(score: number) {
+  if (score >= 70) return "text-emerald-600";
+  if (score >= 40) return "text-amber-600";
+  return "text-red-600";
+}
+
+/** The deterministic weighted-keyword score: sum of tier weights for matched
+ * keywords over the total, computed in Python — never an LLM-invented
+ * number. Shown with its full per-keyword breakdown so every point is
+ * auditable, right below the hard requirements gate since it's the next
+ * strongest ranking signal. */
+function KeywordScoreCard({ score, matches }: { score: number; matches: KeywordMatch[] }) {
+  if (matches.length === 0) return null;
+  const matchedCount = matches.filter((m) => m.present).length;
+
+  return (
+    <div className="card p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h4 className="text-sm font-semibold text-zinc-900">Scoring Keywords</h4>
+        <span className={`text-2xl font-bold tabular-nums ${keywordScoreTone(score)}`}>{score}%</span>
+      </div>
+      <p className="mt-1 text-xs text-zinc-500">
+        {matchedCount} of {matches.length} configured keywords matched, weighted by importance.
+      </p>
+      <div className="mt-4 space-y-3 border-t border-zinc-100 pt-4">
+        {matches.map((m) => (
+          <div key={m.keyword} className="flex items-start gap-2.5">
+            {m.present ? (
+              <svg className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <svg className="mt-0.5 h-4 w-4 shrink-0 text-zinc-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            )}
+            <div className="min-w-0">
+              <p className={`text-sm font-medium ${m.present ? "text-zinc-900" : "text-zinc-400"}`}>{m.keyword}</p>
+              {m.evidence && <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">{m.evidence}</p>}
+            </div>
+          </div>
         ))}
       </div>
     </div>
@@ -243,6 +290,10 @@ export function EvaluationDetail({
   return (
     <div className="space-y-4">
       {detail && <RequirementsGate requirements={detail.requirements} requirementsMet={detail.requirements_met} />}
+
+      {detail && evaluation.keyword_score !== null && (
+        <KeywordScoreCard score={evaluation.keyword_score} matches={detail.keyword_matches} />
+      )}
 
       <div className="card p-5">
         <div className="flex flex-wrap items-center gap-2">

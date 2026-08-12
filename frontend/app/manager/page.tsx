@@ -38,12 +38,15 @@ export default function ManagerDashboardPage() {
     const open = vacancies.filter((v) => v.status === "OPEN").length;
     const closed = vacancies.filter((v) => v.status === "CLOSED").length;
     const shortlisted = applications.filter((a) => a.application_status === "SHORTLISTED").length;
-    // Only successful screenings carry a real requirements verdict — a
-    // failed evaluation (no AI provider, etc.) has nothing to count here.
+    // Only successful screenings carry a real score/requirements verdict —
+    // a failed evaluation (no AI provider, etc.) has nothing to count here.
     const screened = applications.filter((a) => a.evaluated && a.evaluation && !a.evaluation.failed);
-    const meetingRequirements = screened.filter((a) => a.evaluation?.detail?.requirements_met !== false).length;
-    const meetingRequirementsPct = screened.length
-      ? Math.round((meetingRequirements / screened.length) * 100)
+    // Deterministically computed from the vacancy's weighted scoring
+    // keywords (sum of matched tier weights / total) — legitimate to
+    // average, unlike the old free-generated score this replaced.
+    const scored = screened.filter((a) => a.evaluation?.keyword_score !== null);
+    const avgKeywordScore = scored.length
+      ? Math.round(scored.reduce((sum, a) => sum + (a.evaluation?.keyword_score ?? 0), 0) / scored.length)
       : null;
 
     // 7-day trend window for the Applications metric delta.
@@ -66,7 +69,7 @@ export default function ManagerDashboardPage() {
       value: applications.filter((a) => a.application_status === s).length,
     }));
 
-    return { open, closed, shortlisted, meetingRequirementsPct, last7, prev7, breakdown };
+    return { open, closed, shortlisted, avgKeywordScore, last7, prev7, breakdown };
   }, [applications, vacancies]);
 
   // Applications per day over the selected range window.
@@ -189,12 +192,12 @@ export default function ManagerDashboardPage() {
             }
           />
           <MetricCard
-            label="Meeting Requirements"
-            value={stats.meetingRequirementsPct === null ? "—" : `${stats.meetingRequirementsPct}%`}
+            label="Avg Match Score"
+            value={stats.avgKeywordScore === null ? "—" : `${stats.avgKeywordScore}%`}
             sub={
-              stats.meetingRequirementsPct === null
+              stats.avgKeywordScore === null
                 ? "No screenings yet"
-                : "Of AI-screened resumes"
+                : "Weighted keyword match, across screened resumes"
             }
             iconClass="bg-amber-50 text-amber-600"
             icon={

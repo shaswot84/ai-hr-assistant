@@ -24,6 +24,7 @@ import type {
   LeaveType,
   LeaveTypeCreateBody,
   LlmConfig,
+  ScoringKeyword,
   UserContext,
   Vacancy,
 } from "@/lib/types";
@@ -100,10 +101,19 @@ export const api = {
     employment_type: string;
     opening_date?: string | null;
     closing_date?: string | null;
+    scoring_keywords: ScoringKeyword[];
   }) =>
     request<Vacancy>("/api/vacancies", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+
+  /** Suggest scoring keywords + tiers from a job title/description — a starting
+   * point for the manager to review, check/uncheck, and re-tier before posting. */
+  suggestKeywords: (title: string, description: string) =>
+    request<{ keywords: ScoringKeyword[] }>("/api/vacancies/keywords/suggest", {
+      method: "POST",
+      body: JSON.stringify({ title, description }),
     }),
 
   allApplications: () => request<ApplicationDetail[]>("/api/applications"),
