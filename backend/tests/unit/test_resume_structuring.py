@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.evaluation.resume_structuring import (
     WorkExperienceEntry,
     _compute_total_years,
@@ -9,6 +11,7 @@ from app.evaluation.resume_structuring import (
     _parse_year,
     extract_structured_resume,
 )
+from app.model_gateway.provider import ChatProviderError
 
 
 def test_parse_year_extracts_four_digit_year():
@@ -92,19 +95,12 @@ def test_parse_education_from_llm_shaped_payload():
     assert entries[0].graduation_year == 2019
 
 
-async def test_extract_structured_resume_falls_back_without_llm_configured():
-    """No AI provider is configured in the test environment, so this must
-    use the deterministic fallback rather than raise or hang on a network call.
+async def test_extract_structured_resume_raises_without_llm_configured():
+    """No AI provider is configured in the test environment. There's no
+    deterministic fallback anymore — a rough year-span guess with no
+    titles/companies/degrees isn't an honest substitute for real extraction,
+    so this must raise and let the caller record a failed evaluation.
     """
     text = "Jane Doe\nEXPERIENCE\nEngineer at Acme, 2019 to 2022\nEDUCATION\nB.S. CS, 2019"
-    result = await extract_structured_resume(text)
-    assert result.model == "deterministic-fallback"
-    assert result.work_experience == []
-    assert result.education == []
-    # crude fallback: earliest (2019) to latest (2022) year found anywhere in the text
-    assert result.total_years_experience == 3.0
-
-
-async def test_extract_structured_resume_fallback_handles_no_years_found():
-    result = await extract_structured_resume("No dates here at all.")
-    assert result.total_years_experience == 0.0
+    with pytest.raises(ChatProviderError):
+        await extract_structured_resume(text)

@@ -453,6 +453,36 @@ class RecruitmentService:
         """Return the most recent evaluation for an application, or None if not yet evaluated."""
         return self._applications.latest_evaluation(application_id)
 
+    def re_evaluate_application(self, actor: UserContext, application_id: uuid.UUID) -> Application:
+        """Re-enqueue the AI screening job for an application (manager-triggered retry).
+
+        `latest_evaluation` always picks the newest row per application, so
+        this doesn't need to touch or clear the previous (e.g. failed) row —
+        a fresh one lands once the worker picks the job back up.
+        """
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can re-run a screening.")
+        application = self._applications.get(application_id)
+        if application is None:
+            raise ValueError("Application not found.")
+        if not application.cv_object_key:
+            raise ValueError("Application has no resume on file to re-screen.")
+
+        self._outbox.enqueue(
+            "EVALUATE_APPLICATION",
+            {"application_id": str(application.application_id), "cv_object_key": application.cv_object_key},
+            aggregate_type="application",
+            aggregate_id=application.application_id,
+        )
+        self._audit.record(
+            actor_user_id=self._actor_user_id(actor),
+            action="APPLICATION_RE_EVALUATION_REQUESTED",
+            target_type="application",
+            target_id=application.application_id,
+        )
+        self._db.commit()
+        return application
+
     # ---- helpers -----------------------------------------------------
 
     def _person_by_email(self, email: str) -> Person | None:

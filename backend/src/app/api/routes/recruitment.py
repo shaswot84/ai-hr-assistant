@@ -22,8 +22,8 @@ from app.schemas.recruitment import (
     EducationOut,
     EvaluationDetail,
     EvaluationOut,
+    KeyFactor,
     Requirement,
-    ScoreFactor,
     StructuredResumeOut,
     VacancyCreate,
     VacancyOut,
@@ -79,7 +79,7 @@ def _to_structured_resume(raw: dict | None) -> StructuredResumeOut | None:
 def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
     """Build a typed EvaluationDetail from a stored raw evaluation payload, or None if absent.
 
-    The LLM's raw payload uses camelCase keys (`matchScore`, `scoreFactors`,
+    The LLM's raw payload uses camelCase keys (`keyFactors`, `matchedKeywords`,
     ...); translated explicitly here rather than via a Pydantic alias
     generator, matching the wire format (snake_case) every other field in
     this API uses.
@@ -92,11 +92,10 @@ def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
             Requirement(**r) for r in raw_payload.get("requirements", []) if isinstance(r, dict)
         ],
         requirements_met=raw_payload.get("requirementsMet", True),
-        match_score=raw_payload.get("matchScore", 0),
         recommendation=raw_payload.get("recommendation", ""),
         summary=raw_payload.get("summary", ""),
-        score_factors=[
-            ScoreFactor(**f) for f in raw_payload.get("scoreFactors", []) if isinstance(f, dict)
+        key_factors=[
+            KeyFactor(**f) for f in raw_payload.get("keyFactors", []) if isinstance(f, dict)
         ],
         strengths=raw_payload.get("strengths", []),
         weaknesses=raw_payload.get("weaknesses", []),
@@ -118,8 +117,8 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
         evaluated=evaluation is not None,
         evaluation=(
             EvaluationOut(
-                score=evaluation.score,
                 overview=evaluation.overview,
+                failed=evaluation.failed,
                 model=evaluation.model,
                 evaluated_at=evaluation.evaluated_at,
                 detail=_to_detail(evaluation.raw_payload),
@@ -510,6 +509,22 @@ def decide_application(
         raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'.")
     try:
         application = svc.decide_application(user, application_id, approve=body.action == "approve")
+    except PermissionError_ as err:
+        raise HTTPException(status_code=403, detail=str(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    return _to_application_out(application, svc.latest_evaluation(application_id))
+
+
+@router.post("/applications/{application_id}/re-evaluate", response_model=ApplicationOut)
+def re_evaluate_application(
+    application_id: uuid.UUID,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: RecruitmentService = Depends(_svc),
+):
+    """Re-run the AI screening for an application (manager-only) — e.g. after fixing a missing API key."""
+    try:
+        application = svc.re_evaluate_application(user, application_id)
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:

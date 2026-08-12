@@ -42,7 +42,7 @@ const FEATURES = [
   },
   {
     title: "AI resume screening",
-    desc: "Match scores, strengths and gaps for every application — in seconds.",
+    desc: "Requirements checks, strengths and gaps for every application — in seconds.",
     icon: (
       <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path

@@ -12,6 +12,7 @@ import { Modal } from "@/components/modal";
 import { HireModal } from "@/components/hire-modal";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
+import { DOES_NOT_MEET_REQUIREMENTS } from "@/lib/types";
 import type { ApplicationDetail, ApplicationStatus } from "@/lib/types";
 
 const PAGE_SIZE = 8;
@@ -24,10 +25,28 @@ const STATUS_FILTERS: Array<{ label: string; value: ApplicationStatus | "ALL" }>
   { label: "Withdrawn", value: "WITHDRAWN" },
 ];
 
-function scoreTone(score: number) {
-  if (score >= 70) return "bg-emerald-50 text-emerald-700";
-  if (score >= 40) return "bg-amber-50 text-amber-700";
-  return "bg-red-50 text-red-700";
+const RECOMMENDATION_TONE: Record<string, string> = {
+  "Strong Match": "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  "Good Match": "bg-blue-50 text-blue-700 ring-blue-600/20",
+  "Possible Match": "bg-amber-50 text-amber-700 ring-amber-600/20",
+  "Weak Match": "bg-red-50 text-red-700 ring-red-600/20",
+};
+
+/** Ordinal rank for sorting by fit — there's no numeric score anymore, so
+ * "Match" sorts by the categorical recommendation (worst to best), with
+ * failed/in-progress screenings ranked below any real result. */
+const RECOMMENDATION_RANK: Record<string, number> = {
+  [DOES_NOT_MEET_REQUIREMENTS]: 0,
+  "Weak Match": 1,
+  "Possible Match": 2,
+  "Good Match": 3,
+  "Strong Match": 4,
+};
+
+function matchRank(a: ApplicationDetail): number {
+  if (!a.evaluated || !a.evaluation || a.evaluation.failed) return -1;
+  const recommendation = a.evaluation.detail?.recommendation ?? "";
+  return RECOMMENDATION_RANK[recommendation] ?? -1;
 }
 
 function sortApplications(list: ApplicationDetail[], sort: SortState): ApplicationDetail[] {
@@ -44,12 +63,8 @@ function sortApplications(list: ApplicationDetail[], sort: SortState): Applicati
     case "vacancy":
       sorted.sort((a, b) => (a.vacancy_title ?? "").localeCompare(b.vacancy_title ?? "") * dir);
       break;
-    case "score":
-      sorted.sort((a, b) => {
-        const av = a.evaluated && a.evaluation ? a.evaluation.score : -1;
-        const bv = b.evaluated && b.evaluation ? b.evaluation.score : -1;
-        return (av - bv) * dir;
-      });
+    case "match":
+      sorted.sort((a, b) => (matchRank(a) - matchRank(b)) * dir);
       break;
     case "applied":
       sorted.sort((a, b) => (new Date(a.applied_at).getTime() - new Date(b.applied_at).getTime()) * dir);
@@ -229,7 +244,7 @@ export default function ManagerAllApplicationsPage() {
                       <SortableTh sortKey="vacancy" sort={sort} onSort={handleSort} className="hidden md:table-cell">
                         Vacancy
                       </SortableTh>
-                      <SortableTh sortKey="score" sort={sort} onSort={handleSort} align="right" className="hidden sm:table-cell">
+                      <SortableTh sortKey="match" sort={sort} onSort={handleSort} align="right" className="hidden sm:table-cell">
                         Match
                       </SortableTh>
                       <SortableTh sortKey="applied" sort={sort} onSort={handleSort} className="hidden sm:table-cell">
@@ -261,21 +276,25 @@ export default function ManagerAllApplicationsPage() {
                           {a.vacancy_title ?? "—"}
                         </td>
                         <td className="table-td hidden text-right sm:table-cell">
-                          {a.evaluated && a.evaluation ? (
-                            a.evaluation.detail && !a.evaluation.detail.requirements_met ? (
-                              <span
-                                className="badge bg-red-100 text-red-800 ring-1 ring-inset ring-red-600/30"
-                                title={`Match score: ${a.evaluation.score}`}
-                              >
-                                Doesn&apos;t meet reqs
-                              </span>
-                            ) : (
-                              <span className={`badge tabular-nums ${scoreTone(a.evaluation.score)}`}>
-                                {a.evaluation.score}
-                              </span>
-                            )
-                          ) : (
+                          {!a.evaluated || !a.evaluation ? (
                             <span className="text-xs text-zinc-400">screening…</span>
+                          ) : a.evaluation.failed ? (
+                            <span
+                              className="badge bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20"
+                              title={a.evaluation.overview}
+                            >
+                              Failed
+                            </span>
+                          ) : a.evaluation.detail && !a.evaluation.detail.requirements_met ? (
+                            <span className="badge bg-red-100 text-red-800 ring-1 ring-inset ring-red-600/30">
+                              Doesn&apos;t meet reqs
+                            </span>
+                          ) : (
+                            <span
+                              className={`badge ring-1 ring-inset ${RECOMMENDATION_TONE[a.evaluation.detail?.recommendation ?? ""] ?? "bg-zinc-100 text-zinc-600 ring-zinc-500/20"}`}
+                            >
+                              {a.evaluation.detail?.recommendation ?? "Reviewed"}
+                            </span>
                           )}
                         </td>
                         <td className="table-td hidden text-xs text-zinc-500 sm:table-cell">

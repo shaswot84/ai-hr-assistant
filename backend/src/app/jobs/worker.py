@@ -18,6 +18,7 @@ from app.integrations.email import EmailProvider
 from app.integrations.email.smtp import SmtpEmailProvider
 from app.integrations.object_store import SyncS3ObjectStore
 from app.knowledge.resume_extraction import extract_text
+from app.model_gateway.provider import ChatProviderError
 from app.repositories.outbox import OutboxRepo
 
 log = logging.getLogger("worker")
@@ -63,12 +64,12 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: SyncS
         db.add(
             ApplicationEvaluation(
                 application_id=application_id,
-                score=0,
                 overview=(
                     "No readable text could be extracted from the uploaded resume. "
                     "It may be a scanned image or in an unsupported format."
                 ),
                 raw_payload={"error": extraction.warning},
+                failed=True,
                 model="none",
                 prompt_version="none",
                 evaluated_at=datetime.now(UTC),
@@ -84,32 +85,49 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: SyncS
     llm_overrides = settings_svc.resolved_llm_overrides()
 
     started = time.monotonic()
-    # Structured extraction runs first, as its own step, so scoring is
-    # grounded in verified work/education facts instead of re-deriving
-    # everything (like years of experience) from raw text in one shot.
-    structured = await extract_structured_resume(
-        extraction.text,
-        api_base=llm_overrides["api_base"],
-        model=llm_overrides["model"],
-        api_key=llm_overrides["api_key"],
-    )
-    result = await score_resume(
-        resume_text=extraction.text,
-        job_title=vacancy.title if vacancy else "",
-        job_description=vacancy.description or "" if vacancy else "",
-        structured=structured,
-        system_prompt=system_prompt,
-        api_base=llm_overrides["api_base"],
-        model=llm_overrides["model"],
-        api_key=llm_overrides["api_key"],
-    )
+    try:
+        # Structured extraction runs first, as its own step, so scoring is
+        # grounded in verified work/education facts instead of re-deriving
+        # everything (like years of experience) from raw text in one shot.
+        structured = await extract_structured_resume(
+            extraction.text,
+            api_base=llm_overrides["api_base"],
+            model=llm_overrides["model"],
+            api_key=llm_overrides["api_key"],
+        )
+        result = await score_resume(
+            resume_text=extraction.text,
+            job_title=vacancy.title if vacancy else "",
+            job_description=vacancy.description or "" if vacancy else "",
+            structured=structured,
+            system_prompt=system_prompt,
+            api_base=llm_overrides["api_base"],
+            model=llm_overrides["model"],
+            api_key=llm_overrides["api_key"],
+        )
+    except ChatProviderError as err:
+        # The AI provider isn't configured or the call failed outright — record
+        # a clear failed evaluation instead of a fabricated score, so the
+        # manager sees an actionable error with a retry action in the UI.
+        db.add(
+            ApplicationEvaluation(
+                application_id=application_id,
+                overview=str(err),
+                raw_payload={"error": str(err)},
+                failed=True,
+                model="none",
+                prompt_version="none",
+                evaluated_at=datetime.now(UTC),
+            )
+        )
+        db.commit()
+        return
     latency_ms = int((time.monotonic() - started) * 1000)
 
     raw_payload = {**result.raw_payload, "structuredResume": structured.to_dict()}
     db.add(
         ApplicationEvaluation(
             application_id=application_id,
-            score=result.score,
             overview=result.overview,
             raw_payload=raw_payload,
             model=result.model,

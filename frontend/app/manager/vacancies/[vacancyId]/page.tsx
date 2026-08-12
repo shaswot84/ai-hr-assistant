@@ -39,11 +39,12 @@ function ArchiveButton({ vacancy, onChange }: { vacancy: Vacancy; onChange: (v: 
   );
 }
 
-function scoreTone(score: number) {
-  if (score >= 70) return "bg-emerald-50 text-emerald-700";
-  if (score >= 40) return "bg-amber-50 text-amber-700";
-  return "bg-red-50 text-red-700";
-}
+const RECOMMENDATION_TONE: Record<string, string> = {
+  "Strong Match": "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  "Good Match": "bg-blue-50 text-blue-700 ring-blue-600/20",
+  "Possible Match": "bg-amber-50 text-amber-700 ring-amber-600/20",
+  "Weak Match": "bg-red-50 text-red-700 ring-red-600/20",
+};
 
 function ApplicationsList({ vacancyId }: { vacancyId: string }) {
   const [applications, setApplications] = useState<ApplicationDetail[] | null>(null);
@@ -111,21 +112,25 @@ function ApplicationsList({ vacancyId }: { vacancyId: string }) {
                   })}
                 </td>
                 <td className="table-td hidden sm:table-cell">
-                  {a.evaluated && a.evaluation ? (
-                    a.evaluation.detail && !a.evaluation.detail.requirements_met ? (
-                      <span
-                        className="badge bg-red-100 text-red-800 ring-1 ring-inset ring-red-600/30"
-                        title={`Match score: ${a.evaluation.score}`}
-                      >
-                        Doesn&apos;t meet reqs
-                      </span>
-                    ) : (
-                      <span className={`badge tabular-nums ${scoreTone(a.evaluation.score)}`}>
-                        {a.evaluation.score}
-                      </span>
-                    )
-                  ) : (
+                  {!a.evaluated || !a.evaluation ? (
                     <span className="text-xs text-zinc-400">—</span>
+                  ) : a.evaluation.failed ? (
+                    <span
+                      className="badge bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20"
+                      title={a.evaluation.overview}
+                    >
+                      Failed
+                    </span>
+                  ) : a.evaluation.detail && !a.evaluation.detail.requirements_met ? (
+                    <span className="badge bg-red-100 text-red-800 ring-1 ring-inset ring-red-600/30">
+                      Doesn&apos;t meet reqs
+                    </span>
+                  ) : (
+                    <span
+                      className={`badge ring-1 ring-inset ${RECOMMENDATION_TONE[a.evaluation.detail?.recommendation ?? ""] ?? "bg-zinc-100 text-zinc-600 ring-zinc-500/20"}`}
+                    >
+                      {a.evaluation.detail?.recommendation ?? "Reviewed"}
+                    </span>
                   )}
                 </td>
                 <td className="table-td">

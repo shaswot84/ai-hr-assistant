@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Date,
     DateTime,
     ForeignKey,
@@ -76,9 +77,12 @@ class ApplicationEvaluation(Base):
     application_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("application.application_id"), index=True
     )
-    score: Mapped[int] = mapped_column(Integer)
     overview: Mapped[str] = mapped_column(Text)
     raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    #: True when the screening couldn't run at all (AI provider unavailable)
+    #: — distinct from a normal result, so the UI shows a clear error + a
+    #: retry action instead of pretending there's a real assessment.
+    failed: Mapped[bool] = mapped_column(Boolean, default=False)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)

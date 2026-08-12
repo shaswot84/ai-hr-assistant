@@ -19,14 +19,16 @@ export interface Vacancy {
   created_at: string;
 }
 
-export interface ScoreFactor {
+/** One qualitative dimension behind the recommendation. Deliberately has no
+ * numeric score — an LLM asked for "a number" with no rubric produces digits
+ * that look precise but aren't comparable across candidates. */
+export interface KeyFactor {
   factor: string;
-  score: number;
   note: string;
 }
 
 /** One explicit must-have from the job description, checked against the resume — a hard
- * pass/fail gate, distinct from the soft `score_factors` ranking dimensions. */
+ * pass/fail gate, distinct from the soft `key_factors` ranking dimensions. */
 export interface Requirement {
   requirement: string;
   met: boolean;
@@ -80,10 +82,9 @@ export const DOES_NOT_MEET_REQUIREMENTS = "Does Not Meet Requirements";
 export interface EvaluationDetail {
   requirements: Requirement[];
   requirements_met: boolean;
-  match_score: number;
   recommendation: string;
   summary: string;
-  score_factors: ScoreFactor[];
+  key_factors: KeyFactor[];
   strengths: string[];
   weaknesses: string[];
   matched_keywords: string[];
@@ -92,9 +93,12 @@ export interface EvaluationDetail {
   structured_resume: StructuredResumeSummary | null;
 }
 
+/** `failed` marks a screening that couldn't run at all (AI provider
+ * unavailable) — show an error + retry action instead of treating it as a
+ * real result. */
 export interface Evaluation {
-  score: number;
   overview: string;
+  failed: boolean;
   model: string | null;
   evaluated_at: string;
   detail: EvaluationDetail | null;

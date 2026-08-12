@@ -33,11 +33,15 @@ class VacancyOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ScoreFactor(BaseModel):
-    """One dimension the score was based on (e.g. "Skills Match": 85, "reason...")."""
+class KeyFactor(BaseModel):
+    """One qualitative dimension behind the recommendation (e.g. "Skills Match": "reason...").
+
+    Deliberately has no numeric score — an LLM asked for "a number" with no
+    rubric produces digits that look precise but aren't comparable across
+    candidates; the note is the actual, groundable signal.
+    """
 
     factor: str
-    score: int = 0
     note: str = ""
 
 
@@ -121,10 +125,9 @@ class EvaluationDetail(BaseModel):
 
     requirements: list[Requirement] = []
     requirements_met: bool = True
-    match_score: int = 0
     recommendation: str = ""
     summary: str = ""
-    score_factors: list[ScoreFactor] = []
+    key_factors: list[KeyFactor] = []
     strengths: list[str] = []
     weaknesses: list[str] = []
     matched_keywords: list[str] = []
@@ -136,13 +139,16 @@ class EvaluationDetail(BaseModel):
 class EvaluationOut(BaseModel):
     """API representation of an AI screening result (manager-only — never sent to candidates).
 
-    ``score``/``overview`` are the compact headline fields; ``detail`` carries
-    the full structured screening (score factors, strengths/weaknesses,
+    ``overview`` is the compact headline field; ``detail`` carries the full
+    structured screening (requirements, key factors, strengths/weaknesses,
     keyword match) rendered on the manager's application review page.
+    ``failed`` marks a screening that couldn't run at all (AI provider
+    unavailable) — the UI shows an error + retry action instead of treating
+    it as a real result.
     """
 
-    score: int
     overview: str
+    failed: bool = False
     model: str | None
     evaluated_at: datetime
     detail: EvaluationDetail | None = None

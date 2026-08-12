@@ -190,20 +190,21 @@ async def extract_structured_resume(
     Runs as its own step, before job-fit scoring, so the scoring prompt can
     be grounded in verified structured facts (e.g. a deterministically
     computed years-of-experience) instead of re-guessing everything from
-    raw text in one shot. Falls back to a crude deterministic estimate when
-    no AI provider is configured, matching `score_resume`'s fallback shape.
+    raw text in one shot.
+
+    Raises `ChatProviderError` if no AI provider is configured, or if the
+    provider call fails — there is no deterministic fallback; a rough
+    year-span guess with no titles, companies, or degrees is not an honest
+    substitute for real extraction.
     """
     provider = OllamaChatProvider(api_base=api_base, model=model, api_key=api_key)
     if not provider.is_configured():
-        return _structure_deterministic(resume_text)
+        raise ChatProviderError("No AI provider is configured.")
 
-    try:
-        data = await provider.complete_json(
-            system_prompt=DEFAULT_SYSTEM_PROMPT,
-            user_prompt=USER_PROMPT.format(resume_text=resume_text[:12000]),
-        )
-    except ChatProviderError:
-        return _structure_deterministic(resume_text)
+    data = await provider.complete_json(
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        user_prompt=USER_PROMPT.format(resume_text=resume_text[:12000]),
+    )
 
     work_experience = _parse_work_experience(data.get("workExperience"))
     education = _parse_education(data.get("education"))
@@ -215,25 +216,5 @@ async def extract_structured_resume(
         skills=skills,
         total_years_experience=_compute_total_years(work_experience),
         model=provider._model,
-        prompt_version=PROMPT_VERSION,
-    )
-
-
-def _structure_deterministic(resume_text: str) -> StructuredResume:
-    """Zero-dependency fallback: no work/education entries, just a rough year span.
-
-    Explicitly weaker than the LLM path — real structure (titles, companies,
-    degrees) can't be reliably parsed from raw text without it. Only
-    `total_years_experience` gets a crude estimate, from the earliest to
-    latest 4-digit year found anywhere in the text.
-    """
-    years = [int(m.group(0)) for m in _YEAR_RE.finditer(resume_text)]
-    total_years = float(max(years) - min(years)) if len(years) >= 2 else 0.0
-    return StructuredResume(
-        work_experience=[],
-        education=[],
-        skills=[],
-        total_years_experience=max(total_years, 0.0),
-        model="deterministic-fallback",
         prompt_version=PROMPT_VERSION,
     )

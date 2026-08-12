@@ -38,9 +38,12 @@ export default function ManagerDashboardPage() {
     const open = vacancies.filter((v) => v.status === "OPEN").length;
     const closed = vacancies.filter((v) => v.status === "CLOSED").length;
     const shortlisted = applications.filter((a) => a.application_status === "SHORTLISTED").length;
-    const evaluated = applications.filter((a) => a.evaluated && a.evaluation);
-    const avgScore = evaluated.length
-      ? Math.round(evaluated.reduce((s, a) => s + (a.evaluation?.score ?? 0), 0) / evaluated.length)
+    // Only successful screenings carry a real requirements verdict — a
+    // failed evaluation (no AI provider, etc.) has nothing to count here.
+    const screened = applications.filter((a) => a.evaluated && a.evaluation && !a.evaluation.failed);
+    const meetingRequirements = screened.filter((a) => a.evaluation?.detail?.requirements_met !== false).length;
+    const meetingRequirementsPct = screened.length
+      ? Math.round((meetingRequirements / screened.length) * 100)
       : null;
 
     // 7-day trend window for the Applications metric delta.
@@ -63,7 +66,7 @@ export default function ManagerDashboardPage() {
       value: applications.filter((a) => a.application_status === s).length,
     }));
 
-    return { open, closed, shortlisted, avgScore, last7, prev7, breakdown };
+    return { open, closed, shortlisted, meetingRequirementsPct, last7, prev7, breakdown };
   }, [applications, vacancies]);
 
   // Applications per day over the selected range window.
@@ -186,12 +189,12 @@ export default function ManagerDashboardPage() {
             }
           />
           <MetricCard
-            label="Avg Match Score"
-            value={stats.avgScore ?? "—"}
+            label="Meeting Requirements"
+            value={stats.meetingRequirementsPct === null ? "—" : `${stats.meetingRequirementsPct}%`}
             sub={
-              stats.avgScore === null
+              stats.meetingRequirementsPct === null
                 ? "No screenings yet"
-                : "Across AI-screened resumes"
+                : "Of AI-screened resumes"
             }
             iconClass="bg-amber-50 text-amber-600"
             icon={

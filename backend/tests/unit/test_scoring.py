@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import pytest
+
 from app.evaluation.resume_structuring import StructuredResume, WorkExperienceEntry
 from app.evaluation.scoring import (
+    DEFAULT_RECOMMENDATION,
     DOES_NOT_MEET_REQUIREMENTS,
     _apply_deterministic_requirement_checks,
     _normalize_review,
     _reconcile_keywords_with_taxonomy,
     _requirements,
-    _score_deterministic,
+    score_resume,
 )
+from app.model_gateway.provider import ChatProviderError
 
 
 def _structured_with_years(years: float) -> StructuredResume:
@@ -74,24 +78,21 @@ def test_deterministic_requirement_check_noop_without_structured_data():
 
 def test_normalize_review_forces_recommendation_when_a_requirement_is_unmet():
     """Regression case for the core ask: a candidate failing a hard
-    requirement must be flagged distinctly, not just scored low — even if
-    the model itself reported a high matchScore and a positive label.
+    requirement must be flagged distinctly, not just given a positive label
+    — even if the model itself reported "Strong Match".
     """
     data = {
         "requirements": [{"requirement": "5+ years of experience", "met": False, "evidence": "only 2 years"}],
-        "matchScore": 85,
         "recommendation": "Strong Match",
     }
     review = _normalize_review(data)
     assert review["requirementsMet"] is False
     assert review["recommendation"] == DOES_NOT_MEET_REQUIREMENTS
-    assert review["matchScore"] == 85  # the numeric score is preserved, just not the label
 
 
 def test_normalize_review_keeps_recommendation_when_all_requirements_met():
     data = {
         "requirements": [{"requirement": "3+ years of experience", "met": True, "evidence": "5 years listed"}],
-        "matchScore": 90,
         "recommendation": "Strong Match",
     }
     review = _normalize_review(data)
@@ -100,17 +101,21 @@ def test_normalize_review_keeps_recommendation_when_all_requirements_met():
 
 
 def test_normalize_review_defaults_to_met_when_no_requirements_stated():
-    data = {"matchScore": 70, "recommendation": "Good Match"}
+    data = {"recommendation": "Good Match"}
     review = _normalize_review(data)
     assert review["requirements"] == []
     assert review["requirementsMet"] is True
     assert review["recommendation"] == "Good Match"
 
 
+def test_normalize_review_defaults_recommendation_when_model_omits_it():
+    review = _normalize_review({})
+    assert review["recommendation"] == DEFAULT_RECOMMENDATION
+
+
 def test_normalize_review_applies_deterministic_override_when_structured_given():
     data = {
         "requirements": [{"requirement": "10+ years of experience", "met": True, "evidence": "seems senior"}],
-        "matchScore": 95,
         "recommendation": "Strong Match",
     }
     review = _normalize_review(data, _structured_with_years(2))
@@ -119,13 +124,34 @@ def test_normalize_review_applies_deterministic_override_when_structured_given()
     assert review["recommendation"] == DOES_NOT_MEET_REQUIREMENTS
 
 
-def test_score_deterministic_includes_requirements_fields_for_schema_consistency():
-    """Even the no-LLM fallback path must carry requirements/requirementsMet
-    so API consumers always find these keys, whichever path produced them.
+def test_normalize_review_has_no_numeric_score_fields():
+    """Regression case: there must be no headline or per-factor number left
+    anywhere in the normalized payload — see the module docstring rationale.
     """
-    result = _score_deterministic("Python developer with FastAPI experience.", "Backend Engineer", "Need Python and FastAPI skills.")
-    assert result.raw_payload["requirements"] == []
-    assert result.raw_payload["requirementsMet"] is True
+    data = {
+        "recommendation": "Strong Match",
+        "keyFactors": [{"factor": "Skills Match", "note": "Has all required technologies"}],
+    }
+    review = _normalize_review(data)
+    assert "matchScore" not in review
+    assert "score" not in review
+    assert review["keyFactors"] == [{"factor": "Skills Match", "note": "Has all required technologies"}]
+
+
+async def test_score_resume_raises_when_no_provider_configured():
+    """No deterministic fallback anymore — an unconfigured provider must
+    raise so the caller can record a failed evaluation instead of a
+    fabricated keyword-overlap guess.
+    """
+    with pytest.raises(ChatProviderError):
+        await score_resume(
+            resume_text="Python developer with FastAPI experience.",
+            job_title="Backend Engineer",
+            job_description="Need Python and FastAPI skills.",
+            api_base=None,
+            model=None,
+            api_key=None,
+        )
 
 
 def test_reconcile_keywords_moves_taxonomy_recognized_alias_from_missing_to_matched():
@@ -152,7 +178,6 @@ def test_reconcile_keywords_leaves_missing_when_alias_truly_absent():
 
 def test_normalize_review_reconciles_missing_keyword_using_resume_text():
     data = {
-        "matchScore": 70,
         "recommendation": "Good Match",
         "matchedKeywords": ["Python"],
         "missingKeywords": ["Kubernetes"],
@@ -160,26 +185,3 @@ def test_normalize_review_reconciles_missing_keyword_using_resume_text():
     review = _normalize_review(data, structured=None, resume_text="Deployed services on K8s using Python.")
     assert "Kubernetes" in review["matchedKeywords"]
     assert "Kubernetes" not in review["missingKeywords"]
-
-
-def test_score_deterministic_matches_skill_alias_not_just_literal_substring():
-    """The naive old behavior (`kw in resume_lower`) would fail here since
-    'kubernetes' never literally appears in the resume — only its alias 'k8s'.
-    """
-    result = _score_deterministic(
-        resume_text="Backend engineer with Python and K8s experience.",
-        job_title="Backend Engineer",
-        job_description="Requires Python and Kubernetes.",
-    )
-    assert "kubernetes" in result.raw_payload["matchedKeywords"]
-
-
-def test_score_deterministic_recognizes_multi_word_skill_phrase():
-    """A single-word tokenizer alone could never produce 'machine learning'
-    as one keyword — it must come from the taxonomy-phrase merge."""
-    result = _score_deterministic(
-        resume_text="5 years of machine learning experience with Python.",
-        job_title="ML Engineer",
-        job_description="Looking for strong machine learning and Python skills.",
-    )
-    assert "machine learning" in result.raw_payload["matchedKeywords"]

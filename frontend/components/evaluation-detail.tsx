@@ -1,6 +1,9 @@
-import type { Evaluation, Requirement, ScoreFactor, WorkExperienceEntry } from "@/lib/types";
+"use client";
+
+import { useState } from "react";
+import type { Application, Evaluation, KeyFactor, Requirement, WorkExperienceEntry } from "@/lib/types";
 import { DOES_NOT_MEET_REQUIREMENTS } from "@/lib/types";
-import { ScoreRing } from "@/components/score-ring";
+import { api, ApiError } from "@/lib/api";
 
 const RECOMMENDATION_STYLE: Record<string, string> = {
   "Strong Match": "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
@@ -10,25 +13,10 @@ const RECOMMENDATION_STYLE: Record<string, string> = {
   [DOES_NOT_MEET_REQUIREMENTS]: "bg-red-100 text-red-800 ring-red-600/30",
 };
 
-function factorBarColor(score: number) {
-  if (score >= 70) return "bg-emerald-500";
-  if (score >= 40) return "bg-amber-500";
-  return "bg-red-500";
-}
-
-function ScoreFactorRow({ factor }: { factor: ScoreFactor }) {
+function KeyFactorRow({ factor }: { factor: KeyFactor }) {
   return (
     <div>
-      <div className="flex items-center justify-between text-sm">
-        <span className="font-medium text-zinc-900">{factor.factor}</span>
-        <span className="tabular-nums text-zinc-500">{factor.score}/100</span>
-      </div>
-      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-zinc-100">
-        <div
-          className={`h-full rounded-full transition-[width] duration-300 ${factorBarColor(factor.score)}`}
-          style={{ width: `${Math.max(0, Math.min(100, factor.score))}%` }}
-        />
-      </div>
+      <p className="text-sm font-medium text-zinc-900">{factor.factor}</p>
       {factor.note && <p className="mt-1 text-xs leading-relaxed text-zinc-500">{factor.note}</p>}
     </div>
   );
@@ -59,7 +47,7 @@ function RequirementRow({ requirement }: { requirement: Requirement }) {
 }
 
 /** The hard-requirements gate — shown first and unmissable, since a candidate who fails
- * a stated must-have shouldn't be judged by the same fuzzy score as a soft-fit mismatch. */
+ * a stated must-have shouldn't be judged by the same fuzzy label as a soft-fit mismatch. */
 function RequirementsGate({
   requirements,
   requirementsMet,
@@ -108,8 +96,9 @@ function formatDateRange(entry: WorkExperienceEntry) {
 }
 
 /** Structured facts pulled from the resume (work history, education, skills) — the
- * verified basis behind the AI's score, so a manager can sanity-check it directly. */
-function ExperienceEducationCard({
+ * verified basis behind the AI's assessment, so a manager can sanity-check it directly.
+ * Rendered in the page's sidebar (below the candidate profile), not inline here. */
+export function ExperienceEducationCard({
   structured,
 }: {
   structured: NonNullable<Evaluation["detail"]>["structured_resume"];
@@ -121,15 +110,15 @@ function ExperienceEducationCard({
 
   return (
     <div className="card p-5">
-      <div className="flex items-center justify-between">
+      <div className="space-y-0.5">
         <h4 className="text-sm font-semibold text-zinc-900">Experience &amp; Education</h4>
         {structured.total_years_experience > 0 && (
-          <span className="text-xs text-zinc-500">
+          <p className="text-xs text-zinc-500">
             <span className="font-semibold tabular-nums text-zinc-700">
               {structured.total_years_experience}
             </span>{" "}
             years total — computed from resume dates
-          </span>
+          </p>
         )}
       </div>
 
@@ -173,42 +162,114 @@ function ExperienceEducationCard({
   );
 }
 
+/** Shown when the screening couldn't run at all (e.g. no AI provider configured) —
+ * a clear error instead of a fabricated result, with a one-click retry. */
+function FailedEvaluation({
+  evaluation,
+  applicationId,
+  onRetried,
+}: {
+  evaluation: Evaluation;
+  applicationId: string;
+  onRetried: (application: Application) => void;
+}) {
+  const [retrying, setRetrying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [justRetried, setJustRetried] = useState(false);
+
+  async function retry() {
+    setRetrying(true);
+    setError(null);
+    try {
+      const updated = await api.reEvaluate(applicationId);
+      onRetried(updated);
+      setJustRetried(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : "Failed to start re-screening.");
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  return (
+    <div className="card border border-red-300 bg-red-50/60 p-5">
+      <div className="flex items-start gap-3">
+        <svg className="mt-0.5 h-5 w-5 shrink-0 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+        </svg>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-red-800">AI screening couldn&apos;t run</p>
+          <p className="mt-1 text-sm leading-relaxed text-red-700">{evaluation.overview}</p>
+          {justRetried && !error && (
+            <p className="mt-2 text-sm text-emerald-700">
+              Re-screening started — check back shortly for the result.
+            </p>
+          )}
+          {error && <p className="mt-2 text-sm text-red-700">{error}</p>}
+          <button
+            type="button"
+            disabled={retrying}
+            onClick={retry}
+            className="btn-secondary mt-3 border-red-300 text-red-700 hover:bg-red-100"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+            </svg>
+            {retrying ? "Re-screening…" : "Re-run Screening"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Renders an ATS-style resume screening result for a hiring manager: does this
- * candidate match the job, why (score factors), and their pros/cons for this role. */
-export function EvaluationDetail({ evaluation }: { evaluation: Evaluation }) {
+ * candidate match the job, why (key factors), and their pros/cons for this role. */
+export function EvaluationDetail({
+  evaluation,
+  applicationId,
+  onRetried,
+}: {
+  evaluation: Evaluation;
+  applicationId: string;
+  onRetried: (application: Application) => void;
+}) {
   const detail = evaluation.detail;
+
+  if (evaluation.failed) {
+    return <FailedEvaluation evaluation={evaluation} applicationId={applicationId} onRetried={onRetried} />;
+  }
 
   return (
     <div className="space-y-4">
       {detail && <RequirementsGate requirements={detail.requirements} requirementsMet={detail.requirements_met} />}
 
-      <div className="card flex flex-col gap-4 p-5 sm:flex-row sm:items-center">
-        <ScoreRing score={evaluation.score} label="Match Score" />
-        <div className="flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            {detail?.recommendation && (
-              <span
-                className={`badge ring-1 ring-inset ${RECOMMENDATION_STYLE[detail.recommendation] ?? "bg-zinc-100 text-zinc-600 ring-zinc-500/20"}`}
-              >
-                {detail.recommendation}
-              </span>
-            )}
-            {evaluation.model && (
-              <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px] text-zinc-500">
-                {evaluation.model}
-              </span>
-            )}
-          </div>
-          <p className="mt-2 text-sm leading-relaxed text-zinc-600">{evaluation.overview}</p>
+      <div className="card p-5">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Skip repeating the badge here when it's DOES_NOT_MEET_REQUIREMENTS —
+              the requirements gate above already leads with that exact label. */}
+          {detail?.recommendation && detail.recommendation !== DOES_NOT_MEET_REQUIREMENTS && (
+            <span
+              className={`badge ring-1 ring-inset ${RECOMMENDATION_STYLE[detail.recommendation] ?? "bg-zinc-100 text-zinc-600 ring-zinc-500/20"}`}
+            >
+              {detail.recommendation}
+            </span>
+          )}
+          {evaluation.model && (
+            <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[11px] text-zinc-500">
+              {evaluation.model}
+            </span>
+          )}
         </div>
+        <p className="mt-2 text-sm leading-relaxed text-zinc-600">{evaluation.overview}</p>
       </div>
 
-      {detail && detail.score_factors.length > 0 && (
+      {detail && detail.key_factors.length > 0 && (
         <div className="card p-5">
-          <h4 className="text-sm font-semibold text-zinc-900">Why This Score</h4>
+          <h4 className="text-sm font-semibold text-zinc-900">Key Factors</h4>
           <div className="mt-4 space-y-4">
-            {detail.score_factors.map((f) => (
-              <ScoreFactorRow key={f.factor} factor={f} />
+            {detail.key_factors.map((f) => (
+              <KeyFactorRow key={f.factor} factor={f} />
             ))}
           </div>
         </div>
@@ -266,8 +327,6 @@ export function EvaluationDetail({ evaluation }: { evaluation: Evaluation }) {
           </div>
         </div>
       )}
-
-      {detail && <ExperienceEducationCard structured={detail.structured_resume} />}
     </div>
   );
 }

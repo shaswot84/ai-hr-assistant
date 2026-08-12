@@ -101,6 +101,32 @@ def test_decide_application_reject_sets_rejected_at(db, manager_context, candida
     assert decided.rejected_at is not None
 
 
+def test_re_evaluate_application_requires_hr_admin(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    with pytest.raises(PermissionError_):
+        svc.re_evaluate_application(candidate_context, application.application_id)
+
+
+def test_re_evaluate_application_enqueues_a_fresh_evaluation_job(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+
+    svc.re_evaluate_application(manager_context, application.application_id)
+
+    jobs = db.scalars(
+        select(OutboxJob).where(
+            OutboxJob.aggregate_id == application.application_id,
+            OutboxJob.job_type == "EVALUATE_APPLICATION",
+        )
+    ).all()
+    # one from apply(), one from the manual retry
+    assert len(jobs) == 2
+    assert jobs[-1].payload["cv_object_key"] == "resumes/a.pdf"
+
+
 def test_archive_and_reopen_vacancy(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
     vacancy = _create_vacancy(svc, manager_context)
@@ -147,14 +173,12 @@ def _seed_evaluation(db, application_id):
     db.add(
         ApplicationEvaluation(
             application_id=application_id,
-            score=76,
             overview="Strong match.",
             raw_payload={
-                "matchScore": 76,
                 "recommendation": "Good Match",
                 "summary": "Strong match.",
-                "scoreFactors": [
-                    {"factor": "Skills Match", "score": 80, "note": "Has most required skills."},
+                "keyFactors": [
+                    {"factor": "Skills Match", "note": "Has most required skills."},
                 ],
                 "strengths": ["Strong Python background"],
                 "weaknesses": ["No Kubernetes experience mentioned"],
@@ -289,7 +313,7 @@ def test_manager_application_detail_serializes_screening_as_snake_case(
     db, client, manager_context, candidate_context, manager_password
 ):
     """Regression test: the LLM's raw evaluation payload uses camelCase keys
-    (`matchedKeywords`, `scoreFactors`, ...), but every other field in this
+    (`matchedKeywords`, `keyFactors`, ...), but every other field in this
     API is snake_case on the wire. A schema that round-tripped those
     camelCase keys straight through to the HTTP response (via a Pydantic
     alias generator) previously broke the frontend, which reads
@@ -317,9 +341,59 @@ def test_manager_application_detail_serializes_screening_as_snake_case(
     detail = res.json()["evaluation"]["detail"]
     assert detail["matched_keywords"] == ["python", "fastapi"]
     assert detail["missing_keywords"] == ["kubernetes"]
-    assert detail["match_score"] == 76
-    assert detail["score_factors"][0]["factor"] == "Skills Match"
+    assert "match_score" not in detail
+    assert "score" not in detail
+    assert detail["key_factors"][0]["factor"] == "Skills Match"
     assert "matchedKeywords" not in detail
+
+
+def test_manager_sees_failed_evaluation_and_can_retry(
+    db, client, manager_context, candidate_context, manager_password
+):
+    """When the AI provider is unavailable, the worker records `failed=True`
+    with an error message instead of a score. The manager-facing API must
+    surface that flag, and the re-evaluate endpoint must let them retry.
+    """
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(
+        candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
+    )
+    db.add(
+        ApplicationEvaluation(
+            application_id=application.application_id,
+            overview="No AI provider is configured.",
+            raw_payload={"error": "No AI provider is configured."},
+            failed=True,
+            model="none",
+            prompt_version="none",
+            evaluated_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": manager_context.email, "password": manager_password},
+    )
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = client.get(f"/api/applications/{application.application_id}", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["evaluation"]["failed"] is True
+    assert res.json()["evaluation"]["overview"] == "No AI provider is configured."
+
+    retry = client.post(f"/api/applications/{application.application_id}/re-evaluate", headers=headers)
+    assert retry.status_code == 200
+
+    jobs = db.scalars(
+        select(OutboxJob).where(
+            OutboxJob.aggregate_id == application.application_id,
+            OutboxJob.job_type == "EVALUATE_APPLICATION",
+        )
+    ).all()
+    assert len(jobs) == 2  # the original apply()-triggered job plus the retry
 
 
 def test_candidate_application_view_excludes_screening_result(

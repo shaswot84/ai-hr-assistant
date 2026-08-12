@@ -141,6 +141,12 @@ export const api = {
       body: JSON.stringify({ action }),
     }),
 
+  /** Re-run the AI screening (e.g. after fixing a missing/invalid API key). */
+  reEvaluate: (applicationId: string) =>
+    request<Application>(`/api/applications/${applicationId}/re-evaluate`, {
+      method: "POST",
+    }),
+
   /** URL of the candidate's uploaded resume; opened directly (the browser sends the stored token via a query-less GET, so this is used inside an authenticated fetch/download, not a plain <a href>). */
   resumeUrl: (applicationId: string) =>
     `${API_BASE_URL}/api/applications/${applicationId}/resume`,

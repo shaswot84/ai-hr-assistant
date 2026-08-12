@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { BackLink } from "@/components/page-header";
 import { StatusBadge } from "@/components/status";
-import { EvaluationDetail } from "@/components/evaluation-detail";
+import { EvaluationDetail, ExperienceEducationCard } from "@/components/evaluation-detail";
 import { DetailSkeleton } from "@/components/loading";
 import { Modal } from "@/components/modal";
 import { HireModal } from "@/components/hire-modal";
@@ -314,7 +314,11 @@ export default function ManagerApplicationDetailPage() {
                 </h2>
               </div>
               {application.evaluation ? (
-                <EvaluationDetail evaluation={application.evaluation} />
+                <EvaluationDetail
+                  evaluation={application.evaluation}
+                  applicationId={application.application_id}
+                  onRetried={(updated) => setApplication({ ...application, ...updated })}
+                />
               ) : (
                 <div className="card px-6 py-14 text-center">
                   <p className="text-sm text-zinc-500">Still screening this resume — check back shortly.</p>
@@ -338,6 +342,9 @@ export default function ManagerApplicationDetailPage() {
                 </div>
               </div>
               <CandidateProfileCard application={application} />
+              {application.evaluation?.detail?.structured_resume && (
+                <ExperienceEducationCard structured={application.evaluation.detail.structured_resume} />
+              )}
             </div>
           </div>
         </>
