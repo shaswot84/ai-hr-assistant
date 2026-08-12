@@ -8,11 +8,14 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import get_optional_user, require_role
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
+from app.capabilities.settings import SettingsService
 from app.contracts.auth import UserContext
 from app.db.sync_session import get_db
 from app.domain.identity import Department, Person
+from app.evaluation.keyword_suggestion import suggest_keywords
 from app.integrations.object_store import SyncS3ObjectStore
-from app.knowledge.resume_extraction import extract_text, looks_like_resume
+from app.knowledge.resume_extraction import extract_text, is_ats_friendly, looks_like_resume
+from app.model_gateway.provider import ChatProviderError
 from app.schemas.recruitment import (
     ApplicationDetailOut,
     ApplicationOut,
@@ -23,7 +26,11 @@ from app.schemas.recruitment import (
     EvaluationDetail,
     EvaluationOut,
     KeyFactor,
+    KeywordMatch,
+    KeywordSuggestionOut,
+    KeywordSuggestionRequest,
     Requirement,
+    ScoringKeyword,
     StructuredResumeOut,
     VacancyCreate,
     VacancyOut,
@@ -101,6 +108,9 @@ def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
         weaknesses=raw_payload.get("weaknesses", []),
         matched_keywords=raw_payload.get("matchedKeywords", []),
         missing_keywords=raw_payload.get("missingKeywords", []),
+        keyword_matches=[
+            KeywordMatch(**m) for m in raw_payload.get("keywordMatches", []) if isinstance(m, dict)
+        ],
         candidate_profile=CandidateProfile(**profile) if isinstance(profile, dict) else None,
         structured_resume=_to_structured_resume(raw_payload.get("structuredResume")),
     )
@@ -119,6 +129,7 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
             EvaluationOut(
                 overview=evaluation.overview,
                 failed=evaluation.failed,
+                keyword_score=evaluation.keyword_score,
                 model=evaluation.model,
                 evaluated_at=evaluation.evaluated_at,
                 detail=_to_detail(evaluation.raw_payload),
@@ -193,6 +204,7 @@ def _vacancy_out(v) -> VacancyOut:
         opening_date=v.opening_date,
         closing_date=v.closing_date,
         status=v.status,
+        scoring_keywords=v.scoring_keywords or [],
         created_at=v.created_at,
     )
 
@@ -232,12 +244,41 @@ def create_vacancy(
             employment_type=body.employment_type,
             opening_date=body.opening_date,
             closing_date=body.closing_date,
+            scoring_keywords=[kw.model_dump() for kw in body.scoring_keywords],
         )
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
     vo = _vacancy_out(vacancy)
     vo.department_name = body.department_name
     return vo
+
+
+@router.post("/vacancies/keywords/suggest", response_model=KeywordSuggestionOut)
+async def suggest_vacancy_keywords(
+    body: KeywordSuggestionRequest,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+):
+    """Suggest scoring keywords + tiers from a job title/description (manager-only).
+
+    A starting point for the manager to review, check/uncheck, and re-tier
+    before posting — not the final rubric. Runs before the vacancy exists,
+    so it takes the title/description directly rather than a vacancy_id.
+    """
+    settings_svc = SettingsService()
+    llm_overrides = settings_svc.resolved_llm_overrides()
+    try:
+        result = await suggest_keywords(
+            body.title,
+            body.description,
+            api_base=llm_overrides["api_base"],
+            model=llm_overrides["model"],
+            api_key=llm_overrides["api_key"],
+        )
+    except ChatProviderError as err:
+        raise HTTPException(status_code=502, detail=str(err)) from err
+    return KeywordSuggestionOut(
+        keywords=[ScoringKeyword(keyword=kw.keyword, tier=kw.tier) for kw in result.keywords]
+    )
 
 
 @router.get("/vacancies/{vacancy_id}", response_model=VacancyOut)
@@ -323,6 +364,9 @@ def apply_to_vacancy(
     is_resume, reason = looks_like_resume(extraction.text)
     if not is_resume:
         raise HTTPException(status_code=400, detail=reason)
+    is_parsable, parsability_reason = is_ats_friendly(extraction.text)
+    if not is_parsable:
+        raise HTTPException(status_code=400, detail=parsability_reason)
 
     # upload to MinIO FIRST; only then create the application row
     try:
@@ -378,6 +422,9 @@ def apply_as_new_candidate(
     is_resume, reason = looks_like_resume(extraction.text)
     if not is_resume:
         raise HTTPException(status_code=400, detail=reason)
+    is_parsable, parsability_reason = is_ats_friendly(extraction.text)
+    if not is_parsable:
+        raise HTTPException(status_code=400, detail=parsability_reason)
 
     # upload to MinIO FIRST; only then provision the account + application row
     try:

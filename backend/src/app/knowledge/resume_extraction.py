@@ -75,6 +75,132 @@ _CLASSIFY_SYSTEM_PROMPT = (
     'valid JSON object: {"is_resume": boolean}. No markdown, no commentary.'
 )
 
+# ── ATS-parsability check ──────────────────────────────────────────────
+#
+# Distinct from `classify_resume` above: that asks "is this document a
+# resume at all"; this asks "did our extraction pipeline get clean, usable
+# text out of it" — a real resume in a table-heavy, multi-column, or
+# image-based layout can pass the resume classifier (it has the right
+# words) while still extracting as scrambled, out-of-reading-order text
+# that no automated screening could reliably judge.
+MIN_PARSABLE_LENGTH = 150  # a meaningfully higher bar than classify_resume's
+# floor (50) — that one only asks "is there enough text to be a resume at
+# all"; this one asks "is there enough text to judge formatting quality".
+_WORD_RE = re.compile(r"[A-Za-z]+")
+_MAX_AVG_WORD_LENGTH = 10.0  # merged words with no space between them
+_MAX_SINGLE_CHAR_WORD_RATIO = 0.25  # letters scattered as their own "words"
+
+_PARSABILITY_SYSTEM_PROMPT = (
+    "You judge whether extracted resume text looks cleanly formatted. Respond "
+    'with ONLY a single valid JSON object: {"well_formatted": boolean}. No '
+    "markdown, no commentary."
+)
+
+
+def _word_garbling_signals(text: str) -> tuple[float, float]:
+    """Return (avg_word_length, single_char_word_ratio) for alphabetic tokens.
+
+    Multi-column or table layouts that get flattened into a single text
+    stream by the PDF/DOCX extractor often merge adjacent columns into one
+    run-on "word", or scatter letters as isolated one-character tokens —
+    both show up here even though the raw character count looks fine.
+    """
+    words = _WORD_RE.findall(text)
+    if not words:
+        return 0.0, 0.0
+    avg_len = sum(len(w) for w in words) / len(words)
+    single_char = sum(1 for w in words if len(w) == 1)
+    return avg_len, single_char / len(words)
+
+
+def assess_parsability(text: str) -> tuple[Literal["ok", "poor", "ambiguous"], str]:
+    """Deterministic first-pass judgment of extraction quality: ok, poor, or ambiguous.
+
+    Combines four independent signals (enough content to judge, word-level
+    garbling, recognizable section headers, line-dense structure) rather
+    than gating on any one — the same "weighted signals, not a single
+    trigger" approach as `classify_resume`, since any individual signal can
+    be a false alarm on its own (e.g. a resume genuinely light on section
+    headers) but several together are a reliable sign of bad extraction.
+    """
+    if len(text) < MIN_PARSABLE_LENGTH:
+        return "poor", (
+            "Not enough text could be extracted to review this resume reliably. "
+            "It may be a scanned image or use an unusual layout."
+        )
+
+    avg_word_length, single_char_ratio = _word_garbling_signals(text)
+    header_count = _distinct_header_line_count(text)
+    has_structure = _has_line_structure(text)
+
+    bad_signals = (
+        (avg_word_length > _MAX_AVG_WORD_LENGTH)
+        + (single_char_ratio > _MAX_SINGLE_CHAR_WORD_RATIO)
+        + (header_count == 0)
+        + (not has_structure)
+    )
+
+    reason = (
+        "This resume couldn't be reliably parsed — it may use tables, multiple "
+        "columns, images, or another layout automated screening struggles with. "
+        "Please re-upload using a single-column, text-based PDF or DOCX resume."
+    )
+    if bad_signals >= 3:
+        return "poor", reason
+    if bad_signals == 0:
+        return "ok", ""
+    return "ambiguous", ""
+
+
+async def verify_parsability_with_llm(text: str) -> bool:
+    """Ask the configured LLM to judge genuinely ambiguous extraction quality.
+
+    Only meant for the "ambiguous" band `assess_parsability` can't confidently
+    decide on its own. Raises ChatProviderError if no AI provider is
+    configured or the call fails — callers should fail open (accept) in
+    that case, same reasoning as `verify_resume_with_llm`.
+    """
+    provider = OllamaChatProvider()
+    if not provider.is_configured():
+        raise ChatProviderError("No AI provider is configured.")
+    data = await provider.complete_json(
+        system_prompt=_PARSABILITY_SYSTEM_PROMPT,
+        user_prompt=(
+            "The following text was extracted from an uploaded resume file. Does "
+            "it read as coherent, properly-ordered resume content, or does it "
+            "look garbled/scrambled (merged words, text out of reading order, "
+            "fragments from a table or multi-column layout)?\n\n"
+            f"{text[:4000]}"
+        ),
+    )
+    return bool(data.get("well_formatted"))
+
+
+def is_ats_friendly(text: str) -> tuple[bool, str]:
+    """Decide whether extracted resume text is well-formatted enough to screen, for use in a sync context.
+
+    Same shape as `looks_like_resume`: confident cases resolved by
+    `assess_parsability` alone, ambiguous cases get one LLM tie-break call.
+    Fails open (accepts) when no provider is configured or the call fails,
+    so a real candidate is never blocked purely because the tie-breaker was
+    unavailable.
+    """
+    verdict, reason = assess_parsability(text)
+    if verdict != "ambiguous":
+        return verdict == "ok", reason
+
+    try:
+        well_formatted = asyncio.run(verify_parsability_with_llm(text))
+    except ChatProviderError:
+        return True, ""
+    if well_formatted:
+        return True, ""
+    return False, (
+        "This resume couldn't be reliably parsed — it may use tables, multiple "
+        "columns, images, or another layout automated screening struggles with. "
+        "Please re-upload using a single-column, text-based PDF or DOCX resume."
+    )
+
 
 class UnsupportedFileError(Exception):
     """Raised when a resume is neither a PDF nor a DOCX file."""

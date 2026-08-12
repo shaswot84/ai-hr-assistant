@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.knowledge.resume_extraction import classify_resume, looks_like_resume
+from app.knowledge.resume_extraction import (
+    assess_parsability,
+    classify_resume,
+    is_ats_friendly,
+    looks_like_resume,
+)
 
 REAL_RESUME_TEXT = """
 Jane Doe
@@ -128,3 +133,89 @@ def test_classify_resume_accepts_without_llm(text):
     """
     verdict, _ = classify_resume(text)
     assert verdict == "resume"
+
+
+# ── ATS-parsability check ──────────────────────────────────────────────
+
+# Simulates a multi-column layout flattened by a bad PDF extractor: every
+# word runs into the next with no spaces, everything lands on one line, and
+# there are no recognizable section headers — three independent signals of
+# scrambled extraction, even though the total character count is well past
+# the "is this a resume" floor.
+GARBLED_MERGED_TEXT = (
+    "JohnDoeBackendEngineerWithSixYearsOfProfessionalSoftwareDevelopmentExperience"
+    "BuildingScalableDistributedSystemsUsingPythonJavaAndGoAcrossMultipleCloudPlatforms"
+    "IncludingAWSAzureAndGCPWithExpertiseInKubernetesDockerAndMicroservicesArchitecture"
+    "PriorToThisRoleTheyWorkedAtStartupIncFrom2019To2021BuildingThePaymentsServiceFromScratch"
+    "TheyHoldABachelorOfScienceInComputerScienceFromStateUniversityGraduated2019"
+)
+
+# A real resume's content, but flattened into one flowing paragraph with no
+# line breaks and no section headers — plausible output of an extractor
+# that drops structure without merging words. Genuinely ambiguous: normal
+# word lengths (nothing merged), but no headers and no line structure.
+FLATTENED_PROSE_TEXT = (
+    "John Doe is a backend engineer with six years of experience building scalable "
+    "APIs. He previously worked at Acme Corp as a senior backend engineer from 2021 "
+    "to 2026, where he led the migration of the monolith to microservices and "
+    "mentored three junior engineers. Before that, he worked at Startup Inc as a "
+    "backend engineer from 2019 to 2021, building the payments service from "
+    "scratch. He holds a Bachelor of Science in Computer Science from State "
+    "University, 2019. His skills include Python, FastAPI, PostgreSQL, Docker, "
+    "and Kubernetes."
+)
+
+
+def test_assess_parsability_accepts_well_formatted_resume():
+    verdict, reason = assess_parsability(REAL_RESUME_TEXT)
+    assert verdict == "ok"
+    assert reason == ""
+
+
+def test_assess_parsability_rejects_merged_words_with_no_structure():
+    """Regression case for the core ask: a resume that passes the 'is this
+    a resume' classifier (real words, real content) can still be
+    unreliable to screen if the extraction scrambled it — this must be
+    caught deterministically, without needing an LLM call.
+    """
+    verdict, reason = assess_parsability(GARBLED_MERGED_TEXT)
+    assert verdict == "poor"
+    assert "couldn't be reliably parsed" in reason
+
+
+def test_assess_parsability_flags_flattened_prose_as_ambiguous():
+    """Normal word lengths (nothing merged), but no headers and no line
+    structure — not confidently bad on its own, so it's the LLM tie-break's
+    call, same as `classify_resume`'s ambiguous band.
+    """
+    verdict, reason = assess_parsability(FLATTENED_PROSE_TEXT)
+    assert verdict == "ambiguous"
+    assert reason == ""
+
+
+def test_assess_parsability_rejects_too_short_text():
+    verdict, reason = assess_parsability("Some short text.")
+    assert verdict == "poor"
+    assert "Not enough text" in reason
+
+
+def test_is_ats_friendly_accepts_well_formatted_resume():
+    is_friendly, reason = is_ats_friendly(REAL_RESUME_TEXT)
+    assert is_friendly is True
+    assert reason == ""
+
+
+def test_is_ats_friendly_rejects_garbled_resume_without_llm():
+    is_friendly, reason = is_ats_friendly(GARBLED_MERGED_TEXT)
+    assert is_friendly is False
+    assert "couldn't be reliably parsed" in reason
+
+
+def test_is_ats_friendly_fails_open_on_ambiguous_without_llm_configured():
+    """No AI provider is configured in the test environment, so an
+    ambiguous formatting case must fail open (accept) rather than block a
+    real candidate just because the tie-breaker was unavailable.
+    """
+    is_friendly, reason = is_ats_friendly(FLATTENED_PROSE_TEXT)
+    assert is_friendly is True
+    assert reason == ""

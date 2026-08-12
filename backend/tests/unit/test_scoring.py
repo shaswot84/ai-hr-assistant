@@ -7,7 +7,9 @@ from app.evaluation.scoring import (
     DEFAULT_RECOMMENDATION,
     DOES_NOT_MEET_REQUIREMENTS,
     _apply_deterministic_requirement_checks,
+    _compute_keyword_score,
     _normalize_review,
+    _reconcile_keyword_matches_with_taxonomy,
     _reconcile_keywords_with_taxonomy,
     _requirements,
     score_resume,
@@ -185,3 +187,93 @@ def test_normalize_review_reconciles_missing_keyword_using_resume_text():
     review = _normalize_review(data, structured=None, resume_text="Deployed services on K8s using Python.")
     assert "Kubernetes" in review["matchedKeywords"]
     assert "Kubernetes" not in review["missingKeywords"]
+
+
+# ── Weighted keyword scoring ────────────────────────────────────────────
+
+SCORING_KEYWORDS = [
+    {"keyword": "python", "tier": "critical"},
+    {"keyword": "docker", "tier": "important"},
+    {"keyword": "graphql", "tier": "nice_to_have"},
+]
+
+
+def test_compute_keyword_score_returns_none_without_scoring_keywords():
+    """A vacancy with no configured keywords has nothing to compute a score
+    from — None, not zero, since zero would misleadingly read as 'scored
+    and failed' rather than 'not scored at all'.
+    """
+    assert _compute_keyword_score([{"keyword": "python", "present": True, "evidence": ""}], None) is None
+    assert _compute_keyword_score([], []) is None
+
+
+def test_compute_keyword_score_weights_by_tier():
+    """Regression case for the core ask: the score is a fixed formula over
+    tier weights (critical=5, important=3, nice_to_have=1), not anything
+    the model invents. Python (critical, matched) + Docker (important,
+    missing) + GraphQL (nice_to_have, not mentioned at all) -> 5 of 9.
+    """
+    matches = [
+        {"keyword": "python", "present": True, "evidence": "Listed in skills."},
+        {"keyword": "docker", "present": False, "evidence": "Not mentioned."},
+        # graphql absent from the model's response entirely — must still count
+        # against the total, not be silently skipped.
+    ]
+    score = _compute_keyword_score(matches, SCORING_KEYWORDS)
+    assert score == round(100 * 5 / 9)
+
+
+def test_compute_keyword_score_full_match_is_100():
+    matches = [
+        {"keyword": kw["keyword"], "present": True, "evidence": ""} for kw in SCORING_KEYWORDS
+    ]
+    assert _compute_keyword_score(matches, SCORING_KEYWORDS) == 100
+
+
+def test_compute_keyword_score_no_match_is_zero():
+    matches = [
+        {"keyword": kw["keyword"], "present": False, "evidence": ""} for kw in SCORING_KEYWORDS
+    ]
+    assert _compute_keyword_score(matches, SCORING_KEYWORDS) == 0
+
+
+def test_reconcile_keyword_matches_promotes_taxonomy_alias():
+    """Same reasoning as the matched/missing keyword reconciliation: the
+    model says 'Kubernetes' is absent, but the resume only spells it 'K8s'.
+    Since this directly feeds the deterministic score, the override must
+    actually flip `present`, not just relabel a display string.
+    """
+    matches = [{"keyword": "Kubernetes", "present": False, "evidence": "Not mentioned."}]
+    reconciled = _reconcile_keyword_matches_with_taxonomy(matches, "Experienced with K8s in production.")
+    assert reconciled[0]["present"] is True
+
+
+def test_reconcile_keyword_matches_leaves_true_positive_missing_alone():
+    matches = [{"keyword": "Kubernetes", "present": False, "evidence": "Not mentioned."}]
+    reconciled = _reconcile_keyword_matches_with_taxonomy(matches, "Experienced with Python only.")
+    assert reconciled[0]["present"] is False
+
+
+def test_normalize_review_computes_keyword_score_end_to_end():
+    data = {
+        "recommendation": "Good Match",
+        "keywordMatches": [
+            {"keyword": "python", "present": True, "evidence": "Listed in skills."},
+            {"keyword": "docker", "present": True, "evidence": "Mentioned in experience."},
+            {"keyword": "graphql", "present": False, "evidence": "Not mentioned."},
+        ],
+    }
+    review = _normalize_review(data, resume_text="Python and Docker experience.", scoring_keywords=SCORING_KEYWORDS)
+    assert review["keywordScore"] == round(100 * 8 / 9)  # critical + important matched, nice_to_have missed
+    assert review["keywordMatches"][0]["keyword"] == "python"
+
+
+def test_normalize_review_keyword_score_is_none_without_scoring_keywords():
+    """No scoring_keywords configured on the vacancy -> no score, even if the
+    model payload happens to contain a keywordMatches list (shouldn't
+    happen since the prompt only asks for it when keywords are given, but
+    the None-vacancy-config case must win regardless).
+    """
+    data = {"recommendation": "Good Match", "keywordMatches": [{"keyword": "python", "present": True, "evidence": ""}]}
+    review = _normalize_review(data, resume_text="Python experience.", scoring_keywords=None)
+    assert review["keywordScore"] is None

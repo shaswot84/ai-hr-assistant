@@ -54,8 +54,13 @@ class RecruitmentService:
         employment_type: str,
         opening_date,
         closing_date,
+        scoring_keywords: list[dict],
     ) -> Vacancy:
-        """Create an open vacancy (HR_ADMIN only), auto-creating the department if needed."""
+        """Create an open vacancy (HR_ADMIN only), auto-creating the department if needed.
+
+        `scoring_keywords` is required (schema-enforced, non-empty) — every
+        vacancy gets a real, explainable scoring rubric from the start.
+        """
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can create vacancies.")
         employee = self._identity.get_employee(actor)
@@ -71,6 +76,7 @@ class RecruitmentService:
             created_by_employee_id=employee.employee_id,
             approval_status="APPROVED",
             status="OPEN",
+            scoring_keywords=scoring_keywords,
             created_at=now,
             updated_at=now,
         )

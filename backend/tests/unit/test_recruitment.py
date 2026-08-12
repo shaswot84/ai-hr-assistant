@@ -12,8 +12,13 @@ from app.domain.identity import ApplicationUser, Candidate, Person
 from app.domain.outbox import OutboxJob
 from app.domain.recruitment import ApplicationEvaluation
 
+DEFAULT_TEST_KEYWORDS = [
+    {"keyword": "python", "tier": "critical"},
+    {"keyword": "fastapi", "tier": "important"},
+]
 
-def _create_vacancy(svc, actor):
+
+def _create_vacancy(svc, actor, *, scoring_keywords=None):
     return svc.create_vacancy(
         actor,
         title="Senior Backend Engineer",
@@ -22,6 +27,7 @@ def _create_vacancy(svc, actor):
         employment_type="full_time",
         opening_date=None,
         closing_date=None,
+        scoring_keywords=scoring_keywords or DEFAULT_TEST_KEYWORDS,
     )
 
 
@@ -153,6 +159,7 @@ def test_list_all_applications_spans_every_vacancy(db, manager_context, candidat
         employment_type="full_time",
         opening_date=None,
         closing_date=None,
+        scoring_keywords=DEFAULT_TEST_KEYWORDS,
     )
     app_a = svc.apply(candidate_context, vacancy_id=vacancy_a.vacancy_id, cv_object_key="resumes/a.pdf")
     app_b = svc.apply(candidate_context, vacancy_id=vacancy_b.vacancy_id, cv_object_key="resumes/b.pdf")
@@ -168,7 +175,7 @@ def test_list_all_applications_requires_hr_admin(db, candidate_context):
         svc.list_all_applications(candidate_context)
 
 
-def _seed_evaluation(db, application_id):
+def _seed_evaluation(db, application_id, *, keyword_score=None, keyword_matches=None):
     """Attach an AI screening result (LLM-shaped raw_payload) to an application."""
     db.add(
         ApplicationEvaluation(
@@ -184,7 +191,9 @@ def _seed_evaluation(db, application_id):
                 "weaknesses": ["No Kubernetes experience mentioned"],
                 "matchedKeywords": ["python", "fastapi"],
                 "missingKeywords": ["kubernetes"],
+                "keywordMatches": keyword_matches or [],
             },
+            keyword_score=keyword_score,
             model="test-model",
             prompt_version="v1",
             evaluated_at=datetime.now(UTC),
@@ -345,6 +354,47 @@ def test_manager_application_detail_serializes_screening_as_snake_case(
     assert "score" not in detail
     assert detail["key_factors"][0]["factor"] == "Skills Match"
     assert "matchedKeywords" not in detail
+
+
+def test_manager_application_detail_exposes_keyword_score_and_matches(
+    db, client, manager_context, candidate_context, manager_password
+):
+    """The deterministically-computed weighted keyword score and its
+    per-keyword breakdown must be reachable from the manager-facing API —
+    this is the new score's whole value proposition (auditable, not a
+    number the manager has to just trust).
+    """
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(
+        candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
+    )
+    _seed_evaluation(
+        db,
+        application.application_id,
+        keyword_score=78,
+        keyword_matches=[
+            {"keyword": "python", "present": True, "evidence": "Listed in skills."},
+            {"keyword": "fastapi", "present": False, "evidence": "Not mentioned."},
+        ],
+    )
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": manager_context.email, "password": manager_password},
+    )
+    token = login.json()["access_token"]
+    res = client.get(
+        f"/api/applications/{application.application_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 200
+    evaluation = res.json()["evaluation"]
+    assert evaluation["keyword_score"] == 78
+    assert evaluation["detail"]["keyword_matches"] == [
+        {"keyword": "python", "present": True, "evidence": "Listed in skills."},
+        {"keyword": "fastapi", "present": False, "evidence": "Not mentioned."},
+    ]
 
 
 def test_manager_sees_failed_evaluation_and_can_retry(

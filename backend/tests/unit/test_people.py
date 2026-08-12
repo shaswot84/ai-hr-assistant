@@ -79,6 +79,7 @@ def _shortlist_application(db, manager_context, candidate_context):
         employment_type="full_time",
         opening_date=None,
         closing_date=None,
+        scoring_keywords=[{"keyword": "python", "tier": "critical"}],
     )
     application = recruitment.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
@@ -368,6 +369,7 @@ def test_hire_candidate_requires_shortlisted(db, manager_context, candidate_cont
         employment_type="full_time",
         opening_date=None,
         closing_date=None,
+        scoring_keywords=[{"keyword": "python", "tier": "critical"}],
     )
     application = recruitment.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/b.pdf"
@@ -417,10 +419,12 @@ def test_hire_candidate_withdraws_other_open_applications(db, manager_context, c
     v1 = recruitment.create_vacancy(
         manager_context, title="Senior Backend Engineer", department_name="Engineering",
         description="Build APIs.", employment_type="full_time", opening_date=None, closing_date=None,
+        scoring_keywords=[{"keyword": "python", "tier": "critical"}],
     )
     v2 = recruitment.create_vacancy(
         manager_context, title="Data Analyst", department_name="Data",
         description="Analyze data.", employment_type="full_time", opening_date=None, closing_date=None,
+        scoring_keywords=[{"keyword": "sql", "tier": "critical"}],
     )
     hired_app = recruitment.apply(candidate_context, vacancy_id=v1.vacancy_id, cv_object_key="resumes/a.pdf")
     other_app = recruitment.apply(candidate_context, vacancy_id=v2.vacancy_id, cv_object_key="resumes/b.pdf")
@@ -464,6 +468,7 @@ def test_application_detail_exposes_hired_flag(
         manager_context, title="Product Designer", department_name="Design",
         description="Design products.", employment_type="full_time",
         opening_date=None, closing_date=None,
+        scoring_keywords=[{"keyword": "figma", "tier": "critical"}],
     )
     application = recruitment.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
