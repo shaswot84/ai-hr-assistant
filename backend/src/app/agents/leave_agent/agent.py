@@ -9,6 +9,7 @@ pretending to act.
 from __future__ import annotations
 
 from langchain_core.messages import AIMessage
+from langgraph.types import StreamWriter
 
 from app.agents.supervisor.state import SupervisorState
 
@@ -21,7 +22,8 @@ _LEAVE_STUB = (
 def make_leave_node():
     """Build the leave node: honest placeholder until the leave agent lands."""
 
-    async def leave_node(state: SupervisorState) -> dict:
+    async def leave_node(state: SupervisorState, writer: StreamWriter) -> dict:
+        writer({"type": "message", "text": _LEAVE_STUB})
         return {
             "messages": [AIMessage(content=_LEAVE_STUB)],
             "knowledge_result": None,

@@ -14,9 +14,10 @@ prompt fragility for no benefit today.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage
 
 from app.agents.context import history_text
 from app.agents.knowledge_agent.prompts import REWRITE_SYSTEM
@@ -51,23 +52,50 @@ async def rewrite_query(llm: LLM | None, query: str, history: list[BaseMessage])
         return query
 
 
-async def run_knowledge_turn(
+async def stream_knowledge_turn(
     *,
     service: KnowledgeService,
     llm: LLM | None,
     query: str,
     history: list[BaseMessage],
-) -> KnowledgeTurn:
-    """Rewrite -> retrieve -> generate the grounded answer for one question."""
+    writer: Callable[[dict], None],
+) -> dict:
+    """Run one knowledge turn, streaming events through ``writer``.
+
+    Events (dicts the chat layer forwards as SSE)::
+
+        {"type": "retrieval", "rewritten_query": str, "result": KnowledgeResult}
+        {"type": "token", "text": str}     # answer tokens, when generation runs
+        {"type": "message", "text": str}   # honest refusal / grounded-context fallback
+
+    Returns the state update for the supervisor graph (answer, citations,
+    confidence, agent, and the final AIMessage).
+    """
     rewritten = await rewrite_query(llm, query, history)
     result = await service.retrieve(rewritten)
-    answer = await service.generate_answer(rewritten, result)
-    return KnowledgeTurn(
-        original_query=query,
-        rewritten_query=rewritten,
-        result=result,
-        answer=answer,
-    )
+    writer({"type": "retrieval", "rewritten_query": rewritten, "result": result})
+
+    if result.low_confidence or not result.citations:
+        message = fallback_message(KnowledgeTurn(query, rewritten, result, None))
+        writer({"type": "message", "text": message})
+    else:
+        message = ""
+        async for token in service.stream_answer(rewritten, result):
+            message += token
+            writer({"type": "token", "text": token})
+        if not message:
+            # No generation LLM configured: serve the grounded context.
+            message = result.grounded_context or "(no grounded context)"
+            writer({"type": "message", "text": message})
+
+    return {
+        "messages": [AIMessage(content=message)],
+        "knowledge_result": result,
+        "answer": message,
+        "citations": result.citations,
+        "confidence": result.confidence,
+        "agent": "knowledge",
+    }
 
 
 def fallback_message(turn: KnowledgeTurn) -> str:

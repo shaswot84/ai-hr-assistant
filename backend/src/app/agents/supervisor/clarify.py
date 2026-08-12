@@ -9,6 +9,7 @@ LLM to decide the message was ambiguous.
 from __future__ import annotations
 
 from langchain_core.messages import AIMessage
+from langgraph.types import StreamWriter
 
 from app.agents.supervisor.state import SupervisorState
 
@@ -24,7 +25,8 @@ For example: "What is the annual leave policy?" or "How do I apply for the Data 
 def make_clarify_node():
     """Build the clarify node: asks which area the user meant."""
 
-    async def clarify_node(state: SupervisorState) -> dict:
+    async def clarify_node(state: SupervisorState, writer: StreamWriter) -> dict:
+        writer({"type": "message", "text": _CLARIFY_MESSAGE})
         return {
             "messages": [AIMessage(content=_CLARIFY_MESSAGE)],
             "knowledge_result": None,

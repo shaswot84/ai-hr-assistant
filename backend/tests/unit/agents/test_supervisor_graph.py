@@ -41,6 +41,10 @@ class FakeKnowledgeService:
     async def generate_answer(self, query: str, result: KnowledgeResult) -> str | None:
         return self.answer
 
+    async def stream_answer(self, query: str, result: KnowledgeResult):
+        if self.answer:
+            yield self.answer
+
 
 def make_result() -> KnowledgeResult:
     """A confident retrieval result with one citation."""
@@ -151,6 +155,64 @@ async def test_no_llm_serves_grounded_context_when_evidence_found():
 
     assert state["agent"] == "knowledge"
     assert state["answer"] == "Annual leave accrues at 1.5 days per month. (Leave Policy)"
+
+
+class RewritingFakeLLM(FakeLLM):
+    """Route token on the first call (routing), rewritten query on the second."""
+
+    def __init__(self, route: str, rewritten: str) -> None:
+        super().__init__(route)
+        self.route = route
+        self.rewritten = rewritten
+        self._calls = 0
+
+    async def complete(self, system: str, user: str) -> str:
+        self._calls += 1
+        return self.route if self._calls == 1 else self.rewritten
+
+
+@pytest.mark.asyncio
+async def test_knowledge_node_streams_events():
+    """astream surfaces retrieval + token custom events from the knowledge node."""
+    graph = build_supervisor_graph(
+        llm=RewritingFakeLLM("knowledge", "annual leave policy?"),
+        knowledge_service=FakeKnowledgeService(make_result()),
+    )
+
+    events = [
+        chunk
+        async for mode, chunk in graph.astream(
+            {"messages": [], "current_query": "annual leave policy"},
+            stream_mode=["custom", "updates"],
+        )
+        if mode == "custom"
+    ]
+
+    types = [e["type"] for e in events]
+    assert types[0] == "retrieval"
+    assert types[1:] == ["token"]
+    assert events[0]["rewritten_query"] == "annual leave policy?"
+    assert events[1]["text"] == "A grounded answer."
+
+
+@pytest.mark.asyncio
+async def test_leave_node_streams_message_event():
+    """Stub nodes stream a single message event instead of tokens."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("leave"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    events = [
+        chunk
+        async for mode, chunk in graph.astream(
+            {"messages": [], "current_query": "my leave balance"},
+            stream_mode=["custom", "updates"],
+        )
+        if mode == "custom"
+    ]
+
+    assert [e["type"] for e in events] == ["message"]
+    assert "Leave" in events[0]["text"]
 
 
 @pytest.mark.asyncio
