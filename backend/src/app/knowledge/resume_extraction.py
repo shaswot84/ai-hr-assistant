@@ -11,6 +11,27 @@ from docx.text.paragraph import Paragraph
 
 MIN_USABLE_LENGTH = 40
 
+# Signals used by `looks_like_resume` — deterministic, no LLM call, so a
+# garbage upload (blank page, random report, non-resume document) is
+# rejected up front regardless of whether an AI provider is configured.
+MIN_RESUME_LENGTH = 200
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+_PHONE_RE = re.compile(r"(?:\+?\d[\d .()-]{8,}\d)")
+_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+_SECTION_KEYWORDS = (
+    "experience",
+    "employment",
+    "education",
+    "skills",
+    "qualifications",
+    "certification",
+    "projects",
+    "summary",
+    "objective",
+    "work history",
+    "curriculum vitae",
+)
+
 
 class UnsupportedFileError(Exception):
     """Raised when a resume is neither a PDF nor a DOCX file."""
@@ -101,6 +122,34 @@ def _extract_from_docx(data: bytes) -> ExtractResult:
             ),
         )
     return ExtractResult(text=text)
+
+
+def looks_like_resume(text: str) -> tuple[bool, str]:
+    """Heuristically decide whether extracted text is plausibly a resume.
+
+    Deterministic and LLM-free: requires enough readable content plus at
+    least two of three independent resume signals (contact info, a resume
+    section keyword, a year/date). A blank page, scanned image, or an
+    unrelated document (report, cover letter, ID scan) typically has zero
+    or one of these, so it's rejected without needing model access.
+
+    Returns (is_resume, reason) — reason is a user-facing message when
+    `is_resume` is False, empty string otherwise.
+    """
+    if len(text) < MIN_RESUME_LENGTH:
+        return False, "Not enough readable text was found in this file."
+
+    lower = text.lower()
+    has_contact = bool(_EMAIL_RE.search(text) or _PHONE_RE.search(text))
+    has_section = any(keyword in lower for keyword in _SECTION_KEYWORDS)
+    has_dates = len(_YEAR_RE.findall(text)) >= 2
+
+    if sum([has_contact, has_section, has_dates]) < 2:
+        return False, (
+            "This file doesn't look like a resume — no contact info, "
+            "experience/education sections, or dates were found."
+        )
+    return True, ""
 
 
 def _iter_block_items(document: Document):

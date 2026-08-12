@@ -12,6 +12,7 @@ from app.contracts.auth import UserContext
 from app.db.sync_session import get_db
 from app.domain.identity import Department, Person
 from app.integrations.object_store import SyncS3ObjectStore
+from app.knowledge.resume_extraction import extract_text, looks_like_resume
 from app.schemas.recruitment import (
     ApplicationDetailOut,
     ApplicationOut,
@@ -270,6 +271,11 @@ def apply_to_vacancy(
     if not filename.lower().endswith(ALLOWED_RESUME_TYPES):
         raise HTTPException(status_code=400, detail="Only PDF or DOCX resumes are accepted.")
 
+    extraction = extract_text(data, filename, file.content_type or "")
+    is_resume, reason = looks_like_resume(extraction.text)
+    if not is_resume:
+        raise HTTPException(status_code=400, detail=reason)
+
     # upload to MinIO FIRST; only then create the application row
     try:
         object_key = SyncS3ObjectStore().put_resume(data, filename, file.content_type or "")
@@ -319,6 +325,11 @@ def apply_as_new_candidate(
     filename = file.filename or ""
     if not filename.lower().endswith(ALLOWED_RESUME_TYPES):
         raise HTTPException(status_code=400, detail="Only PDF or DOCX resumes are accepted.")
+
+    extraction = extract_text(data, filename, file.content_type or "")
+    is_resume, reason = looks_like_resume(extraction.text)
+    if not is_resume:
+        raise HTTPException(status_code=400, detail=reason)
 
     # upload to MinIO FIRST; only then provision the account + application row
     try:

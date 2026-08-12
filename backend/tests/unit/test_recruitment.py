@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 from datetime import UTC, datetime
 
 import pytest
+from docx import Document
 from sqlalchemy import select
 
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
@@ -392,3 +394,96 @@ def test_all_applications_http_endpoint(
     assert res.status_code == 200
     ids = {a["application_id"] for a in res.json()}
     assert str(application.application_id) in ids
+
+
+def _build_docx_bytes(paragraphs: list[str]) -> bytes:
+    """Build an in-memory DOCX file with the given paragraph text."""
+    doc = Document()
+    for text in paragraphs:
+        doc.add_paragraph(text)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def test_apply_rejects_non_resume_upload(db, client, manager_context, candidate_context, candidate_password):
+    """Regression test: previously any readable PDF/DOCX got scored as a
+    resume regardless of content. A document with no resume signals
+    (no contact info, no experience/education section, no dates) must be
+    rejected at upload time, before storage or an application row exist.
+    """
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": candidate_context.email, "password": candidate_password},
+    )
+    token = login.json()["access_token"]
+
+    unrelated_text = "This is a general company newsletter update with no resume-related content. " * 5
+    garbage = _build_docx_bytes([unrelated_text])
+    res = client.post(
+        f"/api/vacancies/{vacancy.vacancy_id}/applications",
+        headers={"Authorization": f"Bearer {token}"},
+        files={
+            "file": (
+                "note.docx",
+                garbage,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert res.status_code == 400
+    assert "doesn't look like a resume" in res.json()["detail"]
+    assert svc.list_all_applications(manager_context) == []
+
+
+def test_apply_accepts_real_resume_upload(
+    db, client, manager_context, candidate_context, candidate_password, monkeypatch
+):
+    """The gate must not false-reject a real resume. Storage is monkeypatched
+    so this stays a hermetic unit test rather than depending on live MinIO.
+    """
+    monkeypatch.setattr(
+        "app.api.routes.recruitment.SyncS3ObjectStore.put_resume",
+        lambda self, data, filename, content_type: "resumes/fake-key.docx",
+    )
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": candidate_context.email, "password": candidate_password},
+    )
+    token = login.json()["access_token"]
+
+    resume = _build_docx_bytes(
+        [
+            "Jane Doe",
+            "jane.doe@example.com | (555) 123-4567 | San Francisco, CA",
+            "SUMMARY",
+            "Backend engineer with 6 years of experience building scalable APIs.",
+            "EXPERIENCE",
+            "Senior Backend Engineer, Acme Corp — 2021 to 2026",
+            "Led the migration of the monolith to microservices.",
+            "Backend Engineer, Startup Inc — 2019 to 2021",
+            "EDUCATION",
+            "B.S. Computer Science, State University, 2019",
+            "SKILLS",
+            "Python, FastAPI, PostgreSQL, Docker, Kubernetes",
+        ]
+    )
+    res = client.post(
+        f"/api/vacancies/{vacancy.vacancy_id}/applications",
+        headers={"Authorization": f"Bearer {token}"},
+        files={
+            "file": (
+                "resume.docx",
+                resume,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert res.status_code == 201
+    assert res.json()["application_status"] == "APPLIED"
