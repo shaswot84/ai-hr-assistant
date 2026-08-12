@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.base import Base
 from app.domain import conversation as conversation_domain  # noqa: F401
-from app.domain import identity  # noqa: F401  (employee table for the FK)
+from app.domain.identity import ApplicationUser, Person
 from app.repositories.conversation import ConversationRepo
+from app.shared.clock import get_clock
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 
@@ -38,13 +39,39 @@ async def db_session():
     await engine.dispose()
 
 
+async def make_user(db_session, *, email: str = "test@example.com") -> uuid.UUID:
+    """Create a Person + ApplicationUser row and return the user_id."""
+    now = get_clock().utc_now()
+    person = Person(
+        first_name="Test",
+        last_name="User",
+        email=email,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(person)
+    await db_session.flush()
+
+    app_user = ApplicationUser(
+        person_id=person.person_id,
+        external_subject=f"sub-{uuid.uuid4()}",
+        coarse_role="CANDIDATE",
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(app_user)
+    await db_session.flush()
+    return app_user.user_id
+
+
 @pytest.mark.asyncio
 async def test_create_and_get_conversation(db_session):
-    """A created conversation round-trips, with or without an owner."""
+    """A created conversation round-trips, owned by the authenticated user."""
     repo = ConversationRepo(db_session)
+    user_id = await make_user(db_session)
 
-    owned = await repo.create(employee_id=None)
-    assert owned.employee_id is None
+    owned = await repo.create(user_id=user_id)
+    assert owned.user_id == user_id
     assert owned.title is None
 
     fetched = await repo.get(owned.conversation_id)
@@ -58,7 +85,7 @@ async def test_create_and_get_conversation(db_session):
 async def test_append_and_order_messages(db_session):
     """Messages get monotonic sequence numbers and come back oldest-first."""
     repo = ConversationRepo(db_session)
-    conversation = await repo.create()
+    conversation = await repo.create(user_id=await make_user(db_session))
 
     first = await repo.append_message(
         conversation_id=conversation.conversation_id, role="user", content="What is the leave policy?"
@@ -85,7 +112,7 @@ async def test_append_and_order_messages(db_session):
 async def test_recent_messages_windows(db_session):
     """recent_messages returns the last n messages, oldest of the window first."""
     repo = ConversationRepo(db_session)
-    conversation = await repo.create()
+    conversation = await repo.create(user_id=await make_user(db_session))
     for i in range(5):
         await repo.append_message(
             conversation_id=conversation.conversation_id, role="user", content=f"msg {i}"
@@ -102,7 +129,7 @@ async def test_recent_messages_windows(db_session):
 async def test_title_and_touch(db_session):
     """set_title and touch mutate the conversation row."""
     repo = ConversationRepo(db_session)
-    conversation = await repo.create()
+    conversation = await repo.create(user_id=await make_user(db_session))
 
     await repo.set_title(conversation.conversation_id, "Leave policy question")
     fetched = await repo.get(conversation.conversation_id)
@@ -119,7 +146,7 @@ async def test_title_and_touch(db_session):
 async def test_messages_cascade_with_conversation(db_session):
     """Deleting a conversation removes its messages (FK ondelete=CASCADE)."""
     repo = ConversationRepo(db_session)
-    conversation = await repo.create()
+    conversation = await repo.create(user_id=await make_user(db_session))
     await repo.append_message(
         conversation_id=conversation.conversation_id, role="user", content="hello"
     )

@@ -22,13 +22,15 @@ def upgrade() -> None:
     op.create_table(
         "conversation",
         sa.Column("conversation_id", sa.Uuid(), primary_key=True),
-        sa.Column("employee_id", sa.Uuid(), sa.ForeignKey("employee.employee_id"), nullable=True),
+        sa.Column(
+            "user_id", sa.Uuid(), sa.ForeignKey("application_user.user_id"), nullable=False
+        ),
         sa.Column("title", sa.String(200), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index(
-        "ix_conversation_employee_updated", "conversation", ["employee_id", "updated_at"]
+        "ix_conversation_user_updated", "conversation", ["user_id", "updated_at"]
     )
 
     op.create_table(

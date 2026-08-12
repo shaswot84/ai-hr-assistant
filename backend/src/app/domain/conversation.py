@@ -23,10 +23,16 @@ class Conversation(Base):
     __tablename__ = "conversation"
 
     conversation_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    # Nullable: candidates and anonymous visitors may also chat (e.g. from the
-    # public careers page) even though the primary audience is employees.
-    employee_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid, ForeignKey("employee.employee_id"), nullable=True
+    # The authenticated owner. Keyed on application_user.user_id (not
+    # employee_id): every authenticated role — HR_ADMIN, EMPLOYEE, CANDIDATE —
+    # has an application_user row, but candidates have no employee row.
+    # Candidates chat through the guarded /candidate/chatbot portal, so angit
+    # employee_id key would silently bar them from durable history; a user_id
+    # key also stays stable across the candidate -> employee hire transition.
+    # The employee (if any) is derived at runtime via IdentityService, never
+    # stored here.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("application_user.user_id"), nullable=False
     )
     # Set from the first user message so the history list is readable without
     # loading every message.
@@ -35,7 +41,7 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
-Index("ix_conversation_employee_updated", Conversation.employee_id, Conversation.updated_at)
+Index("ix_conversation_user_updated", Conversation.user_id, Conversation.updated_at)
 
 
 class ConversationMessage(Base):
