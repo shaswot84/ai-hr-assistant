@@ -1,140 +1,218 @@
-"""Leave Agent conversation state -- the shape, not the storage.
+"""Leave Agent state: per-session conversation memory.
 
-`agent.handle_turn` is stateless by design (see agent.py's module
-docstring): it takes `history`/`pending_confirmation` in as plain
-arguments and returns updated ones, holding nothing itself. This module
-defines what those plain values actually look like, plus the trimming and
-(de)serialization helpers around them, so every caller builds/reads that
-shape the same way instead of each inventing its own dict layout.
+This is deliberately in-memory and non-durable — `Database_Implementation.md`
+draws a hard line between "working/session memory" (allowed to be
+ephemeral: Redis or in-memory) and "durable conversation history"
+(PostgreSQL `conversation`/`conversation_message`, which don't exist yet
+in this codebase). Wiring this into that durable store is route/DB-layer
+work, explicitly out of scope right now (leave-agent-only, no
+supervisor/persistence layer being built yet) — flagged here rather than
+silently assumed away. The one thing that must never depend only on this
+in-memory state is the actual business mutation — a submitted/cancelled
+leave request — and it doesn't: every write still goes through
+LeaveService straight to PostgreSQL.
 
-What this module deliberately does NOT do: persist anything to a
-database. `domain/conversation.py` and `repositories/conversation.py`
-exist in this repo as empty stubs -- the durable-session-store question
-raised earlier (per-`session_id` conversation history surviving across
-HTTP requests) is still open. When that lands, `LeaveAgentSessionState`
-is the shape a `ConversationRepo` should be loading into and saving out
-of; nothing here needs to change, only where the dict comes from.
+Uses the same Clock abstraction as the rest of the codebase
+(app.shared.clock) rather than datetime.now() directly, so TTL/expiry
+logic is swappable/testable the same way business-logic time decisions
+already are.
 """
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from datetime import datetime, timedelta
 
-from app.agents.leave_agent.tools import TOOLS
+from app.contracts.auth import UserContext
+from app.shared.clock import Clock, get_clock
 
-#: Bounded so the single-shot prompt (prompts.build_turn_prompt) never grows
-#: unbounded -- this is a plain completion call, not a native multi-turn
-#: chat API with its own context management. Keeps only the most recent
-#: turns; older context is simply dropped, not summarized (no summarization
-#: step exists yet -- see the "open questions" note at the bottom).
+# Trimmed to the last N turns so the prompt sent to the LLM each turn stays
+# bounded — a long-running session doesn't grow the prompt without limit.
 MAX_HISTORY_TURNS = 12
 
-Role = Literal["employee", "agent"]
+# Whole-session TTL: session state older than this is treated as gone.
+DEFAULT_SESSION_TTL = timedelta(minutes=30)
+
+# A staged WRITE action gets its own, much shorter TTL than the session
+# itself — a "yes" arriving 25 minutes after a write was proposed
+# shouldn't execute it just because the session is technically still
+# alive. Re-proposing is cheap; executing a stale, half-forgotten action
+# is not.
+DEFAULT_CONFIRMATION_TTL = timedelta(minutes=5)
 
 
-class HistoryTurn(TypedDict):
-    """One prior turn, in the exact shape `prompts.build_turn_prompt` expects."""
+@dataclass(frozen=True)
+class ConversationTurn:
+    """One message in the session, in the shape prompts.build_turn_prompt expects."""
 
-    role: Role
+    role: str  # "employee" | "agent"
     content: str
 
+    def as_dict(self) -> dict[str, str]:
+        return {"role": self.role, "content": self.content}
 
-class PendingConfirmation(TypedDict):
-    """A staged write action awaiting the employee's yes/no -- the exact
-    shape `agent.handle_turn` reads from and writes back to on every turn."""
 
+@dataclass(frozen=True)
+class PendingConfirmation:
+    """A write action the agent has staged and is waiting on the employee to confirm.
+
+    Carries its own identity/binding/expiry fields, not just tool+args —
+    even though this object currently only ever lives inside one
+    session's in-memory state (already scoped to one actor by
+    SessionStore), shaping it this way now means a future durable-storage
+    migration (a `pending_confirmation` table, if that's ever built) is a
+    straight column mapping instead of a redesign.
+    """
+
+    confirmation_id: uuid.UUID
+    session_id: str
+    actor_subject: str
     tool: str
-    args: dict[str, Any]
+    args: dict  # canonical (JSON-safe) form — see tools.canonical_args
+    summary: str
+    created_at: datetime
+    expires_at: datetime
 
 
 @dataclass
-class LeaveAgentSessionState:
-    """In-memory conversation state for one employee's Leave Agent session.
+class LeaveAgentState:
+    """One session's conversation state."""
 
-    Plain dataclass, not a Pydantic model: this never crosses the HTTP
-    boundary as-is (that's `schemas/chat.py`'s job, once it exists) and
-    never touches SQLAlchemy directly (that's `domain/conversation.py`'s
-    job, once it exists) -- it's purely the shape passed between a route
-    handler and `agent.handle_turn`.
-    """
-
-    history: list[HistoryTurn] = field(default_factory=list)
+    session_id: str
+    actor_subject: str
+    created_at: datetime
+    updated_at: datetime
+    history: list[ConversationTurn] = field(default_factory=list)
     pending_confirmation: PendingConfirmation | None = None
+    _executing: bool = field(default=False, repr=False)
 
-    def append(self, role: Role, content: str) -> None:
-        """Add one turn and trim to `MAX_HISTORY_TURNS`, oldest first."""
-        self.history.append({"role": role, "content": content})
+    def add_turn(self, role: str, content: str, *, clock: Clock) -> None:
+        """Append a turn and trim history to MAX_HISTORY_TURNS (drop oldest first)."""
+        self.history.append(ConversationTurn(role=role, content=content))
         if len(self.history) > MAX_HISTORY_TURNS:
             self.history = self.history[-MAX_HISTORY_TURNS:]
+        self.updated_at = clock.now()
 
-    def to_dict(self) -> dict[str, Any]:
-        """JSON-safe representation for handing to a session store / DB row."""
-        return {
-            "history": list(self.history),
-            "pending_confirmation": dict(self.pending_confirmation) if self.pending_confirmation else None,
-        }
+    def stage(
+        self,
+        tool: str,
+        args: dict,
+        summary: str,
+        *,
+        clock: Clock,
+        ttl: timedelta = DEFAULT_CONFIRMATION_TTL,
+    ) -> PendingConfirmation:
+        """Stage a write action awaiting employee confirmation.
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> LeaveAgentSessionState:
-        """Rebuild from a stored dict, defensively -- never trust storage blindly.
-
-        A session row could be stale (the employee's browser held an old
-        `session_id` across a deploy that changed `TOOLS`), so this
-        validates rather than trusting the shape outright: unknown roles
-        are dropped, and a `pending_confirmation` naming a tool that no
-        longer exists is discarded rather than handed to `handle_turn`,
-        which would otherwise stage a confirmation for a tool call it can
-        never actually run.
+        Replaces any previously staged action outright — a new "stage"
+        always supersedes an old one rather than merging with it, so a
+        changed-subject conversation can never accidentally confirm the
+        earlier, now-irrelevant action.
         """
-        if not data:
-            return cls()
+        now = clock.now()
+        pending = PendingConfirmation(
+            confirmation_id=uuid.uuid4(),
+            session_id=self.session_id,
+            actor_subject=self.actor_subject,
+            tool=tool,
+            args=args,
+            summary=summary,
+            created_at=now,
+            expires_at=now + ttl,
+        )
+        self.pending_confirmation = pending
+        self.updated_at = now
+        return pending
 
-        raw_history = data.get("history")
-        history: list[HistoryTurn] = []
-        if isinstance(raw_history, list):
-            for turn in raw_history:
-                if (
-                    isinstance(turn, dict)
-                    and turn.get("role") in ("employee", "agent")
-                    and isinstance(turn.get("content"), str)
-                ):
-                    history.append({"role": turn["role"], "content": turn["content"]})
-        history = history[-MAX_HISTORY_TURNS:]
+    def clear_pending(self, *, clock: Clock) -> None:
+        """Drop any staged action — used both after executing it and after the
+        employee declines/changes the subject."""
+        self.pending_confirmation = None
+        self.updated_at = clock.now()
 
-        pending = data.get("pending_confirmation")
-        pending_confirmation: PendingConfirmation | None = None
-        if (
-            isinstance(pending, dict)
-            and pending.get("tool") in TOOLS
-            and TOOLS[pending["tool"]].requires_confirmation
-            and isinstance(pending.get("args"), dict)
-        ):
-            pending_confirmation = {"tool": pending["tool"], "args": dict(pending["args"])}
+    def pending_is_expired(self, *, clock: Clock) -> bool:
+        if self.pending_confirmation is None:
+            return False
+        return clock.now() >= self.pending_confirmation.expires_at
 
-        return cls(history=history, pending_confirmation=pending_confirmation)
+    def begin_execution(self) -> bool:
+        """Atomically claim the right to execute the currently staged action.
+
+        Returns True if the caller may proceed, False if another turn is
+        already executing (or already executed and this is a duplicate/
+        concurrent confirmation). Synchronous and awaits nothing between
+        the check and the flip, so within a single asyncio event loop this
+        is a true atomic test-and-set — a second concurrent "yes" for the
+        same session cannot slip through between the check and the set.
+
+        This does not protect against multiple worker PROCESSES sharing
+        one session concurrently (this store is in-memory per-process,
+        per the module docstring) — that requires a real lock (e.g. Redis)
+        once this moves off a single process, which is out of scope here.
+        """
+        if self._executing:
+            return False
+        self._executing = True
+        return True
+
+    def end_execution(self, *, clock: Clock) -> None:
+        self._executing = False
+        self.updated_at = clock.now()
+
+    def history_for_prompt(self) -> list[dict[str, str]]:
+        return [turn.as_dict() for turn in self.history]
+
+    def pending_for_prompt(self) -> dict | None:
+        if self.pending_confirmation is None:
+            return None
+        return {"tool": self.pending_confirmation.tool, "args": self.pending_confirmation.args}
 
 
-def new_session() -> LeaveAgentSessionState:
-    """Fresh, empty session state for a new conversation."""
-    return LeaveAgentSessionState()
+class SessionStore:
+    """In-memory store of LeaveAgentState, keyed by session_id.
 
+    Not thread-safe beyond the GIL's normal dict-op atomicity — fine for a
+    single-process dev/demo deployment; a multi-worker deployment would
+    need this backed by Redis instead (the ephemeral-memory role
+    Database_Implementation.md already allows for), not PostgreSQL.
+    """
 
-# ---------------------------------------------------------------------------
-# Open questions for whoever wires this to a durable store
-# (domain/conversation.py + repositories/conversation.py, both empty today):
-#
-# 1. Key by `session_id` (per A0-A6's Database_Implementation.md-derived
-#    `conversation`/`conversation_message` tables) or a simpler per-employee
-#    single active session? The Leave Agent doesn't need multi-session
-#    history the way a general chat UI might.
-# 2. `MAX_HISTORY_TURNS` truncation currently just drops the oldest turns.
-#    A real conversation table wouldn't need this at read time (it can page),
-#    but the *prompt* still needs a bound -- decide whether truncation
-#    happens here (recent turns only) or via a summarization step before
-#    those older turns are dropped from the prompt.
-# 3. `pending_confirmation` surviving a server restart matters more than
-#    `history` does (an un-actioned staged write is a real liability if
-#    lost silently) -- if only one of the two gets durable storage first,
-#    it should be this one.
-# ---------------------------------------------------------------------------
+    def __init__(self, *, ttl: timedelta = DEFAULT_SESSION_TTL, clock: Clock | None = None) -> None:
+        self._sessions: dict[str, LeaveAgentState] = {}
+        self._ttl = ttl
+        self._clock = clock or get_clock()
+
+    def get_or_create(self, session_id: str, actor: UserContext) -> LeaveAgentState:
+        """Return the session's state, starting fresh if it's missing, expired,
+        or bound to a different identity than the caller.
+
+        A client-supplied session_id is not a trusted identity boundary by
+        itself: if it collides with (or is reused across) a different
+        actor, resuming that state would leak one employee's staged leave
+        details into another employee's conversation. Any mismatch is
+        treated the same as "no session" rather than an error.
+        """
+        existing = self._sessions.get(session_id)
+        if existing is not None and existing.actor_subject == actor.subject and not self._is_expired(existing):
+            return existing
+
+        now = self._clock.now()
+        fresh = LeaveAgentState(
+            session_id=session_id,
+            actor_subject=actor.subject,
+            created_at=now,
+            updated_at=now,
+        )
+        self._sessions[session_id] = fresh
+        return fresh
+
+    def _is_expired(self, state: LeaveAgentState) -> bool:
+        return self._clock.now() - state.updated_at > self._ttl
+
+    def purge_expired(self) -> int:
+        """Drop expired sessions; returns how many were removed."""
+        expired = [sid for sid, s in self._sessions.items() if self._is_expired(s)]
+        for sid in expired:
+            del self._sessions[sid]
+        return len(expired)

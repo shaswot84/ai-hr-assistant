@@ -1,276 +1,281 @@
-"""Leave Agent dispatch loop.
+"""Leave Agent orchestration: one turn in, one reply out.
 
-Single-shot pattern (Option A from the earlier design discussion): no
-LangGraph, no native tool-calling API -- this mirrors exactly what
-evaluation/scoring.py already proves out in production against the same
-Ollama provider: one system prompt (rules + tool catalog + response
-schema, built by prompts.py), one user prompt for this turn, one
-complete_json() call, then this module deterministically decides what the
-JSON response is allowed to do.
-
-The model NEVER executes a write tool directly. Every "call_tool" for a
-write tool is re-validated against a `pending_confirmation` that agent.py
-itself set on a *previous* turn, using the *previously staged* args, not
-whatever the model returns this time. This is deliberate defense in depth,
-not redundancy for its own sake: it means a hallucinated or
-prompt-injected "call_tool" on a write action, on a turn where nothing was
-actually staged, can never fire -- it gets downgraded to a stage-and-ask
-instead of a silent unauthorized action, matching the codebase's existing
-"agent proposes, service/deterministic code decides" line (A2 Sec.3).
-
-Callers own persistence. `handle_turn` is pure request/response -- it does
-not read or write conversation history or `pending_confirmation` from any
-store. The caller (today: whatever calls this directly in a route or
-test; eventually: api/routes/leave_chat.py backed by a durable session
-store) is responsible for loading `history`/`pending_confirmation` before
-the call and persisting the returned ones after. See the earlier
-discussion of the conversation-persistence gap -- this module doesn't
-solve that, it just doesn't make it worse by inventing its own cache.
+Hand-rolled dispatch loop over ChatProvider.complete_json — no
+LangGraph/framework. This matches evaluation/scoring.py's existing
+pattern and fits this codebase's actual constraints: the chat model is
+manager-editable at runtime, so nothing here can assume the live model
+supports native function-calling. Everything is driven by a plain
+"respond with this JSON shape" contract, enforced by code, not by asking
+the model nicely.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from datetime import date
+from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy.orm import Session
-
-from app.agents.leave_agent.prompts import build_system_prompt, build_turn_prompt, summarize_for_confirmation
-from app.agents.leave_agent.tools import TOOLS, ToolError
+from app.agents.leave_agent import prompts
+from app.agents.leave_agent.state import LeaveAgentState
+from app.agents.leave_agent.tools import TOOLS, ToolError, canonical_args, format_tool_result, preflight_submit, validate_args
 from app.capabilities.leave import LeaveService
 from app.contracts.auth import UserContext
-from app.model_gateway.ollama import OllamaChatProvider
-from app.model_gateway.provider import ChatProviderError
+from app.model_gateway.provider import ChatProvider, ChatProviderError
+from app.shared.clock import Clock, get_clock
 
 logger = logging.getLogger(__name__)
 
-_ALLOWED_ROLES = ("EMPLOYEE", "HR_ADMIN")
-_TEMPERATURE = 0.2  # low -- this is a tool-routing decision, not open-ended writing
+_FALLBACK_UNAVAILABLE = "Sorry, I'm having trouble right now — please try again shortly."
+_FALLBACK_UNPARSEABLE = "Sorry, I didn't quite catch that — could you rephrase?"
+_FALLBACK_ALREADY_RUNNING = "I'm already processing that — one moment."
+_FALLBACK_EXPIRED = "That confirmation has expired — could you tell me again what you'd like to do?"
+_FALLBACK_NO_MATCH = "I don't have that staged to confirm — could you tell me again what you'd like to do?"
+
 _VALID_ACTIONS = {"reply", "stage", "call_tool"}
-# Arg keys that must be coerced from the JSON string the model returns into
-# a real `date` before a handler (typed `date` in its signature) is called.
-_DATE_ARG_KEYS = {"start_date", "end_date"}
 
 
-@dataclass
-class TurnResult:
-    """What one turn of the Leave Agent produced -- the caller persists
-    `pending_confirmation` and appends `reply` to its own history/store."""
+@dataclass(frozen=True)
+class AgentTurnResult:
+    """What one call to handle_turn produces, for the route layer to return."""
 
     reply: str
-    pending_confirmation: dict | None
     tool_called: str | None = None
-    tool_result: dict | list | None = None
-    raw_model_action: str | None = field(default=None, repr=False)
-
-
-def _reject_role(actor: UserContext) -> TurnResult:
-    """Fail fast, before spending a token, for a role this agent never serves."""
-    return TurnResult(
-        reply="This assistant only handles an employee's own leave requests.",
-        pending_confirmation=None,
-    )
-
-
-def _coerce_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Convert JSON-shaped args (all strings) into the types each handler expects.
-
-    Only dates need this today -- `leave_request_id` stays a string (the
-    handlers themselves do `uuid.UUID(...)`), and every other field is
-    already the right shape coming out of JSON.
-    """
-    coerced = dict(args)
-    for key in _DATE_ARG_KEYS:
-        value = coerced.get(key)
-        if isinstance(value, str):
-            try:
-                coerced[key] = date.fromisoformat(value)
-            except ValueError as exc:
-                raise ToolError(
-                    f"\"{value}\" isn't a valid date for {tool_name}.{key} "
-                    "(expected YYYY-MM-DD)."
-                ) from exc
-    return coerced
-
-
-def _validate_required_params(tool_name: str, args: dict[str, Any]) -> None:
-    """Check every `required: True` parameter in the tool's spec is present.
-
-    Defensive only -- the handler's own signature will still raise a clear
-    error for anything this misses. This just turns the common case (model
-    forgot a required field) into a clean ToolError instead of a TypeError
-    surfacing from deep inside the handler.
-    """
-    spec = TOOLS[tool_name]
-    missing = [
-        name
-        for name, schema in spec.parameters.items()
-        if schema.get("required") and name not in args
-    ]
-    if missing:
-        raise ToolError(f"{tool_name} is missing required field(s): {', '.join(missing)}.")
-
-
-def _run_tool(service: LeaveService, actor: UserContext, tool_name: str, args: dict[str, Any]) -> Any:
-    """Validate params, coerce types, and invoke a tool's handler. Raises ToolError on any failure."""
-    if tool_name not in TOOLS:
-        raise ToolError(f"Unknown tool: {tool_name}.")
-    _validate_required_params(tool_name, args)
-    coerced = _coerce_args(tool_name, args)
-    spec = TOOLS[tool_name]
-    return spec.handler(service, actor, **coerced)
-
-
-def _parse_model_response(data: dict[str, Any]) -> tuple[str, str | None, dict[str, Any], str]:
-    """Defensively normalize the model's JSON into (action, tool, args, reply).
-
-    Mirrors evaluation/scoring.py's `_normalize_review`-style coercion: never
-    trust the model's shape, always fall back to something safe. An
-    unrecognized `action` degrades to "reply" (never silently becomes
-    "call_tool") so a malformed response can never accidentally execute
-    anything.
-    """
-    reply = data.get("reply")
-    reply = reply if isinstance(reply, str) and reply.strip() else "Sorry, could you rephrase that?"
-
-    action = data.get("action")
-    if action not in _VALID_ACTIONS:
-        action = "reply"
-
-    tool = data.get("tool")
-    tool = tool if isinstance(tool, str) and tool in TOOLS else None
-
-    args = data.get("args")
-    args = args if isinstance(args, dict) else {}
-
-    if action in ("stage", "call_tool") and tool is None:
-        action = "reply"  # can't stage/call without a real tool name
-
-    return action, tool, args, reply
+    tool_result: dict[str, Any] | None = None
+    # The model's raw parsed JSON response for this turn, for observability
+    # (matches the AI-observability fields audit_log already has room for:
+    # model_version, prompt_version, latency_ms, token_usage). None only
+    # when the provider call itself failed before returning anything.
+    raw_model_action: dict[str, Any] | None = None
 
 
 async def handle_turn(
-    db: Session,
-    actor: UserContext,
     *,
-    message: str,
-    history: list[dict[str, str]] | None = None,
-    pending_confirmation: dict | None = None,
-) -> TurnResult:
-    """Process one turn of conversation with the Leave Agent.
+    actor: UserContext,
+    state: LeaveAgentState,
+    service: LeaveService,
+    chat_provider: ChatProvider,
+    user_message: str,
+    clock: Clock | None = None,
+) -> AgentTurnResult:
+    """Process one employee message and return the agent's reply.
 
-    `history`/`pending_confirmation` are supplied by the caller (loaded from
-    wherever conversation state lives) and returned, updated, for the
-    caller to persist -- this function holds no state of its own.
+    `state` is mutated in place — the caller (the route) persists it back
+    into the SessionStore.
     """
-    if actor.coarse_role not in _ALLOWED_ROLES:
-        return _reject_role(actor)
+    clock = clock or get_clock()
 
-    service = LeaveService(db)
-    provider = OllamaChatProvider()
-
-    if not provider.is_configured():
-        # No deterministic fallback makes sense for open-ended conversation
-        # the way evaluation/scoring.py's keyword scorer does for resumes --
-        # degrade honestly instead of guessing at intent with regex.
-        return TurnResult(
-            reply="The leave assistant isn't available right now -- you can still use the "
-            "Leave page directly to check your balance or submit a request.",
-            pending_confirmation=pending_confirmation,
-        )
-
-    system_prompt = build_system_prompt()
-    user_prompt = build_turn_prompt(message, history=history, pending_confirmation=pending_confirmation)
-
-    try:
-        data = await provider.complete_json(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=_TEMPERATURE,
-        )
-    except ChatProviderError:
-        logger.warning("Leave Agent: chat provider call failed", exc_info=True)
-        return TurnResult(
-            reply="Something went wrong reaching the assistant -- please try again in a moment.",
-            pending_confirmation=pending_confirmation,
-        )
-
-    action, tool, args, reply = _parse_model_response(data)
-
-    # ---- "reply": conversational turn, no tool involved --------------
-    if action == "reply":
-        return TurnResult(reply=reply, pending_confirmation=None)
-
-    spec = TOOLS[tool]
-
-    # ---- "stage": propose a write action, do not execute it ----------
-    if action == "stage":
-        if not spec.requires_confirmation:
-            # A read tool never needs staging -- treat this as the model
-            # being confused and just run it directly instead of blocking
-            # a harmless read behind a pointless confirmation step.
-            action = "call_tool"
-        else:
-            try:
-                _validate_required_params(tool, args)
-                coerced = _coerce_args(tool, args)
-            except ToolError as exc:
-                return TurnResult(reply=str(exc), pending_confirmation=None)
-            try:
-                summary = summarize_for_confirmation(tool, args)
-            except (KeyError, TypeError):
-                summary = reply  # fall back to the model's own phrasing
-            return TurnResult(
-                reply=summary,
-                pending_confirmation={"tool": tool, "args": coerced_to_jsonable(coerced)},
-            )
-
-    # ---- "call_tool" -----------------------------------------------------
-    if spec.requires_confirmation:
-        # Defense in depth (see module docstring): only actually execute a
-        # write tool if THIS turn's pending_confirmation says so, and use
-        # the args that were staged, not whatever the model just returned.
-        if not pending_confirmation or pending_confirmation.get("tool") != tool:
-            try:
-                _validate_required_params(tool, args)
-                coerced = _coerce_args(tool, args)
-            except ToolError as exc:
-                return TurnResult(reply=str(exc), pending_confirmation=None)
-            try:
-                summary = summarize_for_confirmation(tool, args)
-            except (KeyError, TypeError):
-                summary = reply
-            return TurnResult(
-                reply=summary,
-                pending_confirmation={"tool": tool, "args": coerced_to_jsonable(coerced)},
-            )
-        args = pending_confirmation["args"]
-
-    try:
-        result = _run_tool(service, actor, tool, args)
-    except ToolError as exc:
-        return TurnResult(reply=str(exc), pending_confirmation=None, tool_called=tool)
-    except Exception:  # noqa: BLE001 - never leak an internal error to the employee
-        logger.exception("Leave Agent: unexpected error running tool %s", tool)
-        return TurnResult(
-            reply="Something went wrong completing that -- please try again.",
-            pending_confirmation=None,
-            tool_called=tool,
-        )
-
-    return TurnResult(
-        reply=reply,
-        pending_confirmation=None,
-        tool_called=tool,
-        tool_result=result,
+    system_prompt = prompts.build_system_prompt()
+    turn_prompt = prompts.build_turn_prompt(
+        user_message,
+        history=state.history_for_prompt(),
+        pending_confirmation=state.pending_for_prompt(),
     )
 
+    try:
+        raw = await chat_provider.complete_json(
+            system_prompt=system_prompt,
+            user_prompt=turn_prompt,
+            temperature=0.2,  # low — this is a routing/extraction task, not creative writing
+        )
+    except ChatProviderError:
+        logger.exception("Leave Agent: chat provider call failed")
+        state.add_turn("employee", user_message, clock=clock)
+        return _reply(state, _FALLBACK_UNAVAILABLE, clock=clock)
 
-def coerced_to_jsonable(args: dict[str, Any]) -> dict[str, Any]:
-    """Convert coerced Python types (date) back to JSON-safe strings before
-    stashing `args` in `pending_confirmation`, which round-trips through the
-    caller's session store and back into prompts.build_turn_prompt's
-    `json.dumps(...)` call next turn."""
-    return {k: (v.isoformat() if isinstance(v, date) else v) for k, v in args.items()}
+    state.add_turn("employee", user_message, clock=clock)
+
+    parsed = _validate_response(raw)
+    if parsed is None:
+        logger.warning("Leave Agent: model response failed schema validation: %r", raw)
+        return _reply(state, _FALLBACK_UNPARSEABLE, clock=clock, raw_model_action=raw)
+
+    action, model_reply, tool_name, raw_args = parsed
+
+    if action == "reply":
+        return _reply(state, model_reply, clock=clock, raw_model_action=raw)
+
+    if action == "stage":
+        return await _handle_stage(
+            state, service, actor, tool_name, raw_args, clock=clock, raw_model_action=raw
+        )
+
+    # action == "call_tool"
+    spec = TOOLS.get(tool_name)
+    if spec is None:
+        logger.warning("Leave Agent: model called unknown tool %r", tool_name)
+        return _reply(state, _FALLBACK_UNPARSEABLE, clock=clock, raw_model_action=raw)
+
+    if spec.requires_confirmation:
+        return await _handle_confirmed_write(
+            state, service, actor, tool_name, raw_args, clock=clock, raw_model_action=raw
+        )
+
+    return await _handle_read(state, service, actor, tool_name, raw_args, clock=clock, raw_model_action=raw)
+
+
+# ---- per-branch handlers (kept small and separate so each failure mode is
+#      one clearly named function, not a long if/elif chain repeating the
+#      same "record turn + build result" plumbing) --------------------------
+
+
+def _reply(
+    state: LeaveAgentState,
+    text: str,
+    *,
+    clock: Clock,
+    tool_called: str | None = None,
+    tool_result: dict[str, Any] | None = None,
+    raw_model_action: dict[str, Any] | None = None,
+) -> AgentTurnResult:
+    """Record the agent's turn and build the result — the one place this
+    "append history, then return" pairing happens, instead of repeated
+    inline at every call site."""
+    state.add_turn("agent", text, clock=clock)
+    return AgentTurnResult(reply=text, tool_called=tool_called, tool_result=tool_result, raw_model_action=raw_model_action)
+
+
+async def _handle_stage(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    tool_name: str,
+    raw_args: dict,
+    *,
+    clock: Clock,
+    raw_model_action: dict,
+) -> AgentTurnResult:
+    """Validate + stage a proposed write action.
+
+    For `submit_leave_request` this runs a deterministic preflight against
+    the employee's real balance BEFORE anything is staged or confirmed —
+    so "not enough balance" is surfaced the moment the employee gives
+    dates, never after a confirmation the service would reject anyway.
+    """
+    spec = TOOLS.get(tool_name)
+    if spec is None or not spec.requires_confirmation:
+        logger.warning("Leave Agent: model staged invalid tool %r", tool_name)
+        return _reply(state, _FALLBACK_UNPARSEABLE, clock=clock, raw_model_action=raw_model_action)
+
+    try:
+        canonical = canonical_args(tool_name, raw_args)
+        if tool_name == "submit_leave_request":
+            preflight_submit(service, actor, **canonical)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock, raw_model_action=raw_model_action)
+
+    # Deterministic summary, not the model's own phrasing for this turn —
+    # what the employee is asked to confirm must never depend solely on
+    # the model getting the wording right.
+    summary = prompts.summarize_for_confirmation(tool_name, canonical)
+    state.stage(tool_name, canonical, summary, clock=clock)
+    return _reply(state, summary, clock=clock, raw_model_action=raw_model_action)
+
+
+async def _handle_read(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    tool_name: str,
+    raw_args: dict,
+    *,
+    clock: Clock,
+    raw_model_action: dict,
+) -> AgentTurnResult:
+    """Validate + execute a read tool. Reply is always the deterministic
+    formatting of the actual result — never the model's pre-execution text."""
+    spec = TOOLS[tool_name]
+    try:
+        args = validate_args(tool_name, raw_args)
+        result = spec.handler(service, actor, **args)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock, tool_called=tool_name, raw_model_action=raw_model_action)
+
+    text = format_tool_result(tool_name, result)
+    return _reply(state, text, clock=clock, tool_called=tool_name, tool_result=result, raw_model_action=raw_model_action)
+
+
+async def _handle_confirmed_write(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    tool_name: str,
+    raw_args: dict,
+    *,
+    clock: Clock,
+    raw_model_action: dict,
+) -> AgentTurnResult:
+    """Execute a write tool — ONLY if it exactly matches a currently staged,
+    unexpired confirmation. This is what actually enforces the confirmation
+    gate: a real code condition, not something the prompt merely asks the
+    model to respect (02-base-architecture.md §3.2 — the agent cannot be
+    prompted into bypassing a server-side check).
+    """
+    try:
+        args = canonical_args(tool_name, raw_args)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock, raw_model_action=raw_model_action)
+
+    pending = state.pending_confirmation
+
+    if pending is not None and pending.tool == tool_name and state.pending_is_expired(clock=clock):
+        state.clear_pending(clock=clock)
+        return _reply(state, _FALLBACK_EXPIRED, clock=clock, raw_model_action=raw_model_action)
+
+    if pending is None or pending.tool != tool_name or pending.args != args:
+        logger.warning(
+            "Leave Agent: blocked call_tool for %r — no matching staged confirmation "
+            "(pending=%r, requested_args=%r)",
+            tool_name, pending, args,
+        )
+        state.clear_pending(clock=clock)
+        return _reply(state, _FALLBACK_NO_MATCH, clock=clock, raw_model_action=raw_model_action)
+
+    # Atomic claim: prevents two concurrent confirmations for this session
+    # (a double-submitted "yes", or a retried request) from both executing.
+    # Check-and-set with no `await` between them, so within this event loop
+    # it's a true single decision point.
+    if not state.begin_execution():
+        return _reply(state, _FALLBACK_ALREADY_RUNNING, clock=clock, raw_model_action=raw_model_action)
+
+    try:
+        spec = TOOLS[tool_name]
+        try:
+            result = spec.handler(service, actor, **validate_args(tool_name, raw_args))
+        except ToolError as err:
+            # Business-rule rejection (insufficient balance, not found, ...)
+            # — relay plainly, never report success from the model's text.
+            state.clear_pending(clock=clock)
+            return _reply(state, str(err), clock=clock, tool_called=tool_name, raw_model_action=raw_model_action)
+
+        state.clear_pending(clock=clock)
+        text = format_tool_result(tool_name, result)
+        return _reply(state, text, clock=clock, tool_called=tool_name, tool_result=result, raw_model_action=raw_model_action)
+    finally:
+        state.end_execution(clock=clock)
+
+
+def _validate_response(raw: Any) -> tuple[str, str, str | None, dict] | None:
+    """Validate the model's parsed JSON against the expected top-level shape.
+
+    (Per-tool argument validation happens separately, in tools.py, via
+    validate_args/canonical_args — this only checks the envelope: a valid
+    action, a non-empty reply, and a known tool name where one is required.)
+    """
+    if not isinstance(raw, dict):
+        return None
+    action = raw.get("action")
+    reply_text = raw.get("reply")
+    tool_name = raw.get("tool")
+    args = raw.get("args", {})
+
+    if action not in _VALID_ACTIONS:
+        return None
+    if not isinstance(reply_text, str) or not reply_text.strip():
+        return None
+    if action in ("stage", "call_tool"):
+        if not isinstance(tool_name, str) or tool_name not in TOOLS:
+            return None
+    if not isinstance(args, dict):
+        return None
+
+    return action, reply_text, tool_name, args
