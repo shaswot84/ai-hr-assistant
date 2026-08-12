@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.evaluation.resume_structuring import StructuredResume
 from app.model_gateway.ollama import OllamaChatProvider
 from app.model_gateway.provider import ChatProviderError
 
@@ -35,7 +36,7 @@ Description:
 
 RESUME TEXT (raw-extracted, may have imperfect spacing/line breaks — look past formatting artifacts to the content):
 {resume_text}
-
+{structured_context}
 Return a single JSON object with exactly this shape:
 {{
   "matchScore": number,                 // 0-100, overall fit for THIS job
@@ -62,7 +63,42 @@ Rules:
 - Ground every claim in the resume text. Do not fabricate skills or experience.
 - "weaknesses" must be specific gaps against THIS job's requirements, not generic writing critiques.
 - "candidateProfile" fields must be copied verbatim from the resume text, never invented; use "" for anything not present.
+- If verified structured data is provided above, use its total-years-of-experience figure for the "Experience Level" factor instead of estimating your own from the raw text.
 - Output raw JSON only."""
+
+
+def _format_structured_context(structured: StructuredResume | None) -> str:
+    """Render extracted structured facts as prompt context, or "" if none available.
+
+    Keeps `score_resume` grounded in the deterministically-computed years of
+    experience and parsed work/education history from the separate
+    structuring step, rather than having it re-derive those facts itself
+    from the raw resume text each time.
+    """
+    if structured is None or (not structured.work_experience and not structured.education):
+        return ""
+
+    lines = [
+        "",
+        (
+            "VERIFIED STRUCTURED DATA (extracted separately from this resume — trust "
+            "this over your own reading of the raw text for experience level and dates):"
+        ),
+        f"Total years of experience (computed from work history dates): {structured.total_years_experience:g}",
+    ]
+    if structured.work_experience:
+        lines.append("Work history:")
+        for entry in structured.work_experience:
+            span = f"{entry.start_date or '?'} - {entry.end_date or '?'}"
+            lines.append(f"- {entry.title or 'Unknown title'} at {entry.company or 'Unknown company'} ({span})")
+    if structured.education:
+        lines.append("Education:")
+        for entry in structured.education:
+            lines.append(
+                f"- {entry.degree or 'Unknown degree'}, {entry.institution or 'Unknown institution'} "
+                f"({entry.graduation_year or '?'})"
+            )
+    return "\n".join(lines)
 
 
 @dataclass
@@ -172,6 +208,7 @@ async def score_resume(
     resume_text: str,
     job_title: str,
     job_description: str,
+    structured: StructuredResume | None = None,
     system_prompt: str | None = None,
     api_base: str | None = None,
     model: str | None = None,
@@ -179,6 +216,10 @@ async def score_resume(
 ) -> ScoreResult:
     """Screen a resume against a job using the Ollama hosted API.
 
+    ``structured`` is the separately-extracted work/education/skills data
+    (see `evaluation.resume_structuring`); when given, its computed years of
+    experience and parsed history ground the "Experience Level" factor
+    instead of the model re-deriving those facts from raw text each time.
     ``system_prompt`` lets a manager override the model instructions (stored in
     settings); when None, the default constant is used. ``api_base``/``model``/
     ``api_key`` are the manager-editable LLM connection settings (also stored
@@ -189,7 +230,7 @@ async def score_resume(
     provider = OllamaChatProvider(api_base=api_base, model=model, api_key=api_key)
     if provider.is_configured():
         return await _score_with_llm(
-            provider, resume_text, job_title, job_description, system_prompt
+            provider, resume_text, job_title, job_description, structured, system_prompt
         )
     return _score_deterministic(resume_text, job_title, job_description)
 
@@ -199,6 +240,7 @@ async def _score_with_llm(
     resume_text: str,
     job_title: str,
     job_description: str,
+    structured: StructuredResume | None,
     system_prompt: str | None,
 ) -> ScoreResult:
     """Screen the resume via the Ollama chat provider, falling back to the deterministic scorer."""
@@ -206,6 +248,7 @@ async def _score_with_llm(
         job_title=job_title,
         job_description=job_description or "Not provided.",
         resume_text=resume_text[:12000],
+        structured_context=_format_structured_context(structured),
     )
     try:
         data = await provider.complete_json(
