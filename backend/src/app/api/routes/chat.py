@@ -72,7 +72,7 @@ _TERMINAL_NODES = ("knowledge", "leave", "recruitment", "clarify")
 # routing/rewrite prompts stay within budget no matter how long the
 # individual messages are. The sub-agent prompts trim further by their own
 # budgets (see agents/context.py).
-_HISTORY_TOKEN_BUDGET = 5000
+_HISTORY_TOKEN_BUDGET = 8000
 
 
 def _embedder() -> Embedder:

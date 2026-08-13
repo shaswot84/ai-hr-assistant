@@ -115,6 +115,17 @@ function MessageBubble({ message }: { message: ViewMessage }) {
   }
 
   const lowConfidence = message.meta?.low_confidence ?? false;
+  // Confidence 0.0 means "not applicable" (leave/recruitment/clarify answers
+  // have no retrieval confidence) — never render a "confidence 0.00" badge.
+  const confidence = message.meta?.confidence ?? 0;
+  // Only render an agent badge for agents we know about — "unknown" (or an
+  // old persisted label) must never surface as a badge.
+  const agentLabel = message.meta?.agent ? AGENT_LABELS[message.meta.agent] : undefined;
+  const showMeta =
+    confidence > 0 ||
+    lowConfidence ||
+    message.meta?.safety === "FLAGGED_FOR_REVIEW" ||
+    agentLabel !== undefined;
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] rounded-2xl rounded-bl-sm border border-zinc-200 bg-white px-4 py-3 shadow-sm">
@@ -130,11 +141,11 @@ function MessageBubble({ message }: { message: ViewMessage }) {
           />
         )}
         <CitationChips citations={message.citations ?? []} />
-        {message.meta && (message.meta.confidence !== undefined || message.meta.agent) && (
+        {showMeta && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {message.meta.confidence !== undefined && (
+            {confidence > 0 && (
               <span className="badge bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-600/20">
-                confidence {message.meta.confidence.toFixed(2)}
+                confidence {confidence.toFixed(2)}
               </span>
             )}
             {lowConfidence && (
@@ -142,7 +153,7 @@ function MessageBubble({ message }: { message: ViewMessage }) {
                 low confidence
               </span>
             )}
-            {message.meta.safety === "FLAGGED_FOR_REVIEW" && (
+            {message.meta?.safety === "FLAGGED_FOR_REVIEW" && (
               <span
                 title="Some claims could not be verified against the sources."
                 className="badge bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20"
@@ -150,9 +161,9 @@ function MessageBubble({ message }: { message: ViewMessage }) {
                 claims flagged for review
               </span>
             )}
-            {message.meta.agent && (
+            {agentLabel && (
               <span className="badge bg-zinc-100 text-zinc-600 ring-1 ring-inset ring-zinc-500/20">
-                {AGENT_LABELS[message.meta.agent] ?? message.meta.agent}
+                {agentLabel}
               </span>
             )}
           </div>

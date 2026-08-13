@@ -573,9 +573,11 @@ async def test_hr_no_pending_requests_reply(db, manager_context, employee_contex
 
 
 @pytest.mark.asyncio
-async def test_hr_list_all_requests_tool(db, manager_context, employee_context):
-    """The manager's list_leave_requests read tool shows employees' requests
-    with statuses via the model path."""
+async def test_hr_list_all_requests_deterministic(db, manager_context, employee_context):
+    """The manager's list_leave_requests read tool is executed deterministically
+    — "see all requests" never reaches the model, so a model that would pick
+    the near-identical list_my_leave_requests cannot derail it into the
+    "you have no leave of your own" refusal."""
     svc = LeaveService(db)
     request = _seed_pending_request(svc, manager_context, employee_context)
     state = _state(manager_context)
@@ -596,10 +598,80 @@ async def test_hr_list_all_requests_tool(db, manager_context, employee_context):
         user_message="show me all leave requests",
     )
 
-    assert provider.calls == 1
+    assert provider.calls == 0
     assert result.tool_called == "list_leave_requests"
     assert request.request_number in result.reply
     assert "PENDING" in result.reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "can i see all the leave request?",
+        "show me all leave requests",
+        "list every leave request",
+        "i want to view the requests",
+    ],
+)
+async def test_hr_list_all_requests_phrasing_is_deterministic(
+    db, manager_context, employee_context, message
+):
+    """Every request-listing phrasing for an administrator is answered
+    deterministically from the manager tool — the model is never consulted
+    and the "you have no leave of your own" refusal never appears."""
+    svc = LeaveService(db)
+    request = _seed_pending_request(svc, manager_context, employee_context)
+    state = _state(manager_context)
+    provider = FakeChatProvider({"reply": "x", "action": "reply", "tool": None, "args": {}})
+
+    result = await handle_turn(
+        actor=manager_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message=message,
+    )
+
+    assert provider.calls == 0
+    assert result.tool_called == "list_leave_requests"
+    assert request.request_number in result.reply
+    assert "PENDING" in result.reply
+    assert "HR administrator" not in result.reply
+
+
+@pytest.mark.asyncio
+async def test_hr_list_all_recovers_when_model_picks_self_service_tool(
+    db, manager_context, employee_context
+):
+    """A phrasing the interception does not claim (no view/all word) but that
+    is still a request-listing ask: if the model calls the self-service
+    list_my_leave_requests, the role-gate rejection is recovered into the
+    manager list instead of the "you have no leave of your own" dead end."""
+    svc = LeaveService(db)
+    request = _seed_pending_request(svc, manager_context, employee_context)
+    state = _state(manager_context)
+    provider = FakeChatProvider(
+        {
+            "reply": "Listing.",
+            "action": "call_tool",
+            "tool": "list_my_leave_requests",
+            "args": {},
+        }
+    )
+
+    result = await handle_turn(
+        actor=manager_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="what requests are there",
+    )
+
+    assert provider.calls == 1
+    assert result.tool_called == "list_leave_requests"
+    assert request.request_number in result.reply
+    assert "HR administrator" not in result.reply
 
 
 @pytest.mark.asyncio
@@ -715,7 +787,9 @@ async def test_hr_cannot_use_self_service_tools(db, manager_context, employee_co
                 "args": {},
             }
         ),
-        user_message="show my leave requests",
+        # A balance ask is not a listing ask, so the self-service tool is not
+        # recovered into list_leave_requests — the gate's refusal stands.
+        user_message="show my leave balance",
     )
     assert "HR administrator" in mine.reply
 

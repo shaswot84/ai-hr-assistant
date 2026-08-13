@@ -2,14 +2,16 @@
 
 Structure::
 
-    START -> route --conditional--> knowledge | leave | recruitment | clarify
+    START -> route --conditional--> knowledge | leave | recruitment | clarify | recap
     each sub-agent -> END
 
 The route node classifies the current message (with conversation context)
 into one of four routes; a conditional edge dispatches to the matching
 sub-agent node; each sub-agent appends its assistant reply to ``messages``
 and records structured output (answer, citations, confidence, agent) for the
-chat layer to persist.
+chat layer to persist. Thread-history questions ("what is this chat about?")
+are pre-routed deterministically — to the recap node for generic recaps,
+to the leave agent for leave-scoped ones.
 
 The graph is built per request with a request-scoped ``KnowledgeService``
 (the same shape as the search endpoints), so it holds no state between
@@ -37,6 +39,7 @@ from app.agents.leave_agent.node import make_leave_node
 from app.agents.leave_agent.state import SessionStore
 from app.agents.recruitment_agent.agent import make_recruitment_node
 from app.agents.supervisor.clarify import make_clarify_node
+from app.agents.supervisor.recap import make_recap_node, route_history_question
 from app.agents.supervisor.route_intent import route_intent
 from app.agents.supervisor.state import SupervisorState
 from app.capabilities.leave import LeaveService
@@ -51,6 +54,7 @@ ROUTE_TO_NODE = {
     "leave": "leave",
     "recruitment": "recruitment",
     "clarify": "clarify",
+    "recap": "recap",
 }
 
 _LEAVE_STUB = (
@@ -60,9 +64,18 @@ _LEAVE_STUB = (
 
 
 def make_route_node(llm: LLM | None):
-    """Classify the current message into a route (LLM + keyword fallback)."""
+    """Classify the current message into a route (LLM + keyword fallback).
+
+    Thread-history questions are pre-routed deterministically, before the
+    LLM is ever consulted: the LLM (and the keyword fallback) have no
+    notion of "this conversation", so without the pre-check those messages
+    land in clarify and the thread recap is lost.
+    """
 
     async def route_node(state: SupervisorState) -> dict:
+        deterministic = route_history_question(state["current_query"])
+        if deterministic is not None:
+            return {"route": deterministic}
         route = await route_intent(
             llm, state["current_query"], state.get("messages", [])
         )
@@ -151,8 +164,9 @@ def build_supervisor_graph(
         builder.add_node("leave", _leave_stub_node())
     builder.add_node("recruitment", make_recruitment_node())
     builder.add_node("clarify", make_clarify_node())
+    builder.add_node("recap", make_recap_node(llm))
     builder.add_edge(START, "route")
     builder.add_conditional_edges("route", _select_route, ROUTE_TO_NODE)
-    for node in ("knowledge", "leave", "recruitment", "clarify"):
+    for node in ("knowledge", "leave", "recruitment", "clarify", "recap"):
         builder.add_edge(node, END)
     return builder.compile()

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from app.agents.context import is_history_question
 from app.agents.leave_agent import prompts
 from app.agents.leave_agent.dates import extract_dates, format_short, resolve_end_date
 from app.agents.leave_agent.state import DraftRequest, LeaveAgentState
@@ -25,7 +26,9 @@ from app.agents.leave_agent.tools import (
     ToolError,
     canonical_args,
     format_tool_result,
+    get_leave_balance,
     hr_pending_request_lines,
+    list_leave_requests,
     mentioned_leave_type,
     pending_request_lines,
     preflight_cancel,
@@ -106,7 +109,7 @@ async def handle_turn(
         raw = await chat_provider.complete_json(
             system_prompt=system_prompt,
             user_prompt=turn_prompt,
-            temperature=0.2,  # low — this is a routing/extraction task, not creative writing
+            temperature=0.0,  # low — this is a routing/extraction task, not creative writing
         )
     except ChatProviderError:
         logger.exception("Leave Agent: chat provider call failed")
@@ -191,6 +194,53 @@ _DRAFT_CANCEL_WORDS = (
 )
 
 
+# ---- deterministic conversation-recap flow ---------------------------------
+#
+# "what leave did i apply above?" / "what did we discuss?" are answered from
+# the thread's OWN history + workflow state — never from the DB. A recap is
+# about THIS conversation: what was said here, the in-progress draft, and
+# any staged action awaiting confirmation. The model's
+# list_my_leave_requests remains the all-history DB view; this interception
+# never calls a tool.
+
+_RECAP_MAX_TURNS = 6
+_RECAP_LINE_LIMIT = 160
+
+
+def _recap_reply(state: LeaveAgentState, *, clock: Clock) -> AgentTurnResult:
+    """A deterministic recap of this thread: recent turns + workflow state.
+
+    Built entirely from ``state`` (history, draft, pending confirmation) —
+    no DB access, no tools, no model. The transcript tail is the truth
+    about what was said here; the workflow facts are the truth about what
+    is still in flight.
+    """
+    if not state.history and state.draft is None and state.pending_confirmation is None:
+        return _reply(
+            state, "We haven't discussed anything in this chat yet — how can I help?", clock=clock
+        )
+
+    lines: list[str] = ["Here's what we've discussed in this chat:"]
+    for turn in state.history[-_RECAP_MAX_TURNS:]:
+        speaker = "You" if turn.role == "employee" else "Assistant"
+        content = turn.content.strip()
+        if len(content) > _RECAP_LINE_LIMIT:
+            content = content[:_RECAP_LINE_LIMIT] + "…"
+        lines.append(f"- {speaker}: {content}")
+
+    if state.pending_confirmation is not None:
+        lines.append(f"Awaiting your confirmation: {state.pending_confirmation.summary}")
+    if state.draft is not None:
+        parts = [state.draft.leave_type_name or "leave request"]
+        if state.draft.start_date is not None:
+            parts.append(f"starting {format_short(state.draft.start_date)}")
+        if state.draft.end_date is not None:
+            parts.append(f"to {format_short(state.draft.end_date)}")
+        lines.append(f"In progress: {' '.join(parts)} — not submitted yet.")
+
+    return _reply(state, "\n".join(lines), clock=clock)
+
+
 def _draft_canonical(draft: DraftRequest) -> dict:
     """Draft -> the JSON-safe canonical args shape of submit_leave_request,
     matching tools.canonical_args (mode="json") so the staged-vs-confirmed
@@ -237,6 +287,31 @@ def _stage_draft(
     return _reply(state, summary, clock=clock)
 
 
+_BALANCE_ASK_WORDS = ("balance", "remaining", "left", "how much", "do i have")
+
+
+def _is_balance_ask(user_message: str) -> bool:
+    """Is this employee message asking for their OWN leave balance?
+
+    Balance words ("balance", "remaining", "left", "how much", "do i have")
+    count at face value unless the message is about requests; the bare
+    "get my leave" (no "request") is a balance ask too, never a request
+    start. Never true for request/listing asks ("show my leave requests",
+    "can i get leave?").
+    """
+    lowered = user_message.lower()
+    if "request" in lowered:
+        return False
+    # Someone else's balance is an HR-only view, never a self-balance ask:
+    # "show me someone else's balance" must keep routing to the manager tool
+    # (whose role gate refuses it), not read the employee's OWN balance.
+    if "someone else" in lowered or "another" in lowered or "other employee" in lowered or "their" in lowered:
+        return False
+    if any(word in lowered for word in _BALANCE_ASK_WORDS):
+        return True
+    return "get" in lowered and "my leave" in lowered
+
+
 def _intercept_draft_turn(
     state: LeaveAgentState,
     service: LeaveService,
@@ -270,6 +345,28 @@ def _intercept_draft_turn(
         # ("cancel the one from last monday") must not read as "start the
         # application", and the pivot clears any in-progress draft there.
         return None
+
+    if is_history_question(user_message):
+        # "what leave did i apply above?" — answered from this thread's own
+        # history + workflow state, never from the DB or the model.
+        return _recap_reply(state, clock=clock)
+
+    if actor.coarse_role == "EMPLOYEE" and _is_balance_ask(user_message):
+        # "get me leave balance" / "get my leave" / "how much leave do i
+        # have" — answered from the employee's REAL balance deterministically.
+        # The model is never asked to route between the balance/request/list
+        # tools, and a balance question can never be mistaken for a request
+        # start ("Which leave type...?").
+        mentioned = mentioned_leave_type(service, user_message)
+        try:
+            result = get_leave_balance(service, actor, leave_type_name=mentioned)
+        except ToolError as err:
+            return _reply(state, str(err), clock=clock)
+        text = format_tool_result("get_leave_balance", result)
+        return _reply(
+            state, text, clock=clock,
+            tool_called="get_leave_balance", tool_result=result,
+        )
 
     today = clock.today()
     start, end = extract_dates(user_message, today)
@@ -437,6 +534,37 @@ def _intercept_employee_cancel(
     )
 
 
+_HR_LIST_VIEW_WORDS = ("see", "show", "list", "view")
+_HR_LIST_ALL_WORDS = ("all", "every")
+
+
+def _is_hr_list_all_intent(user_message: str) -> bool:
+    """Is this HR message asking to SEE the leave requests (all of them)?
+
+    Conservative by design — only a clear request-list framing counts: a
+    view word ("see", "show", "list", "view") or an "all"/"every"
+    qualifier together with the word "request". Balance, type, pending,
+    decide/cancel, and single-reference messages are excluded so the
+    interception never hijacks a flow that belongs elsewhere.
+    """
+    lowered = user_message.lower()
+    if not _has_request_context(lowered):
+        return False
+    if "balance" in lowered or "type" in lowered or "pending" in lowered:
+        return False
+    if _extract_reference(lowered) is not None:
+        return False
+    if any(word in lowered for word in _CANCEL_INTENT_WORDS) or any(
+        word in lowered for word in _DECIDE_INTENT_WORDS
+    ) or "approve" in lowered:
+        return False
+    if "request" not in lowered:
+        return False
+    return any(word in lowered for word in _HR_LIST_VIEW_WORDS) or any(
+        word in lowered for word in _HR_LIST_ALL_WORDS
+    )
+
+
 def _intercept_hr_reference_write(
     state: LeaveAgentState,
     service: LeaveService,
@@ -463,11 +591,14 @@ def _intercept_hr_reference_write(
     cancel = any(word in lowered for word in _CANCEL_INTENT_WORDS)
     approve = "approve" in lowered
     reject = any(word in lowered for word in _DECIDE_INTENT_WORDS)
-    # An explicit "pending" ask is answered deterministically; a general
-    # "show me all requests" goes to the model's list_leave_requests tool,
-    # which also shows decided ones.
+    # Explicit "pending" asks and general "see all requests" asks are both
+    # answered deterministically — a listing is never left to the model to
+    # pick between the near-identical list_leave_requests and
+    # list_my_leave_requests tools (an administrator who asks to see the
+    # requests must see them, not hear that they have no leave of their own).
     listing = "pending" in lowered
-    if not approve and not reject and not listing:
+    list_all = _is_hr_list_all_intent(lowered)
+    if not approve and not reject and not listing and not list_all:
         if cancel:
             # Cancelling is the employee's own action — an administrator
             # cannot cancel requests, not even by reference.
@@ -489,6 +620,20 @@ def _intercept_hr_reference_write(
 
     reference = _extract_reference(user_message)
     if reference is None:
+        if list_all:
+            # "see all requests" is a read view: the manager tool's full
+            # pipeline, pending and decided, formatted deterministically —
+            # the model never gets a chance to route it to a self-service
+            # tool and the role gate never fires its misleading refusal.
+            try:
+                result = list_leave_requests(service, actor)
+            except ToolError as err:
+                return _reply(state, str(err), clock=clock)
+            text = format_tool_result("list_leave_requests", result)
+            return _reply(
+                state, text, clock=clock,
+                tool_called="list_leave_requests", tool_result=result,
+            )
         try:
             lines = hr_pending_request_lines(service, actor)
         except ToolError as err:
@@ -588,6 +733,55 @@ async def _handle_stage(
     return _reply(state, summary, clock=clock, raw_model_action=raw_model_action)
 
 
+_HR_SELF_SERVICE_LIST_TOOLS = ("list_my_leave_requests", "list_leave_types")
+
+
+def _recover_hr_list_all(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    tool_name: str,
+    user_message: str,
+    *,
+    clock: Clock,
+    raw_model_action: dict,
+) -> AgentTurnResult | None:
+    """Turn a self-service role-gate rejection into the manager list.
+
+    The model can pick the near-identical list_my_leave_requests (or
+    list_leave_types) for an administrator's request-listing ask; the
+    self-service gate then rejects it with the "you have no leave of your
+    own" refusal. When the message really is a listing ask (request
+    context, no balance/type/pending/action/reference intent) the right
+    answer is the manager tool's full list — execute it instead.
+    """
+    if actor.coarse_role != "HR_ADMIN":
+        return None
+    if tool_name not in _HR_SELF_SERVICE_LIST_TOOLS:
+        return None
+    lowered = user_message.lower()
+    if not _has_request_context(lowered):
+        return None
+    if "balance" in lowered or "type" in lowered or "pending" in lowered:
+        return None
+    if any(word in lowered for word in _CANCEL_INTENT_WORDS) or any(
+        word in lowered for word in _DECIDE_INTENT_WORDS
+    ) or "approve" in lowered:
+        return None
+    if _extract_reference(lowered) is not None:
+        return None
+    try:
+        result = list_leave_requests(service, actor)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock, tool_called=tool_name, raw_model_action=raw_model_action)
+    text = format_tool_result("list_leave_requests", result)
+    return _reply(
+        state, text, clock=clock,
+        tool_called="list_leave_requests", tool_result=result,
+        raw_model_action=raw_model_action,
+    )
+
+
 async def _handle_read(
     state: LeaveAgentState,
     service: LeaveService,
@@ -607,10 +801,42 @@ async def _handle_read(
         args = validate_args(tool_name, raw_args)
         result = spec.handler(service, actor, **args)
     except ToolError as err:
+        # The model routed an administrator's "see all requests" ask to a
+        # self-service list tool whose role gate refuses it — recover by
+        # executing the manager tool instead of relaying the refusal.
+        recovered = _recover_hr_list_all(
+            state, service, actor, tool_name, user_message,
+            clock=clock, raw_model_action=raw_model_action,
+        )
+        if recovered is not None:
+            return recovered
         return _reply(state, str(err), clock=clock, tool_called=tool_name, raw_model_action=raw_model_action)
 
     logger.info("Leave Agent: executed read tool %s (args=%r)", tool_name, args)
+
+    if tool_name == "list_leave_types":
+        override = _list_types_reply_override(user_message)
+        if override is not None:
+            # The model fell back to list_leave_types on a message that is
+            # not a request start or a types question — the type dump would
+            # answer a question nobody asked. Ask what action instead.
+            return _reply(
+                state,
+                override,
+                clock=clock,
+                tool_called=tool_name,
+                tool_result=result,
+                raw_model_action=raw_model_action,
+            )
+
     text = format_tool_result(tool_name, result)
+
+    if tool_name == "list_leave_types" and _is_request_intent(user_message) and "type" not in user_message.lower():
+        # "can i get leave?" / "i want to apply for leave" — a request start
+        # without a named type. The model dumped the type list, but the list
+        # answers a question nobody asked: drop it and let the deterministic
+        # follow-up below ask "which type?" on its own.
+        text = ""
 
     # When the balance came back usable (>0) and the employee asked to
     # START a request, always ask for the dates — this must not depend on
@@ -625,7 +851,7 @@ async def _handle_read(
     # "available leave types only".
     follow_up = _request_follow_up(tool_name, result, user_message) or _model_question(model_reply)
     if follow_up:
-        text = f"{text}\n\n{follow_up}"
+        text = f"{text}\n\n{follow_up}" if text else follow_up
         candidates = _candidate_types(tool_name, result)
         if state.draft is None and candidates:
             state.set_draft(
@@ -635,12 +861,35 @@ async def _handle_read(
     return _reply(state, text, clock=clock, tool_called=tool_name, tool_result=result, raw_model_action=raw_model_action)
 
 
-_REQUEST_INTENT_WORDS = ("want", "would like", "request", "apply", "book", "take off", "need")
+_REQUEST_INTENT_WORDS = (
+    "want",
+    "would like",
+    "request",
+    "apply",
+    "book",
+    "take off",
+    "need",
+    "get",
+    "take",
+    "avail",
+)
 
 
 def _is_request_intent(user_message: str) -> bool:
     lowered = user_message.lower()
-    return any(word in lowered for word in _REQUEST_INTENT_WORDS)
+    # "avail" is a substring of "available" — "is annual leave available?"
+    # is a question about availability, never a request start. Only an
+    # unambiguous request verb keeps it a request intent. A balance ask
+    # ("get me leave balance", "get my leave") is never a request start
+    # either — it is answered from the balance, not by asking which type.
+    available_only = "available" in lowered and not any(
+        word in lowered for word in ("want", "would like", "apply", "request", "book")
+    )
+    return (
+        any(word in lowered for word in _REQUEST_INTENT_WORDS)
+        and not available_only
+        and not _is_balance_ask(user_message)
+    )
 
 
 def _usable_leave_types(result: Any) -> list[str]:
@@ -677,11 +926,15 @@ def _candidate_types(tool_name: str, result: Any) -> list[str]:
 
 def _request_follow_up(tool_name: str, result: Any, user_message: str) -> str | None:
     """Deterministic next step after a balance/type check for a request intent."""
-    if not _is_request_intent(user_message):
-        return None
+    lowered = user_message.lower()
     if tool_name == "get_leave_balance":
         usable = _usable_leave_types(result)
         if not usable:
+            return None
+        # "get"/"take"/"avail" etc. are request-intent words, but a balance
+        # QUESTION is not a request start — never ask for dates after a
+        # balance answer.
+        if any(word in lowered for word in ("balance", "remaining", "left", "how much", "do i have", "available")):
             return None
         names = ", ".join(usable)
         return (
@@ -691,8 +944,38 @@ def _request_follow_up(tool_name: str, result: Any, user_message: str) -> str | 
     if tool_name == "list_leave_types":
         if not result:
             return None
-        return "Which leave type would you like to take?"
+        if "type" in lowered:
+            # A direct question about types — the list itself is the answer.
+            return None
+        if _is_request_intent(user_message):
+            return "Which leave type would you like to take?"
     return None
+
+
+_LIST_TYPES_FALLBACK_REPLY = (
+    "I can help you check your leave balance, apply for leave, view your "
+    "requests, or cancel a pending request — what would you like to do?"
+)
+
+
+def _list_types_reply_override(user_message: str) -> str | None:
+    """Override text when the model used list_leave_types as a general
+    fallback for a message that is neither a request start nor a question
+    about types.
+
+    list_leave_types is the right tool only when the employee is clearly
+    opening a request without naming a type (the deterministic draft flow
+    then asks "which type?") or asking what types exist at all. Anything
+    else — an ambiguous message the model didn't know how to route — must
+    not be answered by dumping "Available leave types: ...": ask what
+    action they want instead.
+    """
+    lowered = user_message.lower()
+    if _is_request_intent(user_message):
+        return None
+    if "type" in lowered:
+        return None
+    return _LIST_TYPES_FALLBACK_REPLY
 
 
 def _model_question(model_reply: str | None) -> str | None:

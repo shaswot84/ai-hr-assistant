@@ -275,6 +275,237 @@ async def test_balance_check_opens_draft_for_request_intent(
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_message_does_not_fall_back_to_list_leave_types(
+    db, manager_context, employee_context
+):
+    """The model calling list_leave_types on an ambiguous message (not a
+    request start, not a types question) must NOT dump the type list —
+    ask what action the employee wants instead."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    state = _state(employee_context)
+    provider = FakeChatProvider(
+        {
+            "reply": "Let me pull up the leave types.",
+            "action": "call_tool",
+            "tool": "list_leave_types",
+            "args": {},
+        }
+    )
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="what should i do",
+    )
+
+    assert provider.calls == 1
+    assert "Available leave types:" not in result.reply
+    assert "what would you like to do" in result.reply
+    assert state.draft is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "can i get leave for next sunday",
+        "i want to take leave for next friday",
+        "can i avail leave for next monday",
+        "can i book leave for next thursday",
+    ],
+)
+async def test_new_request_intent_words_are_intercepted_without_model(
+    db, manager_context, employee_context, message
+):
+    """'get'/'take'/'avail'/'book' are request-intent words: a message with
+    one of them plus a relative date opens the draft deterministically —
+    the model is never called and list_leave_types is never dumped."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    state = _state(employee_context)
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message=message,
+    )
+
+    assert provider.calls == 0
+    assert state.draft is not None
+    assert state.draft.start_date is not None
+    assert "Available leave types:" not in result.reply
+
+
+@pytest.mark.asyncio
+async def test_balance_question_does_not_ask_for_dates(
+    db, manager_context, employee_context
+):
+    """A balance QUESTION ('how much can i take') is not a request start —
+    the balance is answered deterministically: no date question, no draft,
+    no model call, even though 'take'/'get' are request-intent words."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    state = _state(employee_context)
+    provider = FakeChatProvider(
+        {
+            "reply": "Checking.",
+            "action": "call_tool",
+            "tool": "get_leave_balance",
+            "args": {},
+        }
+    )
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="how much annual leave can i take",
+    )
+
+    assert provider.calls == 0
+    assert "Your leave balance:" in result.reply
+    assert "Annual Leave: 20.0 of 20.0 days remaining" in result.reply
+    assert "What dates would you like" not in result.reply
+    assert state.draft is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "get me leave balance",
+        "get my leave",
+        "what is my leave balance",
+    ],
+)
+async def test_balance_asks_are_answered_deterministically(
+    db, manager_context, employee_context, message
+):
+    """"get me leave balance" / "get my leave" list the employee's balance
+    deterministically — the model is never called and no draft opens, so a
+    balance ask can never be answered with a request-start question."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    state = _state(employee_context)
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message=message,
+    )
+
+    assert provider.calls == 0
+    assert result.tool_called == "get_leave_balance"
+    assert "Your leave balance:" in result.reply
+    assert "Annual Leave: 20.0 of 20.0 days remaining" in result.reply
+    assert "Which leave type" not in result.reply
+    assert state.draft is None
+
+
+@pytest.mark.asyncio
+async def test_specific_type_balance_ask_focuses_on_that_type(
+    db, manager_context, employee_context
+):
+    """"how much sick leave do i have" answers with only the named type's
+    balance, not the full grid."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    _create_leave_type(svc, manager_context, name="Sick Leave", default_days=Decimal(10))
+    state = _state(employee_context)
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="how much sick leave do i have",
+    )
+
+    assert provider.calls == 0
+    assert "Sick Leave: 10.0 of 10.0 days remaining" in result.reply
+    assert "Annual Leave" not in result.reply
+
+
+@pytest.mark.asyncio
+async def test_can_i_get_leave_asks_type_without_list_dump(
+    db, manager_context, employee_context
+):
+    """"can i get leave?" (request start, no type, no dates) is answered
+    with the type question alone — the raw 'Available leave types:' dump is
+    suppressed even when the model calls list_leave_types."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    _create_leave_type(svc, manager_context, name="Sick Leave")
+    state = _state(employee_context)
+    provider = FakeChatProvider(
+        {
+            "reply": "Let me pull up the leave types.",
+            "action": "call_tool",
+            "tool": "list_leave_types",
+            "args": {},
+        }
+    )
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="can i get leave?",
+    )
+
+    assert provider.calls == 1
+    assert "Available leave types:" not in result.reply
+    assert result.reply.startswith("Which leave type would you like to take?")
+    assert state.draft is not None
+    assert state.draft.leave_type_name is None
+
+
+@pytest.mark.asyncio
+async def test_types_question_list_is_the_answer_without_draft(
+    db, manager_context, employee_context
+):
+    """A direct question about types is answered by the list itself — no
+    'which type' follow-up, no draft."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    _create_leave_type(svc, manager_context, name="Sick Leave")
+    state = _state(employee_context)
+    provider = FakeChatProvider(
+        {
+            "reply": "Here are the types.",
+            "action": "call_tool",
+            "tool": "list_leave_types",
+            "args": {},
+        }
+    )
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="which leave types are there",
+    )
+
+    assert provider.calls == 1
+    assert "Available leave types:" in result.reply
+    assert "Which leave type would you like to take?" not in result.reply
+    assert state.draft is None
+
+
+@pytest.mark.asyncio
 async def test_no_dates_no_draft_falls_through_to_model(
     db, manager_context, employee_context
 ):
@@ -328,8 +559,7 @@ async def test_list_leave_types_for_request_intent_opens_draft_and_asks_type(
     )
 
     assert provider.calls == 1
-    assert "Available leave types:" in result.reply
-    assert "Annual Leave" in result.reply
+    assert "Available leave types:" not in result.reply
     assert "Which leave type would you like to take?" in result.reply
     assert state.draft is not None
     assert state.draft.leave_type_name is None
