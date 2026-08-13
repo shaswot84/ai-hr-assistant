@@ -31,6 +31,9 @@ class SupervisorState(TypedDict, total=False):
     current_query: str
     # knowledge | leave | recruitment | clarify — set by the route node.
     route: str
+    # Durable conversation key (uuid str) the chat layer sets per turn, so
+    # sub-agents like leave can key their per-conversation session memory.
+    conversation_id: str
     # Knowledge agent outputs: retrieval evidence + the final reply.
     knowledge_result: KnowledgeResult | None
     # The assistant reply text (also the last message in ``messages``).

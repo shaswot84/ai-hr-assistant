@@ -9,9 +9,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agents.supervisor.graph import build_supervisor_graph
+from app.contracts.auth import UserContext
 from app.knowledge.contracts import Citation, KnowledgeResult
 from app.model_gateway.interfaces import LLM
 
@@ -232,3 +233,140 @@ async def test_history_is_preserved_and_passed_to_routing():
         "How much annual leave do I have?",
         "A grounded answer. [1]",
     ]
+
+
+@pytest.mark.asyncio
+async def test_history_question_routes_to_recap_node():
+    """A generic "what is this chat about?" is pre-routed to the recap node —
+    even when the LLM would have said clarify."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("We discussed the annual leave policy and your leave balance."),
+        knowledge_service=FakeKnowledgeService(make_result()),
+    )
+    history = [
+        HumanMessage(content="what is the annual leave policy?"),
+        AIMessage(content="Annual leave accrues at 1.5 days per month. [1]"),
+    ]
+
+    state = await graph.ainvoke(
+        {"messages": history, "current_query": "what is this chat about?"}
+    )
+
+    assert state["agent"] == "recap"
+    assert state["route"] == "recap"
+    assert state["answer"] == "We discussed the annual leave policy and your leave balance."
+    assert state["messages"][-1].content == state["answer"]
+    assert state["citations"] == []
+
+
+@pytest.mark.asyncio
+async def test_recap_without_llm_serves_transcript():
+    """No LLM -> the recap node serves the transcript itself (still answers)."""
+    graph = build_supervisor_graph(llm=None, knowledge_service=FakeKnowledgeService(make_result()))
+    history = [
+        HumanMessage(content="How much annual leave do I have?"),
+        AIMessage(content="You have 20 days."),
+    ]
+
+    state = await graph.ainvoke(
+        {"messages": history, "current_query": "what did we discuss"}
+    )
+
+    assert state["agent"] == "recap"
+    assert state["answer"].startswith("Here's what we discussed")
+    assert "How much annual leave do I have?" in state["answer"]
+
+
+@pytest.mark.asyncio
+async def test_leave_scoped_history_question_routes_to_leave():
+    """"what leave did i apply above" is leave-scoped: it goes to the leave
+    node (whose own deterministic interception answers it), not to recap."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    state = await graph.ainvoke({"messages": [], "current_query": "what leave did i apply above"})
+
+    assert state["route"] == "leave"
+    assert state["agent"] == "leave"
+
+
+@pytest.mark.asyncio
+async def test_history_question_does_not_override_cancel_intent():
+    """A cancel intent mentioning "above" still routes by normal routing —
+    the recap pre-check never swallows write intents."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("leave"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "cancel the leave request from above"}
+    )
+
+    assert state["route"] == "leave"
+
+
+class FakeChatProvider:
+    """A ChatProvider stub returning canned JSON (no real model)."""
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls = 0
+
+    async def complete_json(self, **kwargs) -> dict:
+        self.calls += 1
+        return self.payload
+
+
+def _leave_actor() -> UserContext:
+    return UserContext(
+        subject="emp-1",
+        email="emp@example.com",
+        display_name="Employee",
+        coarse_role="EMPLOYEE",
+    )
+
+
+@pytest.mark.asyncio
+async def test_wired_leave_node_runs_real_agent():
+    """When the chat layer wires leave deps, the graph runs the real agent."""
+    from app.agents.leave_agent.state import SessionStore
+
+    provider = FakeChatProvider(
+        {"reply": "You have 20 days of Annual Leave remaining.", "action": "reply", "tool": None, "args": {}}
+    )
+    graph = build_supervisor_graph(
+        llm=FakeLLM("leave"),
+        knowledge_service=FakeKnowledgeService(make_result()),
+        leave_actor=_leave_actor(),
+        leave_store=SessionStore(),
+        leave_chat_provider=provider,
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "my leave balance", "conversation_id": str(uuid.uuid4())}
+    )
+
+    assert provider.calls == 1
+    assert state["agent"] == "leave"
+    assert state["answer"] == "You have 20 days of Annual Leave remaining."
+    assert state["messages"][-1].content == state["answer"]
+    assert state["citations"] == []
+
+
+@pytest.mark.asyncio
+async def test_unwired_leave_node_stays_stub():
+    """Without leave deps the node is the honest stub (provider never called)."""
+    provider = FakeChatProvider(
+        {"reply": "should not be used", "action": "reply", "tool": None, "args": {}}
+    )
+    graph = build_supervisor_graph(
+        llm=FakeLLM("leave"),
+        knowledge_service=FakeKnowledgeService(make_result()),
+    )
+
+    state = await graph.ainvoke({"messages": [], "current_query": "my leave balance"})
+
+    assert "Leave" in state["answer"]
+    assert "chat" in state["answer"]
+    assert provider.calls == 0

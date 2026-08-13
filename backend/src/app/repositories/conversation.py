@@ -119,6 +119,35 @@ class ConversationRepo:
         rows.reverse()
         return rows
 
+    async def recent_messages_within_tokens(
+        self, conversation_id: uuid.UUID, token_budget: int
+    ) -> list[ConversationMessage]:
+        """The newest messages whose combined estimated size fits the budget.
+
+        Bounded by token count, not message count, using a deterministic
+        4-characters-per-token estimate (never a model call): a conversation
+        of short messages gets more turns of context, one of long messages
+        gets fewer, and the prompt stays within the budget regardless.
+        """
+        stmt = (
+            select(ConversationMessage)
+            .where(ConversationMessage.conversation_id == conversation_id)
+            .order_by(ConversationMessage.sequence_no.desc())
+            .limit(5000)
+        )
+        rows = list((await self._db.scalars(stmt)).all())
+
+        window: list[ConversationMessage] = []
+        used = 0
+        for row in rows:  # newest first
+            cost = max(1, len(row.content) // 4)
+            if window and used + cost > token_budget:
+                break
+            window.append(row)
+            used += cost
+        window.reverse()
+        return window
+
     async def _next_sequence(self, conversation_id: uuid.UUID) -> int:
         """The next sequence number for a conversation (max existing + 1)."""
         stmt = (

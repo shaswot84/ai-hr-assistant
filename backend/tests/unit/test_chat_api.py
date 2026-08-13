@@ -111,7 +111,7 @@ class ChatFakeLLM(LLM):
 fake_llm = ChatFakeLLM()
 
 
-def fake_graph_builder(session):
+def fake_graph_builder(session, user=None):
     """The graph the chat route runs: real supervisor graph, faked models."""
     from app.agents.supervisor.graph import build_supervisor_graph
 
@@ -119,7 +119,7 @@ def fake_graph_builder(session):
     return build_supervisor_graph(llm=fake_llm, knowledge_service=service)
 
 
-def low_confidence_graph_builder(session):
+def low_confidence_graph_builder(session, user=None):
     """A graph whose knowledge node sees no evidence."""
     from app.agents.supervisor.graph import build_supervisor_graph
 
@@ -138,7 +138,7 @@ class RepairingChatLLM(ChatFakeLLM):
         return await super().complete(system, user)
 
 
-def claim_tracking_graph_builder(session):
+def claim_tracking_graph_builder(session, user=None):
     """A graph whose answers lack markers, wired to the citation-coverage guard."""
     from app.agents.supervisor.graph import build_supervisor_graph
     from app.safety.output.guards.citations import CitationCoverageCheck
