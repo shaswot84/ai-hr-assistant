@@ -255,19 +255,23 @@ def preflight_submit(
     Called at stage time (agent.py `_handle_stage`) with the employee's
     real balance from `service.list_my_balance` — never from the model's
     words. Raises ToolError with the exact reason the request can't
-    succeed (insufficient balance, unknown type, broken date range), so
-    the employee learns "you have 0.0 days of Unpaid Leave" the moment
-    they give dates, instead of after confirming.
+    succeed (insufficient balance, unknown type, broken date range,
+    dates overlapping an existing request, or a consecutive run past the
+    type's cap), so the employee learns "you have 0.0 days of Unpaid
+    Leave" or "those dates overlap your existing Sick Leave request" the
+    moment they give dates, instead of after confirming.
     """
     _require_employee_access(actor)
     if end_date < start_date:
         raise ToolError("End date must be on or after the start date.")
     leave_type = _resolve_leave_type(service, leave_type_name)
-    if leave_type.max_consecutive_days and (end_date - start_date).days + 1 > leave_type.max_consecutive_days:
-        raise ToolError(
-            f"{leave_type.leave_name} cannot be taken for more than "
-            f"{leave_type.max_consecutive_days} consecutive day(s)."
-        )
+    _call_service(
+        service.check_request_conflicts,
+        actor,
+        leave_type_id=leave_type.leave_type_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
     rows = _call_service(service.list_my_balance, actor, start_date.year)
     row = next((r for r in rows if r["leave_type"].leave_type_id == leave_type.leave_type_id), None)

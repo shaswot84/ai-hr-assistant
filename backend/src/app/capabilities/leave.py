@@ -162,33 +162,12 @@ class LeaveService:
             raise ValueError("Leave cannot start in the past.")
 
         total_days = Decimal((end_date - start_date).days + 1)
-        if leave_type.max_consecutive_days and total_days > leave_type.max_consecutive_days:
-            raise ValueError(
-                f"{leave_type.leave_name} cannot be taken for more than "
-                f"{leave_type.max_consecutive_days} consecutive day(s)."
-            )
-
-        active_requests = self._active_requests(employee.employee_id)
-        overlap = self._overlapping_request(active_requests, start_date, end_date)
-        if overlap is not None:
-            raise ValueError(
-                f"Dates overlap your existing "
-                f"{self._leave_name_of(overlap)} request "
-                f"({overlap.start_date} to {overlap.end_date})."
-            )
-
-        if leave_type.max_consecutive_days:
-            run_days = self._consecutive_run_days(
-                [r for r in active_requests if r.leave_type_id == leave_type_id],
-                start_date,
-                end_date,
-            )
-            if run_days > leave_type.max_consecutive_days:
-                raise ValueError(
-                    f"{leave_type.leave_name} cannot be taken for more than "
-                    f"{leave_type.max_consecutive_days} consecutive day(s) "
-                    f"in one run."
-                )
+        self.check_request_conflicts(
+            actor,
+            leave_type_id=leave_type_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
         year = start_date.year
         balance = self._get_or_create_balance(employee.employee_id, leave_type, year)
@@ -257,6 +236,58 @@ class LeaveService:
         )
         self._db.commit()
         return request
+
+    def check_request_conflicts(
+        self,
+        actor: UserContext,
+        *,
+        leave_type_id: uuid.UUID,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        """Reject a request that collides with the employee's live leave:
+        dates already covered by an existing PENDING/APPROVED request (you
+        can't apply for the same day twice), or a consecutive same-type run
+        that exceeds the type's max-consecutive-days cap.
+
+        The same checks `request_leave` runs before creating a request;
+        exposed so the agent can fail fast at stage time, before asking the
+        employee to confirm a submission that could not succeed. Raises
+        ValueError with the same messages `request_leave` would.
+        """
+        employee = self._identity.get_employee(actor)
+        leave_type = self._leave_types.get(leave_type_id)
+        if leave_type is None or leave_type.status != "ACTIVE":
+            raise ValueError("Leave type not found.")
+
+        active_requests = self._active_requests(employee.employee_id)
+        total_days = Decimal((end_date - start_date).days + 1)
+        if leave_type.max_consecutive_days and total_days > leave_type.max_consecutive_days:
+            raise ValueError(
+                f"{leave_type.leave_name} cannot be taken for more than "
+                f"{leave_type.max_consecutive_days} consecutive day(s)."
+            )
+
+        overlap = self._overlapping_request(active_requests, start_date, end_date)
+        if overlap is not None:
+            raise ValueError(
+                f"Dates overlap your existing "
+                f"{self._leave_name_of(overlap)} request "
+                f"({overlap.start_date} to {overlap.end_date})."
+            )
+
+        if leave_type.max_consecutive_days:
+            run_days = self._consecutive_run_days(
+                [r for r in active_requests if r.leave_type_id == leave_type_id],
+                start_date,
+                end_date,
+            )
+            if run_days > leave_type.max_consecutive_days:
+                raise ValueError(
+                    f"{leave_type.leave_name} cannot be taken for more than "
+                    f"{leave_type.max_consecutive_days} consecutive day(s) "
+                    f"in one run."
+                )
 
     def list_my_requests(self, actor: UserContext) -> list[LeaveRequest]:
         """List the current employee's own leave requests."""

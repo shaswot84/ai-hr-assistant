@@ -14,22 +14,36 @@ chat layer to persist.
 The graph is built per request with a request-scoped ``KnowledgeService``
 (the same shape as the search endpoints), so it holds no state between
 turns — durability lives in the conversation tables.
+
+- The knowledge node runs the RAG pipeline (rewrite + retrieve + generate +
+  output safety) for the current query.
+- The leave node is the real Leave Agent dispatch loop when the chat layer
+  wires its deps (actor, session store, chat provider); otherwise an honest
+  stub until that wiring lands (tests / pre-wiring callers).
+- Recruitment and clarify remain placeholders.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
+from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import StreamWriter
 
 from app.agents.knowledge_agent.agent import stream_knowledge_turn
-from app.agents.leave_agent.agent import make_leave_node
+from app.agents.leave_agent.node import make_leave_node
+from app.agents.leave_agent.state import SessionStore
 from app.agents.recruitment_agent.agent import make_recruitment_node
 from app.agents.supervisor.clarify import make_clarify_node
 from app.agents.supervisor.route_intent import route_intent
 from app.agents.supervisor.state import SupervisorState
+from app.capabilities.leave import LeaveService
+from app.contracts.auth import UserContext
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.interfaces import LLM
+from app.model_gateway.provider import ChatProvider
 from app.safety.interfaces import ResponseGuard
 
 ROUTE_TO_NODE = {
@@ -38,6 +52,11 @@ ROUTE_TO_NODE = {
     "recruitment": "recruitment",
     "clarify": "clarify",
 }
+
+_LEAVE_STUB = (
+    "Leave isn't available in chat yet. Please use the **Leave** section in "
+    "the portal to request leave or check your balance."
+)
 
 
 def make_route_node(llm: LLM | None):
@@ -79,17 +98,57 @@ def _select_route(state: SupervisorState) -> str:
     return state.get("route", "knowledge")
 
 
+def _leave_stub_node() -> Callable[[SupervisorState, StreamWriter], dict]:
+    """Honest placeholder: leave exists as a capability, but the agent isn't
+    wired into this graph build (tests / pre-wiring callers)."""
+
+    async def leave_node(state: SupervisorState, writer: StreamWriter) -> dict:
+        writer({"type": "message", "text": _LEAVE_STUB})
+        return {
+            "messages": [AIMessage(content=_LEAVE_STUB)],
+            "knowledge_result": None,
+            "answer": _LEAVE_STUB,
+            "citations": [],
+            "confidence": 0.0,
+            "agent": "leave",
+        }
+
+    return leave_node
+
+
 def build_supervisor_graph(
     *,
     llm: LLM | None,
     knowledge_service: KnowledgeService,
     guard: ResponseGuard | None = None,
+    leave_actor: UserContext | None = None,
+    leave_store: SessionStore | None = None,
+    leave_chat_provider: ChatProvider | None = None,
+    leave_service: LeaveService | None = None,
 ) -> CompiledStateGraph:
-    """Assemble the supervisor graph with the given LLM, knowledge service, and safety guard."""
+    """Assemble the supervisor graph with the given LLM, knowledge service,
+    and safety guard.
+
+    The leave agent is the real dispatch loop when the chat layer wires
+    ``leave_actor``/``leave_store``/``leave_chat_provider`` (all three);
+    otherwise the leave node is an honest stub. ``leave_service`` is an
+    optional test injection point.
+    """
     builder = StateGraph(SupervisorState)
     builder.add_node("route", make_route_node(llm))
     builder.add_node("knowledge", make_knowledge_node(llm, knowledge_service, guard))
-    builder.add_node("leave", make_leave_node())
+    if leave_actor is not None and leave_store is not None and leave_chat_provider is not None:
+        builder.add_node(
+            "leave",
+            make_leave_node(
+                actor=leave_actor,
+                store=leave_store,
+                chat_provider=leave_chat_provider,
+                leave_service=leave_service,
+            ),
+        )
+    else:
+        builder.add_node("leave", _leave_stub_node())
     builder.add_node("recruitment", make_recruitment_node())
     builder.add_node("clarify", make_clarify_node())
     builder.add_edge(START, "route")

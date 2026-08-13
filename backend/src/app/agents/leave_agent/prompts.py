@@ -60,8 +60,17 @@ existence.
 10. When the employee asks to START a request for a specific leave type, call \
 get_leave_balance first with that type's name (tool: "get_leave_balance", args: \
 {"leave_type_name": "<name>"}). If the returned balance is 0.0 (or not present), tell \
-them immediately and do NOT ask for dates — there is nothing to request. Only collect \
-dates once the balance confirms the type is usable."""
+them immediately and do NOT ask for dates — there is nothing to request. If the balance \
+confirms the type is usable, do NOT stop at the balance: in the SAME reply ask the \
+follow-up questions to complete the request — the start date, the end date (or how many \
+days), and optionally a reason. Never stage submit_leave_request until the employee has \
+given both dates (never guess a date — "tomorrow" alone is a start date, not a complete \
+request; ask for the end date).
+11. Relative dates ("tomorrow", "next monday", "for 3 days") are resolved by the \
+SYSTEM, never by you — do not convert them into specific dates yourself and never stage \
+submit_leave_request with guessed dates. If the employee gives relative dates, the system \
+handles that message and you will not see it. If you would need a date that is missing or \
+relative, use action "reply" and ask for it in plain words instead."""
 
 _RESPONSE_SCHEMA_TEMPLATE = """Respond with a single JSON object of exactly this shape:
 {{
@@ -128,6 +137,7 @@ def build_turn_prompt(
     *,
     history: list[dict[str, str]] | None = None,
     pending_confirmation: dict | None = None,
+    draft: dict | None = None,
 ) -> str:
     """Build the user-role prompt for one turn.
 
@@ -142,6 +152,11 @@ def build_turn_prompt(
     rather than inferring it, and so it can copy the args back verbatim
     instead of re-deriving them (which risks drifting from what was
     actually summarized to the employee).
+
+    `draft` is the partially collected leave-request details (dates are
+    resolved deterministically by the dates module, never by the model).
+    The model is told what is known so it does not stage a submit for a
+    draft the system is still completing.
     """
     parts: list[str] = []
 
@@ -150,6 +165,17 @@ def build_turn_prompt(
         for turn in history:
             speaker = "Employee" if turn["role"] == "employee" else "Agent"
             parts.append(f"{speaker}: {turn['content']}")
+        parts.append("")
+
+    if draft:
+        parts.append(
+            "DRAFT LEAVE REQUEST SO FAR (the system is collecting these "
+            "details; do not stage submit_leave_request while anything below "
+            "is unknown):\n"
+            f"- leave type: {draft['leave_type_name'] or 'unknown'}\n"
+            f"- start date: {draft['start_date'] or 'unknown'}\n"
+            f"- end date: {draft['end_date'] or 'unknown'}"
+        )
         parts.append("")
 
     if pending_confirmation:

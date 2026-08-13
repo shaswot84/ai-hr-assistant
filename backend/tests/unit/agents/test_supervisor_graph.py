@@ -12,6 +12,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from app.agents.supervisor.graph import build_supervisor_graph
+from app.contracts.auth import UserContext
 from app.knowledge.contracts import Citation, KnowledgeResult
 from app.model_gateway.interfaces import LLM
 
@@ -232,3 +233,69 @@ async def test_history_is_preserved_and_passed_to_routing():
         "How much annual leave do I have?",
         "A grounded answer. [1]",
     ]
+
+
+class FakeChatProvider:
+    """A ChatProvider stub returning canned JSON (no real model)."""
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls = 0
+
+    async def complete_json(self, **kwargs) -> dict:
+        self.calls += 1
+        return self.payload
+
+
+def _leave_actor() -> UserContext:
+    return UserContext(
+        subject="emp-1",
+        email="emp@example.com",
+        display_name="Employee",
+        coarse_role="EMPLOYEE",
+    )
+
+
+@pytest.mark.asyncio
+async def test_wired_leave_node_runs_real_agent():
+    """When the chat layer wires leave deps, the graph runs the real agent."""
+    from app.agents.leave_agent.state import SessionStore
+
+    provider = FakeChatProvider(
+        {"reply": "You have 20 days of Annual Leave remaining.", "action": "reply", "tool": None, "args": {}}
+    )
+    graph = build_supervisor_graph(
+        llm=FakeLLM("leave"),
+        knowledge_service=FakeKnowledgeService(make_result()),
+        leave_actor=_leave_actor(),
+        leave_store=SessionStore(),
+        leave_chat_provider=provider,
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "my leave balance", "conversation_id": str(uuid.uuid4())}
+    )
+
+    assert provider.calls == 1
+    assert state["agent"] == "leave"
+    assert state["answer"] == "You have 20 days of Annual Leave remaining."
+    assert state["messages"][-1].content == state["answer"]
+    assert state["citations"] == []
+
+
+@pytest.mark.asyncio
+async def test_unwired_leave_node_stays_stub():
+    """Without leave deps the node is the honest stub (provider never called)."""
+    provider = FakeChatProvider(
+        {"reply": "should not be used", "action": "reply", "tool": None, "args": {}}
+    )
+    graph = build_supervisor_graph(
+        llm=FakeLLM("leave"),
+        knowledge_service=FakeKnowledgeService(make_result()),
+    )
+
+    state = await graph.ainvoke({"messages": [], "current_query": "my leave balance"})
+
+    assert "Leave" in state["answer"]
+    assert "chat" in state["answer"]
+    assert provider.calls == 0

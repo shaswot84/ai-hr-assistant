@@ -31,6 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.supervisor.graph import build_supervisor_graph
+from app.agents.leave_agent.state import SessionStore
 from app.api.deps import require_role
 from app.contracts.auth import UserContext
 from app.db.session import get_session
@@ -41,6 +42,7 @@ from app.knowledge.repository import HybridRetrievalRepository
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.factory import build_embedder, build_llm, build_reranker
 from app.model_gateway.interfaces import LLM, Embedder, Reranker
+from app.model_gateway.ollama import OllamaChatProvider
 from app.repositories.conversation import ConversationRepo
 from app.safety.factory import build_output_guard
 from app.schemas.chat import (
@@ -97,7 +99,21 @@ def _llm() -> LLM | None:
     return llm
 
 
-def build_chat_graph(session: AsyncSession):
+def _leave_store() -> SessionStore:
+    """Process-wide leave session store (keyed by conversation id).
+
+    The leave agent keeps staged confirmations between turns; the session
+    store must outlive a single request, so it's a module singleton like the
+    embedder/LLM above. See leave_agent/state.py for TTL/identity rules.
+    """
+    store = getattr(_leave_store, "_store", None)
+    if store is None:
+        store = SessionStore()
+        _leave_store._store = store
+    return store
+
+
+def build_chat_graph(session: AsyncSession, user: UserContext):
     """Assemble the supervisor graph for this request.
 
     Request-scoped like the search endpoints: the KnowledgeService binds the
@@ -105,6 +121,9 @@ def build_chat_graph(session: AsyncSession):
     between turns (durability lives in the conversation tables). The
     output-safety pipeline (claim tracking, evidence gate, PII, topics) is
     wired from settings and applied to every generated answer.
+
+    The leave agent is wired with the authenticated actor and the shared
+    session store so it can run real balance/request tools.
     """
     service = KnowledgeService(
         HybridRetrievalRepository(session),
@@ -113,7 +132,12 @@ def build_chat_graph(session: AsyncSession):
         llm=_llm(),
     )
     return build_supervisor_graph(
-        llm=_llm(), knowledge_service=service, guard=build_output_guard()
+        llm=_llm(),
+        knowledge_service=service,
+        guard=build_output_guard(),
+        leave_actor=user,
+        leave_store=_leave_store(),
+        leave_chat_provider=OllamaChatProvider(),
     )
 
 
@@ -248,8 +272,14 @@ async def chat(
     """Run one chat turn through the supervisor graph and persist it."""
     repo, conversation_id, history_messages, message = await _prepare_turn(session, user, body)
 
-    graph = build_chat_graph(session)
-    result = await graph.ainvoke({"messages": history_messages, "current_query": message})
+    graph = build_chat_graph(session, user)
+    result = await graph.ainvoke(
+        {
+            "messages": history_messages,
+            "current_query": message,
+            "conversation_id": str(conversation_id),
+        }
+    )
 
     answer = result.get("answer", "")
     citations = [_serialize_citation(c) for c in result.get("citations", [])]
@@ -309,7 +339,7 @@ async def chat_stream(
     event is emitted before ``done``.
     """
     repo, conversation_id, history_messages, message = await _prepare_turn(session, user, body)
-    graph = build_chat_graph(session)
+    graph = build_chat_graph(session, user)
 
     def sse(event: dict) -> str:
         return f"data: {json.dumps(event)}\n\n"
@@ -319,7 +349,11 @@ async def chat_stream(
         final: dict = {}
         try:
             async for mode, chunk in graph.astream(
-                {"messages": history_messages, "current_query": message},
+                {
+                    "messages": history_messages,
+                    "current_query": message,
+                    "conversation_id": str(conversation_id),
+                },
                 stream_mode=["custom", "updates"],
             ):
                 if mode == "custom":

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from app.contracts.auth import UserContext
 from app.shared.clock import Clock, get_clock
@@ -76,6 +76,31 @@ class PendingConfirmation:
 
 
 @dataclass
+class DraftRequest:
+    """A leave-request in progress, accumulated DETERMINISTICALLY across turns.
+
+    Dates like "tomorrow" are resolved by the dates module, never by the
+    model, and the partial result is held here (not in the model's memory
+    of the conversation) so a follow-up message can complete it without
+    the model re-deriving anything. The draft is authoritative over a
+    model-staged ``submit_leave_request``: when complete, the agent stages
+    the confirmation from these exact values.
+    """
+
+    leave_type_name: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    reason: str | None = None
+
+    def is_complete(self) -> bool:
+        return (
+            self.leave_type_name is not None
+            and self.start_date is not None
+            and self.end_date is not None
+        )
+
+
+@dataclass
 class LeaveAgentState:
     """One session's conversation state."""
 
@@ -85,6 +110,7 @@ class LeaveAgentState:
     updated_at: datetime
     history: list[ConversationTurn] = field(default_factory=list)
     pending_confirmation: PendingConfirmation | None = None
+    draft: DraftRequest | None = None
     _executing: bool = field(default=False, repr=False)
 
     def add_turn(self, role: str, content: str, *, clock: Clock) -> None:
@@ -130,6 +156,27 @@ class LeaveAgentState:
         employee declines/changes the subject."""
         self.pending_confirmation = None
         self.updated_at = clock.now()
+
+    def set_draft(self, draft: DraftRequest, *, clock: Clock) -> None:
+        """Replace the in-progress request draft (new info supersedes old)."""
+        self.draft = draft
+        self.updated_at = clock.now()
+
+    def clear_draft(self, *, clock: Clock) -> None:
+        """Drop the draft — after it is staged, cancelled, or superseded."""
+        if self.draft is not None:
+            self.draft = None
+            self.updated_at = clock.now()
+
+    def draft_for_prompt(self) -> dict | None:
+        """The draft in a JSON-safe shape for the turn prompt, or None."""
+        if self.draft is None:
+            return None
+        return {
+            "leave_type_name": self.draft.leave_type_name,
+            "start_date": self.draft.start_date.isoformat() if self.draft.start_date else None,
+            "end_date": self.draft.end_date.isoformat() if self.draft.end_date else None,
+        }
 
     def pending_is_expired(self, *, clock: Clock) -> bool:
         if self.pending_confirmation is None:
