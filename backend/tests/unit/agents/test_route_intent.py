@@ -51,6 +51,24 @@ def test_heuristic_defaults_to_knowledge():
     assert heuristic_route("how does health insurance work") == "knowledge"
 
 
+def test_heuristic_leave_policy_routes_to_knowledge():
+    """Leave POLICY questions go to the knowledge agent (RAG), not the
+    transactional leave agent — the leave agent has no retrieval path and
+    cannot answer them."""
+    assert heuristic_route("what is the annual leave policy") == "knowledge"
+    assert heuristic_route("annual leave accrual rate") == "knowledge"
+    assert heuristic_route("how does sick leave accrual work") == "knowledge"
+    assert heuristic_route("am I entitled to casual leave") == "knowledge"
+
+
+def test_heuristic_leave_transactions_still_route_to_leave():
+    """Transactional leave asks stay on the leave agent even when they
+    contain policy-adjacent words."""
+    assert heuristic_route("my annual leave balance") == "leave"
+    assert heuristic_route("how many days of annual leave do I have") == "leave"
+    assert heuristic_route("request annual leave for tomorrow") == "leave"
+
+
 @pytest.mark.asyncio
 async def test_route_intent_uses_llm_response():
     """A clean single-word LLM reply is used as-is."""
@@ -86,7 +104,7 @@ async def test_route_intent_falls_back_when_llm_raises():
 @pytest.mark.asyncio
 async def test_route_intent_without_llm_uses_heuristics():
     """With no LLM configured, routing is purely keyword-based."""
-    assert await route_intent(None, "what is the annual leave policy", []) == "leave"
+    assert await route_intent(None, "what is the annual leave policy", []) == "knowledge"
     assert await route_intent(None, "open vacancies", []) == "recruitment"
     assert await route_intent(None, "what is the onboarding process", []) == "knowledge"
 

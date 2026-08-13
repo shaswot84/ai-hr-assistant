@@ -329,11 +329,17 @@ def _leave_actor() -> UserContext:
 
 @pytest.mark.asyncio
 async def test_wired_leave_node_runs_real_agent():
-    """When the chat layer wires leave deps, the graph runs the real agent."""
+    """When the chat layer wires leave deps, the graph runs the real agent.
+
+    The message must be one the leave agent's deterministic interceptions
+    don't swallow: "my leave balance" is answered from the real balance
+    without the model, so the dispatch loop is exercised through a read ask
+    ("show my leave requests") that reaches the provider.
+    """
     from app.agents.leave_agent.state import SessionStore
 
     provider = FakeChatProvider(
-        {"reply": "You have 20 days of Annual Leave remaining.", "action": "reply", "tool": None, "args": {}}
+        {"reply": "Here are your leave requests: LR-2026-001 (PENDING).", "action": "reply", "tool": None, "args": {}}
     )
     graph = build_supervisor_graph(
         llm=FakeLLM("leave"),
@@ -344,12 +350,12 @@ async def test_wired_leave_node_runs_real_agent():
     )
 
     state = await graph.ainvoke(
-        {"messages": [], "current_query": "my leave balance", "conversation_id": str(uuid.uuid4())}
+        {"messages": [], "current_query": "show my leave requests", "conversation_id": str(uuid.uuid4())}
     )
 
     assert provider.calls == 1
     assert state["agent"] == "leave"
-    assert state["answer"] == "You have 20 days of Annual Leave remaining."
+    assert state["answer"] == "Here are your leave requests: LR-2026-001 (PENDING)."
     assert state["messages"][-1].content == state["answer"]
     assert state["citations"] == []
 

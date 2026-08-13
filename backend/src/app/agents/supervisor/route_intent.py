@@ -18,6 +18,45 @@ from app.model_gateway.interfaces import LLM
 
 ROUTES = ("knowledge", "leave", "recruitment", "clarify")
 
+# Knowledge-base framing words. When present (and not outweighed by explicit
+# transactional framing) a message that also mentions leave is a POLICY
+# question for the knowledge agent (RAG over HR documents), not a
+# transactional leave-agent question — the leave agent has no retrieval path
+# and cannot answer "what is the annual leave policy?".
+_KNOWLEDGE_POLICY_WORDS = frozenset(
+    {
+        "policy",
+        "policies",
+        "procedure",
+        "procedures",
+        "guideline",
+        "guidelines",
+        "rule",
+        "rules",
+        "regulation",
+        "regulations",
+        "accrual",
+        "accrue",
+        "accrues",
+        "accrued",
+        "entitlement",
+        "entitlements",
+        "entitled",
+        "eligib",  # eligible / eligibility
+        "explain",
+        "definition",
+        "meaning",
+    }
+)
+
+# Transactional framing that overrides the policy check: balance/request
+# wording makes a message about the caller's own leave ACTIONS, never a
+# policy read ("my annual leave balance" is leave, not knowledge).
+_TRANSACTIONAL_OVERRIDE_WORDS = frozenset(
+    {"balance", "remaining", "left", "request", "requests"}
+)
+
+
 # Heuristic fallback keywords. "leave" is checked first so an ambiguous
 # "how do I apply for leave?" routes to leave, not recruitment.
 _LEAVE_KEYWORDS = frozenset(
@@ -65,9 +104,29 @@ _RECRUITMENT_KEYWORDS = frozenset(
 _ROUTE_RE = re.compile(r"\b(knowledge|leave|recruitment|clarify)\b")
 
 
+def _is_knowledge_policy_question(lowered: str) -> bool:
+    """Is this message a leave-policy question for the knowledge agent?
+
+    Policy vocabulary ("policy", "accrual", "entitled", ...) marks a
+    knowledge-base question; explicit transactional vocabulary (balance,
+    request) marks the leave agent and wins.
+    """
+    if any(word in lowered for word in _TRANSACTIONAL_OVERRIDE_WORDS):
+        return False
+    return any(word in lowered for word in _KNOWLEDGE_POLICY_WORDS)
+
+
 def heuristic_route(query: str) -> str:
-    """Deterministic keyword routing; knowledge is the safe default."""
+    """Deterministic keyword routing; knowledge is the safe default.
+
+    Leave-policy questions ("what is the annual leave policy?") are routed to
+    knowledge BEFORE the leave keywords: the knowledge agent is the one with
+    retrieval over HR documents, while the leave agent is transactional
+    (balance / requests / cancel) and cannot answer them.
+    """
     lowered = query.lower()
+    if _is_knowledge_policy_question(lowered):
+        return "knowledge"
     if any(keyword in lowered for keyword in _LEAVE_KEYWORDS):
         return "leave"
     if any(keyword in lowered for keyword in _RECRUITMENT_KEYWORDS):
