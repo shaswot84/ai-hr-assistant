@@ -216,8 +216,111 @@ class LeaveAgentState:
         return {"tool": self.pending_confirmation.tool, "args": self.pending_confirmation.args}
 
 
+# ---- durable workflow-state serialization -----------------------------------
+#
+# The conversation_workflow_state row stores ONLY the resumable workflow
+# facts (draft + staged action + expiry) as JSON — never the transcript,
+# which already lives in conversation_message. These helpers are the single
+# mapping between the dataclass shapes above and that row's JSONB columns.
+
+
+def draft_to_json(draft: DraftRequest | None) -> dict | None:
+    """DraftRequest -> JSON-safe dict (dates as ISO strings), or None."""
+    if draft is None:
+        return None
+    return {
+        "leave_type_name": draft.leave_type_name,
+        "start_date": draft.start_date.isoformat() if draft.start_date else None,
+        "end_date": draft.end_date.isoformat() if draft.end_date else None,
+        "reason": draft.reason,
+    }
+
+
+def draft_from_json(data: dict | None) -> DraftRequest | None:
+    """Rebuild a DraftRequest from the stored JSON, or None for a null payload."""
+    if not data:
+        return None
+    return DraftRequest(
+        leave_type_name=data.get("leave_type_name"),
+        start_date=date.fromisoformat(data["start_date"]) if data.get("start_date") else None,
+        end_date=date.fromisoformat(data["end_date"]) if data.get("end_date") else None,
+        reason=data.get("reason"),
+    )
+
+
+def pending_to_json(pending: PendingConfirmation | None) -> dict | None:
+    """PendingConfirmation -> JSON-safe dict (datetimes as ISO strings), or None."""
+    if pending is None:
+        return None
+    return {
+        "confirmation_id": str(pending.confirmation_id),
+        "session_id": pending.session_id,
+        "actor_subject": pending.actor_subject,
+        "tool": pending.tool,
+        "args": pending.args,
+        "summary": pending.summary,
+        "created_at": pending.created_at.isoformat(),
+        "expires_at": pending.expires_at.isoformat(),
+    }
+
+
+def pending_from_json(data: dict | None) -> PendingConfirmation | None:
+    """Rebuild a PendingConfirmation from the stored JSON, or None."""
+    if not data:
+        return None
+    return PendingConfirmation(
+        confirmation_id=uuid.UUID(data["confirmation_id"]),
+        session_id=data.get("session_id", ""),
+        actor_subject=data.get("actor_subject", ""),
+        tool=data["tool"],
+        args=data["args"],
+        summary=data["summary"],
+        created_at=datetime.fromisoformat(data["created_at"]),
+        expires_at=datetime.fromisoformat(data["expires_at"]),
+    )
+
+
+def workflow_snapshot(state: LeaveAgentState) -> dict:
+    """The durable slice of a LeaveAgentState, in the row's JSON shape.
+
+    Only draft + pending confirmation (+ the pending action's expiry) — the
+    session id, timestamps, and history are deliberately excluded: the row
+    must never duplicate the transcript, and a restored session rebuilds its
+    timestamps from the Clock.
+    """
+    return {
+        "draft": draft_to_json(state.draft),
+        "pending": pending_to_json(state.pending_confirmation),
+        "expires_at": (
+            state.pending_confirmation.expires_at.isoformat()
+            if state.pending_confirmation is not None
+            else None
+        ),
+    }
+
+
+def apply_workflow_snapshot(state: LeaveAgentState, snapshot: dict, *, clock: Clock) -> None:
+    """Rebuild the durable slice of state from a stored row's JSON.
+
+    An expired pending action is dropped DETERMINISTICALLY here — the TTL
+    decision is made against the PERSISTED ``expires_at`` at restore time,
+    so a process restart can never extend a confirmation's life, and an
+    already-expired action is never resurrected for the model to "confirm".
+    """
+    draft = draft_from_json(snapshot.get("draft"))
+    pending = pending_from_json(snapshot.get("pending"))
+    if pending is not None and clock.now() >= pending.expires_at:
+        pending = None
+    state.draft = draft
+    state.pending_confirmation = pending
+
+
 class SessionStore:
-    """In-memory store of LeaveAgentState, keyed by session_id.
+    """In-memory cache of LeaveAgentState, keyed by session_id.
+
+    Cache only, never the source of truth: on a miss the caller (node.py)
+    restores from the durable conversation_workflow_state row before this
+    store ever creates a fresh state, and writes it back after the turn.
 
     Not thread-safe beyond the GIL's normal dict-op atomicity — fine for a
     single-process dev/demo deployment; a multi-worker deployment would
@@ -230,18 +333,34 @@ class SessionStore:
         self._ttl = ttl
         self._clock = clock or get_clock()
 
-    def get_or_create(self, session_id: str, actor: UserContext) -> LeaveAgentState:
-        """Return the session's state, starting fresh if it's missing, expired,
-        or bound to a different identity than the caller.
+    def get(self, session_id: str, actor: UserContext) -> LeaveAgentState | None:
+        """Return the cached session state, or None on a miss.
 
-        A client-supplied session_id is not a trusted identity boundary by
-        itself: if it collides with (or is reused across) a different
-        actor, resuming that state would leak one employee's staged leave
-        details into another employee's conversation. Any mismatch is
-        treated the same as "no session" rather than an error.
+        Returns None when the session is missing, expired, or bound to a
+        different identity than the caller — a client-supplied session_id is
+        not a trusted identity boundary by itself: if it collides with (or
+        is reused across) a different actor, resuming that state would leak
+        one employee's staged leave details into another employee's
+        conversation. Any mismatch is treated the same as "no session"
+        rather than an error.
         """
         existing = self._sessions.get(session_id)
         if existing is not None and existing.actor_subject == actor.subject and not self._is_expired(existing):
+            return existing
+        return None
+
+    def put(self, state: LeaveAgentState) -> None:
+        """Cache (or overwrite) a session state."""
+        self._sessions[state.session_id] = state
+
+    def get_or_create(self, session_id: str, actor: UserContext) -> LeaveAgentState:
+        """Return the cached session's state, starting fresh on any miss.
+
+        Kept for callers that manage their own durability; node.py uses
+        ``get`` + durable restore instead.
+        """
+        existing = self.get(session_id, actor)
+        if existing is not None:
             return existing
 
         now = self._clock.now()

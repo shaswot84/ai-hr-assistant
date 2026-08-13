@@ -107,6 +107,14 @@ class LeaveRequestRepo:
         )
         return self._db.scalar(stmt)
 
+    def get_by_request_number(self, request_number: str) -> LeaveRequest | None:
+        """Fetch a leave request by its LR-YYYY-XXX reference, or None."""
+        stmt = select(LeaveRequest).where(
+            LeaveRequest.request_number == request_number,
+            LeaveRequest.deleted_at.is_(None),
+        )
+        return self._db.scalar(stmt)
+
     def get_for_employee(
         self, leave_request_id: uuid.UUID, employee_id: uuid.UUID
     ) -> LeaveRequest | None:

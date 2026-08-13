@@ -12,6 +12,7 @@ the model nicely.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -24,7 +25,11 @@ from app.agents.leave_agent.tools import (
     ToolError,
     canonical_args,
     format_tool_result,
+    hr_pending_request_lines,
     mentioned_leave_type,
+    pending_request_lines,
+    preflight_cancel,
+    preflight_hr_reference,
     preflight_submit,
     validate_args,
 )
@@ -80,6 +85,11 @@ async def handle_turn(
     clock = clock or get_clock()
 
     intercepted = _intercept_draft_turn(state, service, actor, user_message, clock=clock)
+    if intercepted is not None:
+        state.add_turn("employee", user_message, clock=clock)
+        return intercepted
+
+    intercepted = _intercept_reference_writes(state, service, actor, user_message, clock=clock)
     if intercepted is not None:
         state.add_turn("employee", user_message, clock=clock)
         return intercepted
@@ -252,6 +262,15 @@ def _intercept_draft_turn(
             clock=clock,
         )
 
+    if any(word in lowered for word in _CANCEL_INTENT_WORDS) or any(
+        word in lowered for word in _DECIDE_INTENT_WORDS
+    ) or "approve" in lowered:
+        # Cancel/decision turns belong to the reference-write interception
+        # below, never to the draft flow: a relative date in such a message
+        # ("cancel the one from last monday") must not read as "start the
+        # application", and the pivot clears any in-progress draft there.
+        return None
+
     today = clock.today()
     start, end = extract_dates(user_message, today)
 
@@ -261,18 +280,36 @@ def _intercept_draft_turn(
             return None
         draft = DraftRequest()
 
+    if actor.coarse_role == "HR_ADMIN":
+        # HR has no leave of their own: a date-bearing application (or a
+        # continuation of a leftover draft) from an administrator is a role
+        # mismatch, not something to draft — refuse deterministically, the
+        # model is never asked to explain a request the manager can't make.
+        return _reply(
+            state,
+            "As an HR administrator you can review employees' leave requests "
+            "and approve, reject, or cancel them — but you can't apply for "
+            "leave yourself.",
+            clock=clock,
+        )
+
     if start is None and end is None and state.draft is not None and state.draft.start_date is not None:
         # An end-only follow-up ("for 3 days", "to friday") resolves against
         # the draft's already-known start date, never against the model.
         end = resolve_end_date(user_message, state.draft.start_date, today)
 
+    had_type = draft.leave_type_name is not None
     if draft.leave_type_name is None:
         mentioned = mentioned_leave_type(service, user_message)
         if mentioned is not None:
             draft.leave_type_name = mentioned
 
     progress = start is not None or end is not None
-    if draft.leave_type_name is not None and state.draft is not None and draft.leave_type_name != state.draft.leave_type_name:
+    if not had_type and draft.leave_type_name is not None:
+        # The employee just named the type for a draft that had none — that
+        # alone is progress, even without dates. (The pre-mutation value is
+        # what matters: `draft` IS `state.draft`, so comparing the two after
+        # mutation can never detect a change.)
         progress = True
     if not progress:
         return None
@@ -302,6 +339,197 @@ def _intercept_draft_turn(
     else:
         parts.append("To which date would you like to end?")
     return _reply(state, " ".join(parts), clock=clock)
+
+
+# ---- deterministic cancel / decision flow ----------------------------------
+#
+# Write actions on EXISTING requests are referenced by their human-readable
+# LR-YYYY-XXX number, never an internal UUID — and the number is resolved by
+# code, not by the model. When the employee's message names a reference the
+# action is staged deterministically (preflighted against the real request);
+# when it doesn't, the agent asks for the reference (listing what CAN be
+# cancelled), instead of letting the model invent one.
+
+_CANCEL_INTENT_WORDS = ("cancel", "withdraw")
+_DECIDE_INTENT_WORDS = ("reject", "deny")
+_REFERENCE_RE = re.compile(r"LR-\d{4}-\d{3,}", re.IGNORECASE)
+
+
+def _extract_reference(text: str) -> str | None:
+    """The LR-YYYY-XXX request reference in the message, uppercased, or None."""
+    match = _REFERENCE_RE.search(text)
+    return match.group(0).upper() if match else None
+
+
+def _has_request_context(text: str) -> bool:
+    """The message is about leave requests at all (not, say, cancelling a draft)."""
+    return "leave" in text or "request" in text
+
+
+def _stage_reference_write(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    tool_name: str,
+    args: dict,
+    *,
+    clock: Clock,
+) -> AgentTurnResult:
+    """Preflight + stage a reference-based write action deterministically."""
+    try:
+        if tool_name == "cancel_leave_request":
+            preflight_cancel(service, actor, args["request_number"])
+        else:
+            preflight_hr_reference(service, actor, args["request_number"])
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock)
+
+    summary = prompts.summarize_for_confirmation(tool_name, args)
+    state.stage(tool_name, args, summary, clock=clock)
+    return _reply(state, summary, clock=clock)
+
+
+def _intercept_employee_cancel(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    user_message: str,
+    *,
+    clock: Clock,
+) -> AgentTurnResult | None:
+    """Answer a cancel-intent turn deterministically (no model).
+
+    With a reference: stage the cancel for confirmation. Without one: list
+    the employee's pending requests and ask which one — the model is never
+    asked to guess a request number.
+    """
+    lowered = user_message.lower()
+    if not any(word in lowered for word in _CANCEL_INTENT_WORDS) or not _has_request_context(lowered):
+        return None
+
+    # The employee pivoted to cancelling an existing request: an in-progress
+    # application draft and any stale staged action are no longer meant — a
+    # later "yes" must not fire the old submit.
+    state.clear_draft(clock=clock)
+    state.clear_pending(clock=clock)
+
+    reference = _extract_reference(user_message)
+    if reference is not None:
+        return _stage_reference_write(
+            state, service, actor, "cancel_leave_request",
+            {"request_number": reference}, clock=clock,
+        )
+
+    try:
+        lines = pending_request_lines(service, actor)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock)
+    if not lines:
+        return _reply(
+            state, "You have no pending leave requests to cancel.", clock=clock
+        )
+    return _reply(
+        state,
+        "Which request would you like to cancel? "
+        + " — ".join(lines)
+        + ".\nReply with the request number (e.g., LR-2026-001).",
+        clock=clock,
+    )
+
+
+def _intercept_hr_reference_write(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    user_message: str,
+    *,
+    clock: Clock,
+) -> AgentTurnResult | None:
+    """Answer a manager's cancel/approve/reject/list intent deterministically.
+
+    Same discipline as the employee path: the LR-YYYY-XXX reference is
+    resolved by code, never inferred. With no reference the manager is
+    shown what CAN be acted on — all pending requests across employees —
+    and asked for the number, so the flow never dead-ends at "which
+    request number?" with nothing to look at. ``approve`` is read from the
+    intent words, never inferred by the model.
+    """
+    if actor.coarse_role != "HR_ADMIN":
+        return None
+    lowered = user_message.lower()
+    if not _has_request_context(lowered):
+        return None
+
+    cancel = any(word in lowered for word in _CANCEL_INTENT_WORDS)
+    approve = "approve" in lowered
+    reject = any(word in lowered for word in _DECIDE_INTENT_WORDS)
+    # An explicit "pending" ask is answered deterministically; a general
+    # "show me all requests" goes to the model's list_leave_requests tool,
+    # which also shows decided ones.
+    listing = "pending" in lowered
+    if not approve and not reject and not listing:
+        if cancel:
+            # Cancelling is the employee's own action — an administrator
+            # cannot cancel requests, not even by reference.
+            state.clear_draft(clock=clock)
+            state.clear_pending(clock=clock)
+            return _reply(
+                state,
+                "Cancelling a leave request is the employee's own action — as "
+                "an administrator you can approve or reject requests, but not "
+                "cancel them.",
+                clock=clock,
+            )
+        return None
+
+    # Same pivot semantics as the employee cancel path: acting on (or just
+    # viewing) existing requests supersedes any in-progress application.
+    state.clear_draft(clock=clock)
+    state.clear_pending(clock=clock)
+
+    reference = _extract_reference(user_message)
+    if reference is None:
+        try:
+            lines = hr_pending_request_lines(service, actor)
+        except ToolError as err:
+            return _reply(state, str(err), clock=clock)
+        if not lines:
+            return _reply(
+                state, "There are no pending leave requests to act on.", clock=clock
+            )
+        return _reply(
+            state,
+            "Here are the pending leave requests:\n"
+            + "\n".join(f"- {line}" for line in lines)
+            + "\n\nReply with the request number (e.g., LR-2026-001) to "
+            "approve or reject one.",
+            clock=clock,
+        )
+
+    tool_name, args = "decide_leave_request", {
+        "request_number": reference,
+        "approve": approve,
+    }
+    return _stage_reference_write(state, service, actor, tool_name, args, clock=clock)
+
+
+def _intercept_reference_writes(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    user_message: str,
+    *,
+    clock: Clock,
+) -> AgentTurnResult | None:
+    """Route a cancel/decision turn to the right deterministic handler.
+
+    Employees get the self-service cancel flow; HR administrators get the
+    manager flow (which also covers their own requests, since the manager
+    tools can act on any request).
+    """
+    if actor.coarse_role == "HR_ADMIN":
+        return _intercept_hr_reference_write(state, service, actor, user_message, clock=clock)
+    return _intercept_employee_cancel(state, service, actor, user_message, clock=clock)
 
 
 async def _handle_stage(
@@ -345,6 +573,10 @@ async def _handle_stage(
                 start_date=preflight_args["start_date"],
                 end_date=preflight_args["end_date"],
             )
+        elif tool_name == "cancel_leave_request":
+            preflight_cancel(service, actor, canonical["request_number"])
+        elif tool_name == "decide_leave_request":
+            preflight_hr_reference(service, actor, canonical["request_number"])
     except ToolError as err:
         return _reply(state, str(err), clock=clock, raw_model_action=raw_model_action)
 
@@ -386,14 +618,18 @@ async def _handle_read(
     # follow-up is only used as second opinion when it's an actual
     # question; otherwise the deterministic one stands. A usable balance
     # also opens a deterministic draft, so the follow-up date answers are
-    # resolved by code, not by the model.
+    # resolved by code, not by the model. The same applies to a
+    # list_leave_types reply for a request intent: the type list alone is
+    # never the end of the turn — the draft opens and the next question is
+    # asked deterministically, so "apply leave" can't dead-end at
+    # "available leave types only".
     follow_up = _request_follow_up(tool_name, result, user_message) or _model_question(model_reply)
     if follow_up:
         text = f"{text}\n\n{follow_up}"
-        usable = _usable_leave_types(result)
-        if state.draft is None and usable:
+        candidates = _candidate_types(tool_name, result)
+        if state.draft is None and candidates:
             state.set_draft(
-                DraftRequest(leave_type_name=usable[0] if len(usable) == 1 else None),
+                DraftRequest(leave_type_name=candidates[0] if len(candidates) == 1 else None),
                 clock=clock,
             )
     return _reply(state, text, clock=clock, tool_called=tool_name, tool_result=result, raw_model_action=raw_model_action)
@@ -421,20 +657,42 @@ def _usable_leave_types(result: Any) -> list[str]:
     return usable
 
 
+def _candidate_types(tool_name: str, result: Any) -> list[str]:
+    """Leave type names a request could start with, from a read tool result.
+
+    `get_leave_balance` contributes the types with actual remaining days;
+    `list_leave_types` contributes everything that exists. Either way a
+    single name pre-fills the draft, several leave the type open so the
+    employee's next message names it and the deterministic interceptor
+    resolves it.
+    """
+    if tool_name == "get_leave_balance":
+        return _usable_leave_types(result)
+    if tool_name == "list_leave_types":
+        if not result:
+            return []
+        return [t["leave_name"] for t in result]
+    return []
+
+
 def _request_follow_up(tool_name: str, result: Any, user_message: str) -> str | None:
-    """Deterministic next step after a balance check for a request intent."""
-    if tool_name != "get_leave_balance":
-        return None
+    """Deterministic next step after a balance/type check for a request intent."""
     if not _is_request_intent(user_message):
         return None
-    usable = _usable_leave_types(result)
-    if not usable:
-        return None
-    names = ", ".join(usable)
-    return (
-        f"You can request {names}. What dates would you like, "
-        "and any reason for the leave?"
-    )
+    if tool_name == "get_leave_balance":
+        usable = _usable_leave_types(result)
+        if not usable:
+            return None
+        names = ", ".join(usable)
+        return (
+            f"You can request {names}. What dates would you like, "
+            "and any reason for the leave?"
+        )
+    if tool_name == "list_leave_types":
+        if not result:
+            return None
+        return "Which leave type would you like to take?"
+    return None
 
 
 def _model_question(model_reply: str | None) -> str | None:

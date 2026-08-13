@@ -1,18 +1,32 @@
-"""Leave Agent tools: thin, employee-scoped wrappers around LeaveService.
+"""Leave Agent tools: service-backed wrappers around LeaveService.
 
-Every tool here is a self-service action — balance, submit, list, get,
-cancel. Deciding someone else's request (`decide_request` on LeaveService)
-is deliberately not exposed here: that's a manager/HR_ADMIN review action,
-out of scope for this employee-facing agent per 04-leave-agent.md §2,
-regardless of the caller's role.
+Two tool families, distinguished by role:
 
-Scope note (HR_ADMIN): no tool below accepts an employee_id argument at
-all — every LeaveService call resolves "own employee" from `actor` via
-IdentityService. An HR_ADMIN using this agent can only ever act on their
-own leave, the same as any EMPLOYEE. This isn't a role check that could
-be misconfigured; it's structural (the parameter doesn't exist), and the
-extra="forbid" Pydantic schemas below mean a model that hallucinates an
-employee_id argument gets a validation error, not a silent bypass.
+- Self-service tools (EMPLOYEE accounts only): balance, submit, list, get,
+  cancel. No tool below accepts an employee_id argument at all — every
+  LeaveService call resolves "own employee" from `actor` via
+  IdentityService. It isn't a role check that could be misconfigured; it's
+  structural (the parameter doesn't exist), and the extra="forbid" Pydantic
+  schemas below mean a model that hallucates an employee_id argument gets a
+  validation error, not a silent bypass.
+
+- Manager tools (HR_ADMIN only, acting on employees' leave): list all
+  employees' requests, view any employee's balance by employee code, and
+  approve or reject any employee's pending request. Requests are
+  referenced by their human-readable LR-YYYY-XXX number, never an internal
+  UUID — the number the employee sees and repeats in chat. Cancelling a
+  request is the employee's own action; administrators cannot cancel.
+
+HR administrators have no employee record and no leave of their own: the
+self-service tools are deliberately NOT available to them (they cannot
+apply for leave or view "their" balance/requests), and candidates
+(CANDIDATE) are not allowed any leave tool at all — every tool passes
+through a role gate that rejects both in plain language.
+
+Every service call goes through `_call_service`, so IdentityError,
+PermissionError_, and ValueError are ALWAYS converted to ToolError — the
+agent relays str(err) plainly and never leaks an internal exception type
+or traceback to the user.
 """
 
 from __future__ import annotations
@@ -30,8 +44,6 @@ from app.contracts.auth import UserContext
 from app.domain.leave import LeaveRequest, LeaveType
 from app.services.identity import IdentityError
 
-_ALLOWED_ROLES = ("EMPLOYEE", "HR_ADMIN")
-
 
 class ToolError(Exception):
     """A tool-level failure meant to be relayed to the user in plain language.
@@ -48,11 +60,36 @@ class ToolError(Exception):
 
 
 def _require_employee_access(actor: UserContext) -> None:
-    """Defensive role gate, independent of whatever route called this tool."""
-    if actor.coarse_role not in _ALLOWED_ROLES:
+    """Defensive role gate for the self-service tools, independent of whatever
+    route called this tool.
+
+    Self-service leave (balance, apply, own requests) exists only for
+    EMPLOYEE accounts. HR administrators have no employee record and no
+    leave of their own — their tools act on employees' requests, and a
+    manager asking for "my" balance or applying for leave gets a plain
+    explanation, not an identity error. Candidates get no leave tools at
+    all.
+    """
+    if actor.coarse_role == "EMPLOYEE":
+        return
+    if actor.coarse_role == "HR_ADMIN":
         raise ToolError(
-            "Leave requests are only available to employees. "
-            "This account isn't linked to an employee record."
+            "As an HR administrator you can review employees' leave requests "
+            "and approve, reject, or cancel them — but you don't have your own "
+            "leave to apply for or view."
+        )
+    raise ToolError(
+        "Leave requests are only available to employees. "
+        "This account isn't linked to an employee record."
+    )
+
+
+def _require_hr_access(actor: UserContext) -> None:
+    """Gate for the manager tools: only HR_ADMIN may act on another
+    employee's leave or view another employee's balance."""
+    if actor.coarse_role != "HR_ADMIN":
+        raise ToolError(
+            "Only HR administrators can review or act on another employee's leave."
         )
 
 
@@ -94,6 +131,10 @@ class ListLeaveTypesArgs(_StrictArgs):
     pass
 
 
+class ListLeaveRequestsArgs(_StrictArgs):
+    pass
+
+
 class ListMyLeaveRequestsArgs(_StrictArgs):
     pass
 
@@ -110,16 +151,31 @@ class SubmitLeaveRequestArgs(_StrictArgs):
 
 
 class CancelLeaveRequestArgs(_StrictArgs):
-    leave_request_id: uuid.UUID
+    # The human-readable LR-YYYY-XXX reference the employee repeats in chat —
+    # never an internal UUID.
+    request_number: str
+
+
+class GetEmployeeLeaveBalanceArgs(_StrictArgs):
+    employee_code: str
+    year: int | None = None
+
+
+class DecideLeaveRequestArgs(_StrictArgs):
+    request_number: str
+    approve: bool
 
 
 _ARGS_MODELS: dict[str, type[_StrictArgs]] = {
     "get_leave_balance": GetLeaveBalanceArgs,
     "list_leave_types": ListLeaveTypesArgs,
+    "list_leave_requests": ListLeaveRequestsArgs,
     "list_my_leave_requests": ListMyLeaveRequestsArgs,
     "get_leave_request": GetLeaveRequestArgs,
     "submit_leave_request": SubmitLeaveRequestArgs,
     "cancel_leave_request": CancelLeaveRequestArgs,
+    "get_employee_leave_balance": GetEmployeeLeaveBalanceArgs,
+    "decide_leave_request": DecideLeaveRequestArgs,
 }
 
 
@@ -313,6 +369,66 @@ def mentioned_leave_type(service: LeaveService, text: str) -> str | None:
     return matches[0].leave_name if len(matches) == 1 else None
 
 
+# ---- reference-based write preflight (deterministic staging) ---------------
+#
+# The agent stages cancels and decisions by request number, never by the
+# model's guess. These helpers verify the reference against the REAL data
+# BEFORE anything is staged, so a wrong number, someone else's request, or a
+# non-pending request is surfaced as a plain-language reply the moment the
+# employee gives the reference.
+
+
+def preflight_cancel(service: LeaveService, actor: UserContext, request_number: str) -> None:
+    """Verify the employee can cancel the referenced request before staging."""
+    _require_employee_access(actor)
+    request = _call_service(service.get_my_request_by_reference, actor, request_number)
+    if request.status != "PENDING":
+        raise ToolError(f"Only pending requests can be cancelled (status={request.status}).")
+
+
+def preflight_hr_reference(service: LeaveService, actor: UserContext, request_number: str) -> None:
+    """Verify a manager's reference-based decision can succeed before staging."""
+    _require_hr_access(actor)
+    request = _call_service(service.get_request_by_number, actor, request_number)
+    if request.status != "PENDING":
+        raise ToolError(
+            f"Only pending requests can be decided (status={request.status})."
+        )
+
+
+def pending_request_lines(service: LeaveService, actor: UserContext) -> list[str]:
+    """Human-readable lines for the employee's still-pending requests.
+
+    Used when a cancel intent carries no reference yet: the agent lists what
+    CAN be cancelled so the employee picks by number instead of the model
+    guessing one.
+    """
+    requests = _call_service(service.list_my_requests, actor)
+    pending = [r for r in requests if r.status == "PENDING"]
+    return [
+        f"{r.request_number}: {_leave_type_name(service, r.leave_type_id)}, "
+        f"{r.start_date} to {r.end_date}"
+        for r in pending
+    ]
+
+
+def hr_pending_request_lines(service: LeaveService, actor: UserContext) -> list[str]:
+    """Human-readable lines for ALL still-pending requests (HR view).
+
+    Mirrors the employee cancel flow for administrators: a manager asking
+    to act on a request (or just to see what is waiting) gets the real
+    pending list to pick from, instead of being asked to recall a number.
+    """
+    _require_hr_access(actor)
+    requests = _call_service(service.list_all_requests, actor)
+    pending = [r for r in requests if r.status == "PENDING"]
+    return [
+        f"{r.request_number}: {_leave_type_name(service, r.leave_type_id)}, "
+        f"{r.start_date} to {r.end_date}"
+        for r in pending
+    ]
+
+
 # ---- read tools (no confirmation) -----------------------------------------
 
 
@@ -369,6 +485,14 @@ def list_my_leave_requests(service: LeaveService, actor: UserContext) -> list[di
     return [_serialize_request(r, _leave_type_name(service, r.leave_type_id)) for r in requests]
 
 
+def list_leave_requests(service: LeaveService, actor: UserContext) -> list[dict]:
+    """List EVERY employee's leave requests with statuses (HR administrators
+    only) — the manager view of what is in the pipeline."""
+    _require_hr_access(actor)
+    requests = _call_service(service.list_all_requests, actor)
+    return [_serialize_request(r, _leave_type_name(service, r.leave_type_id)) for r in requests]
+
+
 def get_leave_request(service: LeaveService, actor: UserContext, *, leave_request_id: uuid.UUID) -> dict:
     """Fetch one of the employee's own leave requests by id."""
     _require_employee_access(actor)
@@ -405,11 +529,54 @@ def submit_leave_request(
     return _serialize_request(request, leave_type.leave_name)
 
 
-def cancel_leave_request(service: LeaveService, actor: UserContext, *, leave_request_id: uuid.UUID) -> dict:
-    """Cancel one of the employee's own still-pending leave requests. Caller
-    (agent.py) must have already staged and confirmed this with the user."""
+def cancel_leave_request(
+    service: LeaveService, actor: UserContext, *, request_number: str
+) -> dict:
+    """Cancel one of the employee's own still-pending leave requests by its
+    LR-YYYY-XXX reference. Caller (agent.py) must have already staged and
+    confirmed this with the user."""
     _require_employee_access(actor)
-    request = _call_service(service.cancel_request, actor, leave_request_id)
+    request = _call_service(service.cancel_request_by_reference, actor, request_number)
+    return _serialize_request(request, _leave_type_name(service, request.leave_type_id))
+
+
+def get_employee_leave_balance(
+    service: LeaveService,
+    actor: UserContext,
+    *,
+    employee_code: str,
+    year: int | None = None,
+) -> list[dict]:
+    """Return ANOTHER employee's allocated/used/remaining days per leave type
+    (HR administrators only), identified by employee code."""
+    _require_hr_access(actor)
+    rows = _call_service(service.get_employee_balance, actor, employee_code, year)
+    return [
+        {
+            "leave_type_name": row["leave_type"].leave_name,
+            "year": row["year"],
+            "allocated_days": str(row["allocated_days"]),
+            "used_days": str(row["used_days"]),
+            "remaining_days": str(row["remaining_days"]),
+        }
+        for row in rows
+    ]
+
+
+def decide_leave_request(
+    service: LeaveService,
+    actor: UserContext,
+    *,
+    request_number: str,
+    approve: bool,
+) -> dict:
+    """Approve or reject ANY employee's pending leave request by reference
+    (HR administrators only). Caller (agent.py) must have already staged and
+    confirmed this with the user."""
+    _require_hr_access(actor)
+    request = _call_service(
+        service.decide_request_by_reference, actor, request_number, approve=approve
+    )
     return _serialize_request(request, _leave_type_name(service, request.leave_type_id))
 
 
@@ -422,7 +589,7 @@ def cancel_leave_request(service: LeaveService, actor: UserContext, *, leave_req
 
 
 def format_tool_result(tool_name: str, result: Any) -> str:
-    if tool_name == "get_leave_balance":
+    if tool_name in ("get_leave_balance", "get_employee_leave_balance"):
         if not result:
             return "You have no leave balance records for this year."
         lines = [f"{r['leave_type_name']}: {r['remaining_days']} of {r['allocated_days']} days remaining" for r in result]
@@ -443,6 +610,15 @@ def format_tool_result(tool_name: str, result: Any) -> str:
         ]
         return "Your leave requests:\n" + "\n".join(lines)
 
+    if tool_name == "list_leave_requests":
+        if not result:
+            return "There are no leave requests."
+        lines = [
+            f"{r['request_number']}: {r['leave_type_name']}, {r['start_date']} to {r['end_date']} — {r['status']}"
+            for r in result
+        ]
+        return "Leave requests:\n" + "\n".join(lines)
+
     if tool_name == "get_leave_request":
         return (
             f"{result['request_number']}: {result['leave_type_name']}, "
@@ -458,6 +634,10 @@ def format_tool_result(tool_name: str, result: Any) -> str:
 
     if tool_name == "cancel_leave_request":
         return f"Done — cancelled request {result['request_number']}. Status: {result['status']}."
+
+    if tool_name == "decide_leave_request":
+        verb = "approved" if result["status"] == "APPROVED" else "rejected"
+        return f"Done — {verb} request {result['request_number']}. Status: {result['status']}."
 
     return "Done."
 
@@ -492,6 +672,13 @@ TOOLS: dict[str, ToolSpec] = {
         handler=list_leave_types,
         requires_confirmation=False,
     ),
+    "list_leave_requests": ToolSpec(
+        name="list_leave_requests",
+        description="List all employees' leave requests with their statuses (HR administrators only).",
+        parameters={},
+        handler=list_leave_requests,
+        requires_confirmation=False,
+    ),
     "list_my_leave_requests": ToolSpec(
         name="list_my_leave_requests",
         description="List the employee's own past and pending leave requests.",
@@ -520,9 +707,29 @@ TOOLS: dict[str, ToolSpec] = {
     ),
     "cancel_leave_request": ToolSpec(
         name="cancel_leave_request",
-        description="Cancel one of the employee's own pending leave requests. Requires explicit user confirmation first.",
-        parameters={"leave_request_id": "string (UUID), required"},
+        description="Cancel one of the employee's own pending leave requests, identified by its request number (e.g. 'LR-2026-001'). Requires explicit user confirmation first.",
+        parameters={"request_number": "string, required — e.g. 'LR-2026-001'"},
         handler=cancel_leave_request,
+        requires_confirmation=True,
+    ),
+    "get_employee_leave_balance": ToolSpec(
+        name="get_employee_leave_balance",
+        description="Get another employee's remaining leave balance per leave type, identified by employee code (HR administrators only).",
+        parameters={
+            "employee_code": "string, required — the employee's code, e.g. 'EMP-001'",
+            "year": "integer, optional — defaults to the current year",
+        },
+        handler=get_employee_leave_balance,
+        requires_confirmation=False,
+    ),
+    "decide_leave_request": ToolSpec(
+        name="decide_leave_request",
+        description="Approve or reject any employee's pending leave request by request number (HR administrators only). Requires explicit user confirmation first.",
+        parameters={
+            "request_number": "string, required — e.g. 'LR-2026-001'",
+            "approve": "boolean, required — true to approve, false to reject",
+        },
+        handler=decide_leave_request,
         requires_confirmation=True,
     ),
 }

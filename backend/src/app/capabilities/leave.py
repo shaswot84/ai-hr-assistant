@@ -102,7 +102,28 @@ class LeaveService:
         if actor.coarse_role not in ("EMPLOYEE", "HR_ADMIN"):
             raise PermissionError_("Only employees have a leave balance.")
         employee = self._identity.get_employee(actor)
-        target_year = year or self._clock.today().year
+        return self._balance_rows(employee, year or self._clock.today().year)
+
+    def get_employee_balance(
+        self, actor: UserContext, employee_code: str, year: int | None = None
+    ) -> list[dict]:
+        """Return ANOTHER employee's balance grid (manager-only).
+
+        ``employee_code`` is the human-readable employee identifier the
+        manager sees in the portal — never an internal UUID, mirroring the
+        request-reference rule the agent tools use.
+        """
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can view employee leave balances.")
+        stmt = select(Employee).where(Employee.employee_code == employee_code.strip())
+        employee = self._db.scalar(stmt)
+        if employee is None:
+            raise ValueError("Employee not found.")
+        return self._balance_rows(employee, year or self._clock.today().year)
+
+    def _balance_rows(self, employee: Employee, target_year: int) -> list[dict]:
+        """The allocated/used/remaining grid for one employee in one year —
+        shared by the employee's own balance and the manager's lookup."""
         existing = {b.leave_type_id: b for b in self._balances.list_for_employee(employee.employee_id, target_year)}
 
         rows = []
@@ -304,12 +325,50 @@ class LeaveService:
             raise ValueError("Leave request not found.")
         return request
 
+    def get_my_request_by_reference(
+        self, actor: UserContext, request_number: str
+    ) -> LeaveRequest:
+        """Fetch one of the current employee's own leave requests by its
+        LR-YYYY-XXX reference — the deterministic lookup the agent uses to
+        preflight a cancel before anything is staged."""
+        employee = self._identity.get_employee(actor)
+        request = self._requests.get_by_request_number(request_number.strip().upper())
+        if request is None or request.employee_id != employee.employee_id:
+            raise ValueError("Leave request not found.")
+        return request
+
+    def get_request_by_number(self, actor: UserContext, request_number: str) -> LeaveRequest:
+        """Fetch any employee's leave request by reference (manager-only)."""
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can review leave requests.")
+        request = self._requests.get_by_request_number(request_number.strip().upper())
+        if request is None:
+            raise ValueError("Leave request not found.")
+        return request
+
     def cancel_request(self, actor: UserContext, leave_request_id: uuid.UUID) -> LeaveRequest:
-        """Cancel one of the current employee's own still-pending requests."""
+        """Cancel one of the current employee's own still-pending requests (by id)."""
         employee = self._identity.get_employee(actor)
         request = self._requests.get_for_employee(leave_request_id, employee.employee_id)
         if request is None:
             raise ValueError("Leave request not found.")
+        return self._cancel_request(actor, request)
+
+    def cancel_request_by_reference(
+        self, actor: UserContext, request_number: str
+    ) -> LeaveRequest:
+        """Cancel one of the current employee's own still-pending requests,
+        found by its LR-YYYY-XXX reference — the human-readable number the
+        agent asks the employee for, never an internal UUID."""
+        employee = self._identity.get_employee(actor)
+        request = self._requests.get_by_request_number(request_number.strip().upper())
+        if request is None or request.employee_id != employee.employee_id:
+            raise ValueError("Leave request not found.")
+        return self._cancel_request(actor, request)
+
+    def _cancel_request(self, actor: UserContext, request: LeaveRequest) -> LeaveRequest:
+        """The shared cancel body: PENDING-only, audit, commit — used by the
+        employee's id/reference paths."""
         if request.status != "PENDING":
             raise ValueError(f"Only pending requests can be cancelled (status={request.status}).")
 
@@ -348,18 +407,37 @@ class LeaveService:
     def decide_request(
         self, actor: UserContext, leave_request_id: uuid.UUID, *, approve: bool
     ) -> LeaveRequest:
-        """Approve or reject a leave request; approving books the days against the employee's balance.
+        """Approve or reject a leave request by id; approving books the days against the employee's balance."""
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can decide leave requests.")
+        request = self._requests.get(leave_request_id)
+        if request is None:
+            raise ValueError("Leave request not found.")
+        return self._decide_request(actor, request, approve=approve)
+
+    def decide_request_by_reference(
+        self, actor: UserContext, request_number: str, *, approve: bool
+    ) -> LeaveRequest:
+        """Approve or reject a leave request by its LR-YYYY-XXX reference
+        (manager-only) — the human-readable number the agent asks for,
+        never an internal UUID."""
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can decide leave requests.")
+        request = self._requests.get_by_request_number(request_number.strip().upper())
+        if request is None:
+            raise ValueError("Leave request not found.")
+        return self._decide_request(actor, request, approve=approve)
+
+    def _decide_request(
+        self, actor: UserContext, request: LeaveRequest, *, approve: bool
+    ) -> LeaveRequest:
+        """The shared decision body used by the id and reference paths.
 
         Only valid from PENDING — once decided, a request is terminal for
         this sprint, so re-submitting a decision can never re-send the
         employee email, double-book the balance, or silently overwrite a
         prior outcome.
         """
-        if actor.coarse_role != "HR_ADMIN":
-            raise PermissionError_("Only managers can decide leave requests.")
-        request = self._requests.get(leave_request_id)
-        if request is None:
-            raise ValueError("Leave request not found.")
         if request.status not in DECIDABLE_STATUSES:
             raise ValueError(
                 f"Leave request has already been decided (status={request.status})."

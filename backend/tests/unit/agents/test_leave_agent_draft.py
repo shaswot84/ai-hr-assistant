@@ -296,3 +296,97 @@ async def test_no_dates_no_draft_falls_through_to_model(
     assert provider.calls == 1
     assert state.draft is None
     assert result.reply == "What would you like to do?"
+
+
+@pytest.mark.asyncio
+async def test_list_leave_types_for_request_intent_opens_draft_and_asks_type(
+    db, manager_context, employee_context
+):
+    """"apply leave" without a type: the model's list_leave_types reply is
+    NOT the end of the turn — the list is followed by the deterministic
+    type question, the draft opens, and the next "annual leave" is resolved
+    by code (no model call)."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    _create_leave_type(svc, manager_context, name="Sick Leave")
+    state = _state(employee_context)
+    provider = FakeChatProvider(
+        {
+            "reply": "Let me pull up the leave types.",
+            "action": "call_tool",
+            "tool": "list_leave_types",
+            "args": {},
+        }
+    )
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="i want to apply for leave",
+    )
+
+    assert provider.calls == 1
+    assert "Available leave types:" in result.reply
+    assert "Annual Leave" in result.reply
+    assert "Which leave type would you like to take?" in result.reply
+    assert state.draft is not None
+    assert state.draft.leave_type_name is None
+
+    pick = FakeChatProvider({"reply": "x", "action": "reply", "tool": None, "args": {}})
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=pick,
+        user_message="annual leave",
+    )
+
+    assert pick.calls == 0
+    assert state.draft.leave_type_name == "Annual Leave"
+    assert "From which date would you like to start?" in result.reply
+
+
+@pytest.mark.asyncio
+async def test_list_leave_types_single_type_prefills_draft(
+    db, manager_context, employee_context
+):
+    """Only one leave type exists: the draft is opened pre-filled, and a
+    follow-up "tomorrow" resolves deterministically."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    state = _state(employee_context)
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=FakeChatProvider(
+            {
+                "reply": "Checking.",
+                "action": "call_tool",
+                "tool": "list_leave_types",
+                "args": {},
+            }
+        ),
+        user_message="i want to apply for leave",
+    )
+
+    assert state.draft is not None
+    assert state.draft.leave_type_name == "Annual Leave"
+
+    provider = FakeChatProvider({"reply": "x", "action": "reply", "tool": None, "args": {}})
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="tomorrow",
+    )
+
+    assert provider.calls == 0
+    expected = get_clock().today() + timedelta(days=1)
+    assert state.draft.start_date == expected
+    assert expected.strftime("%a, %b %d, %Y") in result.reply
+    assert "To which date would you like to end?" in result.reply

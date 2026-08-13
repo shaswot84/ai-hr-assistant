@@ -3,7 +3,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, Uuid
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -77,4 +78,62 @@ Index(
     "ix_conversation_message_conversation_seq",
     ConversationMessage.conversation_id,
     ConversationMessage.sequence_no,
+)
+
+
+class ConversationWorkflowState(Base):
+    """Durable per-conversation workflow state for an agent (currently LEAVE).
+
+    Sits between the two existing layers: the durable transcript
+    (``conversation``/``conversation_message``) and the in-memory session
+    store. It holds ONLY the workflow facts the session store is allowed to
+    lose — a partially collected request draft and a staged write action
+    awaiting confirmation (with its expiry). The transcript owns history;
+    this row never duplicates a single message.
+
+    ``status`` is ACTIVE while the workflow has anything worth resuming,
+    COMPLETED once the staged action executed or the workflow ended — a
+    completed row is never restored into a fresh session. The partial unique
+    index enforces at most one ACTIVE workflow per conversation+actor.
+    """
+
+    __tablename__ = "conversation_workflow_state"
+
+    workflow_state_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("conversation.conversation_id", ondelete="CASCADE"), nullable=False
+    )
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("application_user.user_id"), nullable=False
+    )
+    workflow_type: Mapped[str] = mapped_column(String(50), default="LEAVE")
+    # ACTIVE (resumable) | COMPLETED (terminal — never restored).
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    # JSON-safe shapes — see leave_agent/state.py (draft_to_json /
+    # pending_to_json): dates and datetimes are ISO strings, never ORM objects.
+    draft_request: Mapped[dict | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
+    pending_confirmation: Mapped[dict | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
+    # When the staged action (if any) expires — persisted so a process
+    # restart can never extend a confirmation's life.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+Index(
+    "uq_conversation_workflow_active",
+    ConversationWorkflowState.conversation_id,
+    ConversationWorkflowState.actor_user_id,
+    unique=True,
+    sqlite_where=text("status = 'ACTIVE'"),
+    postgresql_where=text("status = 'ACTIVE'"),
+)
+Index(
+    "ix_conversation_workflow_actor_status",
+    ConversationWorkflowState.actor_user_id,
+    ConversationWorkflowState.status,
 )

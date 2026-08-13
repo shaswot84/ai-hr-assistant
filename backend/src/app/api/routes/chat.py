@@ -30,8 +30,8 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.supervisor.graph import build_supervisor_graph
 from app.agents.leave_agent.state import SessionStore
+from app.agents.supervisor.graph import build_supervisor_graph
 from app.api.deps import require_role
 from app.contracts.auth import UserContext
 from app.db.session import get_session
@@ -67,9 +67,12 @@ _TITLE_MAX = 80
 # answer the chat layer persists.
 _TERMINAL_NODES = ("knowledge", "leave", "recruitment", "clarify")
 
-# Bounded history window fed to the graph per turn (messages; the prompts
-# then trim further by token budget — see agents/context.py).
-_HISTORY_MESSAGE_WINDOW = 60
+# Bounded history window fed to the graph per turn, measured in tokens
+# (deterministic 4-characters-per-token estimate), not message count — the
+# routing/rewrite prompts stay within budget no matter how long the
+# individual messages are. The sub-agent prompts trim further by their own
+# budgets (see agents/context.py).
+_HISTORY_TOKEN_BUDGET = 5000
 
 
 def _embedder() -> Embedder:
@@ -232,7 +235,7 @@ async def _prepare_turn(
     await repo.append_message(conversation_id=conversation_id, role="user", content=message)
 
     # History = the bounded window before this turn (current_query is separate).
-    transcript = await repo.recent_messages(conversation_id, _HISTORY_MESSAGE_WINDOW + 1)
+    transcript = await repo.recent_messages_within_tokens(conversation_id, _HISTORY_TOKEN_BUDGET)
     history_messages = _history_messages(transcript[:-1])
     return repo, conversation_id, history_messages, message
 
