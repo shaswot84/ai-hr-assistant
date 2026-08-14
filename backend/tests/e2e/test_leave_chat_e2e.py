@@ -763,7 +763,12 @@ async def test_ambiguous_message_routes_to_clarify():
 @pytest.mark.asyncio
 async def test_no_llm_heuristic_routing():
     graph = build_supervisor_graph(llm=None, knowledge_service=FakeKnowledgeService(make_result()))
+    # Definition/policy questions about leave go to the knowledge agent even
+    # with no LLM — the KB answers them, the transactional leave agent can't.
     state = await graph.ainvoke({"messages": [], "current_query": "what is annual leave"})
+    assert state["agent"] == "knowledge"
+    # Transactional leave asks still route to the leave agent.
+    state = await graph.ainvoke({"messages": [], "current_query": "my annual leave balance"})
     assert state["agent"] == "leave"
     state = await graph.ainvoke({"messages": [], "current_query": "what is the dress code"})
     assert state["agent"] == "knowledge"

@@ -38,6 +38,10 @@ class ChatResponse(BaseModel):
     confidence: float = 0.0
     low_confidence: bool = False
     agent: str  # knowledge | leave | recruitment | clarify
+    # False for non-retrieval agents (leave/recruitment/clarify/recap), whose
+    # confidence is always 0.0 and has no meaning — consumers must not render
+    # a confidence badge when this is False.
+    confidence_applicable: bool = False
 
 
 class ConversationSummary(BaseModel):

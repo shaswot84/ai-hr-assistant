@@ -249,6 +249,7 @@ async def _persist_reply(
     confidence: float,
     low_confidence: bool = False,
     safety: str = "PASS",
+    confidence_applicable: bool = False,
 ) -> None:
     """Append the assistant reply and bump the conversation's activity time."""
     await repo.append_message(
@@ -261,6 +262,7 @@ async def _persist_reply(
             "confidence": confidence,
             "low_confidence": low_confidence,
             "safety": safety,
+            "confidence_applicable": confidence_applicable,
         },
     )
     await repo.touch(conversation_id)
@@ -290,6 +292,7 @@ async def chat(
     confidence = result.get("confidence", 0.0)
     knowledge_result = result.get("knowledge_result")
     safety = result.get("safety", "PASS")
+    confidence_applicable = knowledge_result is not None
 
     await _persist_reply(
         repo,
@@ -300,6 +303,7 @@ async def chat(
         confidence,
         low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
         safety=safety,
+        confidence_applicable=confidence_applicable,
     )
     await session.commit()
 
@@ -310,6 +314,7 @@ async def chat(
         confidence=confidence,
         low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
         agent=agent,
+        confidence_applicable=confidence_applicable,
     )
 
 
@@ -333,7 +338,8 @@ async def chat_stream(
         data: {"type": "token", "text": "..."}
 
         data: {"type": "done", "conversation_id": "...", "message": "...",
-               "citations": [...], "confidence": ..., "low_confidence": ..., "agent": "knowledge"}
+               "citations": [...], "confidence": ..., "low_confidence": ...,
+               "confidence_applicable": true, "agent": "knowledge"}
 
     Stub agents (leave/recruitment) and the no-LLM grounded-context fallback
     emit a single ``message`` event instead of tokens. Validation and the
@@ -381,6 +387,7 @@ async def chat_stream(
                     "citations": [],
                     "confidence": 0.0,
                     "low_confidence": False,
+                    "confidence_applicable": False,
                     "agent": "unknown",
                 }
             )
@@ -392,6 +399,7 @@ async def chat_stream(
         confidence = final.get("confidence", 0.0)
         knowledge_result = final.get("knowledge_result")
         safety = final.get("safety", "PASS")
+        confidence_applicable = knowledge_result is not None
 
         await _persist_reply(
             repo,
@@ -404,6 +412,7 @@ async def chat_stream(
                 knowledge_result is not None and knowledge_result.low_confidence
             ),
             safety=safety,
+            confidence_applicable=confidence_applicable,
         )
         await session.commit()
 
@@ -417,6 +426,7 @@ async def chat_stream(
                 "low_confidence": bool(
                     knowledge_result is not None and knowledge_result.low_confidence
                 ),
+                "confidence_applicable": confidence_applicable,
                 "agent": agent,
             }
         )

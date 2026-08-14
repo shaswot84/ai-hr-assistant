@@ -137,8 +137,13 @@ async def test_no_llm_routes_by_heuristics():
     """Without an LLM, routing falls back to keywords and the graph still works."""
     graph = build_supervisor_graph(llm=None, knowledge_service=FakeKnowledgeService(make_result()))
 
-    # Keyword "annual leave" routes to leave even with no LLM.
+    # A definition question about a leave type routes to knowledge — the KB
+    # answers it, the transactional leave agent can't.
     state = await graph.ainvoke({"messages": [], "current_query": "what is annual leave"})
+    assert state["agent"] == "knowledge"
+
+    # A transactional leave ask routes to leave even with no LLM.
+    state = await graph.ainvoke({"messages": [], "current_query": "my annual leave balance"})
     assert state["agent"] == "leave"
 
     # A knowledge question falls through to the knowledge node.

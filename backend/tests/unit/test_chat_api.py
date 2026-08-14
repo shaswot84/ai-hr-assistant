@@ -253,6 +253,7 @@ async def test_first_message_creates_conversation_and_persists(chat_env):
     assert body["message"] == "A grounded answer. [1]"
     assert body["confidence"] == 0.92
     assert body["low_confidence"] is False
+    assert body["confidence_applicable"] is True
     assert body["citations"][0]["document_title"] == "Leave Policy"
     conversation_id = uuid.UUID(body["conversation_id"])
 
@@ -271,8 +272,39 @@ async def test_first_message_creates_conversation_and_persists(chat_env):
             "confidence": 0.92,
             "low_confidence": False,
             "safety": "PASS",
+            "confidence_applicable": True,
         }
         assert messages[1].citations[0]["document_title"] == "Leave Policy"
+
+
+@pytest.mark.asyncio
+async def test_leave_turn_marks_confidence_not_applicable(chat_env, monkeypatch):
+    """Non-retrieval agents (leave) expose confidence_applicable=False so
+    consumers never render a confidence badge for a 0.0 that means
+    "not applicable" rather than "very low" — and the flag is persisted."""
+    from app.agents.supervisor.graph import build_supervisor_graph
+
+    def leave_graph_builder(session, user=None):
+        return build_supervisor_graph(
+            llm=FakeLLM("leave"),
+            knowledge_service=FakeKnowledgeService(make_result(), answer="A grounded answer. [1]"),
+        )
+
+    monkeypatch.setattr(chat_module, "build_chat_graph", leave_graph_builder)
+
+    resp = await chat_env.client.post("/api/chat", json={"message": "my leave balance"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["agent"] == "leave"
+    assert body["confidence"] == 0.0
+    assert body["confidence_applicable"] is False
+    assert body["citations"] == []
+
+    async with chat_env.factory() as session:
+        messages = await ConversationRepo(session).list_messages(uuid.UUID(body["conversation_id"]))
+        assert messages[1].meta["agent"] == "leave"
+        assert messages[1].meta["confidence"] == 0.0
+        assert messages[1].meta["confidence_applicable"] is False
 
 
 @pytest.mark.asyncio
@@ -421,6 +453,7 @@ async def test_chat_stream_emits_event_sequence(chat_env):
     assert done["agent"] == "knowledge"
     assert done["confidence"] == 0.92
     assert done["low_confidence"] is False
+    assert done["confidence_applicable"] is True
     assert len(done["citations"]) == 1
     assert done["conversation_id"] == events[0]["conversation_id"]
 
@@ -435,6 +468,7 @@ async def test_chat_stream_emits_event_sequence(chat_env):
             "confidence": 0.92,
             "low_confidence": False,
             "safety": "PASS",
+            "confidence_applicable": True,
         }
 
 

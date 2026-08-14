@@ -15,6 +15,7 @@ interface ViewMessage {
     agent?: string;
     confidence?: number;
     low_confidence?: boolean;
+    confidence_applicable?: boolean;
     safety?: "PASS" | "REDACTED" | "BLOCKED" | "FLAGGED_FOR_REVIEW";
   } | null;
   streaming?: boolean;
@@ -115,14 +116,17 @@ function MessageBubble({ message }: { message: ViewMessage }) {
   }
 
   const lowConfidence = message.meta?.low_confidence ?? false;
-  // Confidence 0.0 means "not applicable" (leave/recruitment/clarify answers
-  // have no retrieval confidence) — never render a "confidence 0.00" badge.
   const confidence = message.meta?.confidence ?? 0;
+  // Non-retrieval agents (leave/recruitment/clarify/recap) have no retrieval
+  // confidence — the backend marks it not-applicable. Older transcripts
+  // without the flag fall back to "confidence > 0" (knowledge turns always
+  // carry a real confidence, transactional turns are 0.0).
+  const confidenceApplicable = message.meta?.confidence_applicable ?? confidence > 0;
   // Only render an agent badge for agents we know about — "unknown" (or an
   // old persisted label) must never surface as a badge.
   const agentLabel = message.meta?.agent ? AGENT_LABELS[message.meta.agent] : undefined;
   const showMeta =
-    confidence > 0 ||
+    confidenceApplicable ||
     lowConfidence ||
     message.meta?.safety === "FLAGGED_FOR_REVIEW" ||
     agentLabel !== undefined;
@@ -266,6 +270,7 @@ export function AssistantChat() {
     let citations: ChatCitation[] = [];
     let confidence = 0;
     let lowConfidence = false;
+    let confidenceApplicable = false;
     let agent = "knowledge";
     let sawTurnStarted = false;
 
@@ -294,12 +299,13 @@ export function AssistantChat() {
           citations = event.citations;
           confidence = event.confidence;
           lowConfidence = event.low_confidence;
+          confidenceApplicable = event.confidence_applicable;
           textSoFar = event.message || textSoFar;
           if (sawTurnStarted) setActiveId(event.conversation_id);
           patchAssistant({
             content: textSoFar,
             citations,
-            meta: { agent, confidence, low_confidence: lowConfidence },
+            meta: { agent, confidence, low_confidence: lowConfidence, confidence_applicable: confidenceApplicable },
             streaming: false,
           });
         } else if (event.type === "error") {

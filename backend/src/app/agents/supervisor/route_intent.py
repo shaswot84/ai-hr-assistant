@@ -3,7 +3,10 @@
 The LLM decides the route from the current message plus conversation
 context. When no LLM is configured, the call fails, or the model returns
 something unparseable, ``heuristic_route`` takes over so the chat never
-bounces on routing.
+bounces on routing. A deterministic knowledge override also guards the LLM
+path: clearly knowledge-framed leave questions (policy / definition
+wording) are re-routed to knowledge even when the model says "leave", so
+the LLM path and the fallback agree on the knowledge-vs-leave boundary.
 """
 
 from __future__ import annotations
@@ -54,6 +57,43 @@ _KNOWLEDGE_POLICY_WORDS = frozenset(
 # policy read ("my annual leave balance" is leave, not knowledge).
 _TRANSACTIONAL_OVERRIDE_WORDS = frozenset(
     {"balance", "remaining", "left", "request", "requests"}
+)
+
+# Definition framing: "what is X?" / "how does X work?" about a leave type is
+# a knowledge question (the KB defines it), not a transaction. Guarded by
+# possessive/transactional framing so "what is MY balance" stays on leave.
+_DEFINITION_PHRASES = (
+    "what is",
+    "what's",
+    "what are",
+    "what does",
+    "what do",
+    "meaning of",
+    "definition of",
+    "how does",
+    "how is",
+    "how are",
+)
+_DEFINITION_GUARD_WORDS = frozenset(
+    {
+        "my",
+        "balance",
+        "remaining",
+        "left",
+        "request",
+        "requests",
+        "apply",
+        "book",
+        "take",
+        "avail",
+        "get",
+        "submit",
+        "cancel",
+        "approve",
+        "reject",
+        "how much",
+        "do i have",
+    }
 )
 
 
@@ -116,18 +156,34 @@ def _is_knowledge_policy_question(lowered: str) -> bool:
     return any(word in lowered for word in _KNOWLEDGE_POLICY_WORDS)
 
 
+def _is_knowledge_definition_question(lowered: str) -> bool:
+    """Is this a definition/explanation question about leave itself?
+
+    "what is annual leave?" / "how does sick leave work?" are knowledge
+    questions — the KB defines the leave types. Personal/transactional
+    framing ("what is MY balance", "what is a leave request") keeps the
+    question on the leave agent.
+    """
+    if any(word in lowered for word in _DEFINITION_GUARD_WORDS):
+        return False
+    return any(phrase in lowered for phrase in _DEFINITION_PHRASES)
+
+
 def heuristic_route(query: str) -> str:
     """Deterministic keyword routing; knowledge is the safe default.
 
-    Leave-policy questions ("what is the annual leave policy?") are routed to
-    knowledge BEFORE the leave keywords: the knowledge agent is the one with
-    retrieval over HR documents, while the leave agent is transactional
-    (balance / requests / cancel) and cannot answer them.
+    Leave-policy and leave-definition questions ("what is the annual leave
+    policy?", "what is annual leave?") are routed to knowledge BEFORE the
+    leave keywords: the knowledge agent is the one with retrieval over HR
+    documents, while the leave agent is transactional (balance / requests /
+    cancel) and cannot answer them.
     """
     lowered = query.lower()
     if _is_knowledge_policy_question(lowered):
         return "knowledge"
     if any(keyword in lowered for keyword in _LEAVE_KEYWORDS):
+        if _is_knowledge_definition_question(lowered):
+            return "knowledge"
         return "leave"
     if any(keyword in lowered for keyword in _RECRUITMENT_KEYWORDS):
         return "recruitment"
@@ -159,4 +215,15 @@ async def route_intent(llm: LLM | None, query: str, history: list[BaseMessage]) 
         raw = await llm.complete(ROUTING_SYSTEM, user)
     except Exception:  # noqa: BLE001 - routing never fails because of the LLM
         return heuristic_route(query)
-    return _parse_route(raw) or heuristic_route(query)
+    route = _parse_route(raw) or heuristic_route(query)
+    # Deterministic override on the LLM path: a clearly knowledge-framed
+    # leave question (policy / definition wording) reaches the knowledge
+    # agent even when the model misclassifies it as leave, so the LLM path
+    # and the heuristic fallback agree on the boundary.
+    lowered = query.lower()
+    if route == "leave" and (
+        _is_knowledge_policy_question(lowered)
+        or _is_knowledge_definition_question(lowered)
+    ):
+        return "knowledge"
+    return route

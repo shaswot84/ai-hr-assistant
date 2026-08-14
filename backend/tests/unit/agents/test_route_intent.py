@@ -69,6 +69,56 @@ def test_heuristic_leave_transactions_still_route_to_leave():
     assert heuristic_route("request annual leave for tomorrow") == "leave"
 
 
+def test_heuristic_definition_questions_route_to_knowledge():
+    """Definition/explanation questions about leave types are knowledge
+    questions — the KB defines them, the transactional leave agent can't."""
+    assert heuristic_route("what is annual leave") == "knowledge"
+    assert heuristic_route("what's sick leave") == "knowledge"
+    assert heuristic_route("what are casual leave days") == "knowledge"
+    assert heuristic_route("how does annual leave work") == "knowledge"
+    assert heuristic_route("meaning of unpaid leave") == "knowledge"
+
+
+def test_heuristic_definition_questions_with_transaction_framing_stay_leave():
+    """Personal/transactional framing keeps a "what is..." message on leave:
+    "what is MY balance" is a balance ask, not a definition question."""
+    assert heuristic_route("what is my annual leave balance") == "leave"
+    assert heuristic_route("what is left of my annual leave") == "leave"
+    assert heuristic_route("what is a leave request") == "leave"
+    assert heuristic_route("how do i apply for leave") == "leave"
+
+
+@pytest.mark.asyncio
+async def test_route_intent_overrides_llm_misclassification_to_knowledge():
+    """A clearly knowledge-framed leave question is re-routed to knowledge
+    even when the LLM (wrongly) says leave — the deterministic check and the
+    LLM must agree on the knowledge/leave boundary."""
+    llm = FakeLLM("leave")
+    assert await route_intent(llm, "what is the annual leave policy", []) == "knowledge"
+    assert await route_intent(llm, "what is annual leave", []) == "knowledge"
+    assert await route_intent(llm, "how does sick leave accrual work", []) == "knowledge"
+
+
+@pytest.mark.asyncio
+async def test_route_intent_keeps_transactional_leave_with_llm():
+    """Transactional leave stays on leave even with policy-adjacent words."""
+    llm = FakeLLM("leave")
+    assert await route_intent(llm, "my annual leave balance", []) == "leave"
+    assert await route_intent(llm, "request annual leave for tomorrow", []) == "leave"
+
+
+def test_routing_prompt_pins_knowledge_vs_leave_boundary():
+    """The routing prompt keeps the knowledge/leave boundary explicit so the
+    LLM path agrees with the deterministic heuristic — a prompt edit that
+    drops these examples fails loudly here."""
+    from app.agents.supervisor.prompts import ROUTING_SYSTEM
+
+    assert "what is the annual leave policy?" in ROUTING_SYSTEM
+    assert "what is annual leave?" in ROUTING_SYSTEM
+    assert "leave ACTIONS" in ROUTING_SYSTEM
+    assert "what is my annual leave balance?" in ROUTING_SYSTEM
+
+
 @pytest.mark.asyncio
 async def test_route_intent_uses_llm_response():
     """A clean single-word LLM reply is used as-is."""
