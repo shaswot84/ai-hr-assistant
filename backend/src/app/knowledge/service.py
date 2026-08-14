@@ -29,13 +29,14 @@ grounded context below. Follow these rules strictly:
 
 1. Base every claim on the provided evidence. Never invent facts, numbers, or
    policies that are not in the context.
-2. Cite the source document title(s) in parentheses at the end of each claim,
-   e.g. "(Leave Policy)".
+2. After EVERY claim, cite the evidence block(s) it came from with their
+   bracketed number(s), e.g. "[1]" or "[2, 3]". The numbers are the [N]
+   markers printed at the start of each GROUNDED CONTEXT block. End each
+   claim with at least one marker.
 3. If the context does not contain enough information to answer the question,
    say so honestly and suggest what additional document might help.
-4. Use plain Markdown: short paragraphs or bullets. Do not include headings,
-   citations beyond the document titles, or anything the evidence does not
-   support."""
+4. Use plain Markdown: short paragraphs or bullets. Do not add headings or
+   citations beyond the bracketed markers."""
 
 
 class KnowledgeService:
@@ -154,12 +155,18 @@ class KnowledgeService:
             low_confidence=low_confidence,
         )
 
-    async def generate_answer(self, query: str, result: KnowledgeResult) -> str | None:
+    async def generate_answer(
+        self, query: str, result: KnowledgeResult, *, history: str | None = None
+    ) -> str | None:
         """Produce a polished, grounded answer from a retrieval result.
 
         Returns ``None`` when no LLM is configured, retrieval is
         low-confidence (not enough evidence to answer safely), or generation
         fails. The caller then serves the grounded context as-is.
+
+        ``history`` is an optional pre-formatted transcript block (see
+        ``agents.context.history_text``) that makes the answer
+        conversation-aware; when given it is placed above the question.
         """
         if self._llm is None:
             return None
@@ -169,12 +176,16 @@ class KnowledgeService:
             sorted({c.document_title for c in result.citations})
         )
         user = f"QUESTION:\n{query}\n\nSOURCES: {sources}\n\nGROUNDED CONTEXT:\n{result.grounded_context}"
+        if history:
+            user = f"CONVERSATION HISTORY:\n{history}\n\n{user}"
         try:
             return await self._llm.complete(_GENERATION_SYSTEM, user)
         except Exception:  # noqa: BLE001 - never fail search because of the LLM
             return None
 
-    async def stream_answer(self, query: str, result: KnowledgeResult) -> AsyncIterator[str]:
+    async def stream_answer(
+        self, query: str, result: KnowledgeResult, *, history: str | None = None
+    ) -> AsyncIterator[str]:
         """Stream a grounded answer token by token.
 
         Same gating and prompt as :meth:`generate_answer` — yields nothing
@@ -190,6 +201,8 @@ class KnowledgeService:
             sorted({c.document_title for c in result.citations})
         )
         user = f"QUESTION:\n{query}\n\nSOURCES: {sources}\n\nGROUNDED CONTEXT:\n{result.grounded_context}"
+        if history:
+            user = f"CONVERSATION HISTORY:\n{history}\n\n{user}"
         try:
             async for token in self._llm.stream(_GENERATION_SYSTEM, user):
                 yield token

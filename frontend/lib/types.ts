@@ -303,6 +303,49 @@ export interface KnowledgeSearchResult {
   chunks: KnowledgeChunk[];
 }
 
+// ---- Chat (assistant) ---------------------------------------------------
+
+export interface ChatCitation {
+  chunk_id: string;
+  document_id: string;
+  document_version_id: string;
+  version_number: number;
+  document_title: string;
+  category: string;
+  page: number | null;
+  section_title: string | null;
+}
+
+export interface ChatResponse {
+  conversation_id: string;
+  message: string;
+  citations: ChatCitation[];
+  confidence: number;
+  low_confidence: boolean;
+  agent: string; // knowledge | leave | recruitment | clarify
+}
+
+export interface ChatConversation {
+  conversation_id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatMessage {
+  message_id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  citations: ChatCitation[] | null;
+  meta: {
+    agent?: string;
+    confidence?: number;
+    low_confidence?: boolean;
+    safety?: "PASS" | "REDACTED" | "BLOCKED" | "FLAGGED_FOR_REVIEW";
+  } | null;
+  created_at: string;
+}
+
 // ---- People (org directory) ---------------------------------------------
 
 export interface Department {

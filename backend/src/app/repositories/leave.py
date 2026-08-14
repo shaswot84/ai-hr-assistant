@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.domain.leave import LeaveBalance, LeaveRequest, LeaveType
@@ -28,6 +28,11 @@ class LeaveTypeRepo:
     def get_by_name(self, leave_name: str) -> LeaveType | None:
         """Fetch a leave type by its unique name, or None if it does not exist."""
         stmt = select(LeaveType).where(LeaveType.leave_name == leave_name)
+        return self._db.scalar(stmt)
+
+    def get_by_name_ci(self, leave_name: str) -> LeaveType | None:
+        """Fetch a leave type by name, case-insensitively, or None if none matches."""
+        stmt = select(LeaveType).where(func.lower(LeaveType.leave_name) == leave_name.strip().lower())
         return self._db.scalar(stmt)
 
     def list_active(self) -> list[LeaveType]:
@@ -98,6 +103,14 @@ class LeaveRequestRepo:
         """Fetch a leave request by id, or None if it does not exist (or was deleted)."""
         stmt = select(LeaveRequest).where(
             LeaveRequest.leave_request_id == leave_request_id,
+            LeaveRequest.deleted_at.is_(None),
+        )
+        return self._db.scalar(stmt)
+
+    def get_by_request_number(self, request_number: str) -> LeaveRequest | None:
+        """Fetch a leave request by its LR-YYYY-XXX reference, or None."""
+        stmt = select(LeaveRequest).where(
+            LeaveRequest.request_number == request_number,
             LeaveRequest.deleted_at.is_(None),
         )
         return self._db.scalar(stmt)

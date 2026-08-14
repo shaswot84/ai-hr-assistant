@@ -24,7 +24,7 @@ from app.auth.passwords import hash_password
 from app.contracts.auth import UserContext
 from app.db.base import Base
 from app.db.sync_session import SessionLocal, engine
-from app.domain import audit, leave, outbox, recruitment, setting  # noqa: F401
+from app.domain import audit, conversation, leave, outbox, recruitment, setting  # noqa: F401
 from app.domain.identity import (
     ApplicationUser,
     Candidate,

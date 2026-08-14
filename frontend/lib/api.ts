@@ -27,6 +27,10 @@ import type {
   ScoringKeyword,
   UserContext,
   Vacancy,
+  ChatCitation,
+  ChatConversation,
+  ChatMessage,
+  ChatResponse,
 } from "@/lib/types";
 import { getAuthToken } from "@/lib/auth";
 
@@ -331,6 +335,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ action }),
     }),
+
+  // ---- chat (assistant) ----------------------------------------------
+
+  chat: (message: string, conversationId?: string) =>
+    request<ChatResponse>("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(conversationId ? { conversation_id: conversationId, message } : { message }),
+    }),
+
+  listConversations: () => request<ChatConversation[]>("/api/chat/conversations"),
+
+  listChatMessages: (conversationId: string) =>
+    request<ChatMessage[]>(`/api/chat/conversations/${conversationId}/messages`),
 };
 
 /** One SSE event emitted by `GET /api/knowledge/search/stream`. */
@@ -390,6 +407,77 @@ export async function* searchStream(
     }
   } finally {
     // Cancels the underlying fetch when the consumer aborts or stops early.
+    await reader.cancel().catch(() => {});
+  }
+}
+
+/** One SSE event emitted by `POST /api/chat/stream`. */
+export type ChatStreamEvent =
+  | { type: "turn_started"; conversation_id: string }
+  | { type: "route"; route: string }
+  | {
+      type: "retrieval";
+      rewritten_query: string;
+      grounded_context: string;
+      confidence: number;
+      low_confidence: boolean;
+      citations: ChatCitation[];
+    }
+  | { type: "token"; text: string }
+  | { type: "message"; text: string }
+  | {
+      type: "done";
+      conversation_id: string;
+      message: string;
+      citations: ChatCitation[];
+      confidence: number;
+      low_confidence: boolean;
+      agent: string;
+    }
+  | { type: "error"; detail: string };
+
+/**
+ * Stream one chat turn over SSE: `turn_started`, `route`, `retrieval`,
+ * then `token` events as the answer generates (or a single `message` event
+ * for stub agents / no-LLM fallbacks), ending with `done`. The chat
+ * endpoints require auth, so the JWT is attached.
+ */
+export async function* chatStream(
+  body: { conversation_id?: string; message: string },
+  signal?: AbortSignal
+): AsyncGenerator<ChatStreamEvent> {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/api/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) await parseError(res);
+  if (!res.body) throw new Error("Streaming chat returned no response body.");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === "[DONE]") return;
+        yield JSON.parse(payload) as ChatStreamEvent;
+      }
+    }
+  } finally {
     await reader.cancel().catch(() => {});
   }
 }

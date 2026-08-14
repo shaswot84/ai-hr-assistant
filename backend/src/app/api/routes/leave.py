@@ -89,6 +89,8 @@ def create_leave_type(
         )
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
 
 
 # ---- balance --------------------------------------------------------------
