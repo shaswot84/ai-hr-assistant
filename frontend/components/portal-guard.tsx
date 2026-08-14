@@ -34,14 +34,14 @@ export function PortalGuard({
       .then((res) => {
         if (cancelled) return;
         if (!allowedRoles.includes(res.user.coarse_role)) {
-          router.replace("/login");
+          router.replace("/signin");
           return;
         }
         setUser(res.user);
         setChecking(false);
       })
       .catch(() => {
-        if (!cancelled) router.replace("/login");
+        if (!cancelled) router.replace("/signin");
       });
     return () => {
       cancelled = true;

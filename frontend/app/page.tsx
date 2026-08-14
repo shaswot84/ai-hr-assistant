@@ -28,7 +28,7 @@ export default function HomePage() {
         router.replace(ROLE_HOME[res.user.coarse_role] ?? "/login");
       })
       .catch(() => {
-        if (!cancelled) router.replace("/login");
+        if (!cancelled) router.replace("/signin");
       });
     return () => {
       cancelled = true;

@@ -28,7 +28,7 @@ export default function CandidatePublicLayout({ children }: { children: React.Re
               <p className="text-[11px] text-zinc-400">Careers</p>
             </div>
           </div>
-          <Link href="/login" className="link text-sm">
+          <Link href="/signin" className="link text-sm">
             Sign in
           </Link>
         </div>

@@ -194,7 +194,7 @@ function UserArea({ user }: { user: UserContext }) {
 
   function signOut() {
     clearAuthToken();
-    router.push("/login");
+    router.push("/signin");
   }
 
   return (
