@@ -60,7 +60,7 @@ const CORD_TRAVEL = 60;
 const CORD_THRESHOLD = 30;
 //: How long the ignite wash plays before navigating — must match the
 //: transition-duration below so the redirect fires right as it completes.
-const IGNITE_MS = 750;
+const IGNITE_MS = 450;
 
 /** Tiny synthesized "click" for the cord pull — no external audio asset. */
 function playClick() {
@@ -92,16 +92,16 @@ function Lamp({ on, dragging, cordY, handlers }: LampProps) {
   return (
     <div className="relative flex h-[340px] w-[220px] items-start justify-center sm:h-[430px] sm:w-[280px]">
       <svg className="h-full w-full overflow-visible" viewBox="0 0 200 300" xmlns="http://www.w3.org/2000/svg">
-        {/* glow tints blue, not the lamp's usual warm gold — it's the same
-            hand-off color as the full-screen ignite wash below, so the bulb
-            and the transition read as one continuous flash */}
+        {/* glow tints neutral grey, not the lamp's usual warm gold — it's
+            the same hand-off color as the full-screen ignite wash below, so
+            the bulb and the transition read as one continuous flash */}
         <ellipse
           className={`transition-opacity duration-500 ${on ? "opacity-60" : "opacity-0"}`}
           cx="100"
           cy="110"
           rx="60"
           ry="30"
-          fill="#60a5fa"
+          fill="#a1a1aa"
           style={{ filter: "blur(15px)" }}
         />
 
@@ -130,7 +130,7 @@ function Lamp({ on, dragging, cordY, handlers }: LampProps) {
         </g>
 
         <path
-          className={`transition-all duration-500 ${on ? "drop-shadow-[0_0_30px_rgba(96,165,250,0.5)]" : ""}`}
+          className={`transition-all duration-500 ${on ? "drop-shadow-[0_0_30px_rgba(161,161,170,0.5)]" : ""}`}
           d="M30 110 C 30 50, 170 50, 170 110 C 170 125, 30 125, 30 110 Z"
           fill={shadeFill}
         />
@@ -239,18 +239,17 @@ export default function HomePage() {
 
   return (
     <div
-      className={`relative min-h-screen select-none overflow-hidden transition-colors ${
-        igniting ? "duration-700" : "duration-500"
-      } ${igniting ? "bg-white" : "bg-[#121417]"}`}
+      className={`relative min-h-screen select-none overflow-hidden transition-colors duration-500 ${
+        igniting ? "bg-white" : "bg-[#121417]"
+      }`}
     >
-      {/* blue glow that blooms to fill the screen on ignite, washing the
-          page to white right as we hand off to the (light-themed) app —
-          blue rather than a lamp's usual warm gold, since it's the one
-          accent color both the dark splash and the light app already share
-          (the brand logo badge, the app's primary buttons/links) */}
+      {/* neutral grey glow that blooms to fill the screen on ignite,
+          washing the page to white right as we hand off to the (light-themed)
+          app — grey rather than a lamp's usual warm gold, sitting midway
+          between the dark splash and the light app's own palettes */}
       <div
-        className={`pointer-events-none fixed inset-0 origin-center bg-[radial-gradient(circle_at_50%_38%,rgba(96,165,250,0.9),rgba(255,255,255,0.5)_60%,rgba(255,255,255,0)_100%)] transition-all ease-in ${
-          igniting ? "scale-[6] opacity-100 duration-700" : "scale-100 opacity-0 duration-500"
+        className={`pointer-events-none fixed inset-0 origin-center bg-[radial-gradient(circle_at_50%_38%,rgba(161,161,170,0.9),rgba(255,255,255,0.5)_60%,rgba(255,255,255,0)_100%)] transition-all ease-in ${
+          igniting ? "scale-[6] opacity-100 duration-500" : "scale-100 opacity-0 duration-500"
         }`}
       />
 
