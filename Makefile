@@ -25,6 +25,8 @@ help:
 	@echo "  make setup       Copy .env.example -> .env (only if .env missing)"
 	@echo "  make migrate     Run Alembic migrations against the running database"
 	@echo "  make seed        Seed demo users, sample vacancies, and leave data"
+	@echo "  make seed-knowledge   Seed the sample HR policy corpus into the knowledge base"
+	@echo "                   (idempotent; requires the stack running so the ingestion worker + Ollama are up)"
 	@echo ""
 	@echo "Local backend (no Docker):"
 	@echo "  make dev         Run backend via uvicorn with reload"
@@ -66,6 +68,13 @@ migrate:
 seed:
 	@echo "Seeding demo data (idempotent)..."
 	@cd backend && PYTHONPATH=src .venv/bin/python -m app.db.seed 2>/dev/null || docker compose exec backend python -m app.db.seed
+
+# Seed the knowledge base with backend/sample_docs/*.md (the chat answers
+# leave-policy questions from these documents). Idempotent via checksum
+# dedup; requires the stack up (API + ingestion worker + MinIO + Ollama).
+seed-knowledge:
+	@echo "Seeding sample knowledge-base documents (idempotent)..."
+	@cd backend && .venv/bin/python ../scripts/seed_knowledge.py
 
 # ---- Docker Compose workflow ------------------------------------------
 

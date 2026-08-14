@@ -22,8 +22,10 @@ ai-hr-assistant/
 ├── Makefile                  # up / migrate / seed / test / lint (uses backend/.venv)
 ├── docker-compose.yml        # postgres+pgvector / minio / mailpit / backend / worker / recruitment_worker / frontend (+ optional ollama)
 ├── scripts/
-│   └── e2e_ingestion.py      # end-to-end smoke test (needs the running stack)
+│   ├── seed_knowledge.py    # idempotent seed of backend/sample_docs into the KB
+│   └── e2e_ingestion.py     # end-to-end smoke test (needs the running stack)
 ├── backend/
+│   ├── sample_docs/         # sample HR policy corpus (the chat's knowledge answers)
 │   ├── alemc/              # async Alembic migrations
 │   ├── pyproject.toml        # deps + `reranker` extra + ruff/pytest config
 │   ├── src/app/

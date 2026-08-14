@@ -20,24 +20,12 @@ from pathlib import Path
 import httpx
 
 BASE = "http://localhost:8000"
-FAQ_MD = """# Annual Leave Policy
-
-## Entitlement
-
-Every employee accrues 20 days of paid annual leave per year.
-
-## Requesting Leave
-
-Submit a leave request through the HR portal at least two weeks in advance.
-
-## Carryover
-
-Unused leave may be carried over up to 5 days into the next year.
-
-## Termination
-
-Accrued but unused leave is paid out upon termination.
-"""
+# The shared sample corpus (backend/sample_docs) is the single source of
+# truth — this smoke test ingests the same annual-leave policy that
+# ``scripts/seed_knowledge.py`` ships.
+FAQ_MD = (
+    Path(__file__).resolve().parent.parent / "backend" / "sample_docs" / "annual_leave_policy.md"
+).read_text()
 
 
 def main() -> int:
