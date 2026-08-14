@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from string import Template
 from typing import Any
 
 from app.evaluation.keyword_suggestion import TIER_WEIGHTS
@@ -29,25 +30,33 @@ DEFAULT_SYSTEM_PROMPT = (
     "fences, no commentary."
 )
 
+#: Task template for the scoring call. Uses `$name` placeholders (stdlib
+#: `string.Template`), not `str.format()` — this template is manager-editable
+#: (see Settings) and is full of literal JSON braces for the response
+#: schema; `$name` substitution never touches `{`/`}` at all, so an edited
+#: template can't break on an unescaped brace the way `.format()` would.
+#: Missing/renamed placeholders are substituted via `safe_substitute` (see
+#: `_score_with_llm`), so a manager's edit degrades gracefully instead of
+#: raising and failing every evaluation.
 USER_PROMPT = """Screen the following resume against a target job opening, the way an ATS + recruiter would.
 
 TARGET JOB:
-Title: {job_title}
+Title: $job_title
 Description:
-{job_description}
+$job_description
 
 RESUME TEXT (raw-extracted, may have imperfect spacing/line breaks — look past formatting artifacts to the content):
-{resume_text}
-{structured_context}
-{scoring_keywords_context}
+$resume_text
+$structured_context
+$scoring_keywords_context
 Return a single JSON object with exactly this shape:
-{{
+{
   "requirements": [                     // ONLY explicit must-haves stated in the job description
-    {{
+    {
       "requirement": string,            // the must-have, as stated, e.g. "3+ years of Python experience"
       "met": boolean,                   // does this candidate clearly meet it, per the resume?
       "evidence": string                // what in the resume supports this verdict (or why it's missing)
-    }}
+    }
     // Do NOT include "preferred"/"nice to have"/general skills here — only things
     // stated as required, minimum, must-have, or mandatory. Empty array if the job
     // description states no explicit hard requirements.
@@ -55,8 +64,8 @@ Return a single JSON object with exactly this shape:
   "recommendation": string,             // one of: "Strong Match", "Good Match", "Possible Match", "Weak Match"
   "summary": string,                    // 2-3 sentences: does this candidate match the role, and why
   "keyFactors": [                       // 3-5 qualitative factors that explain the recommendation
-    {{"factor": string, "note": string}}
-    // e.g. {{"factor": "Skills Match", "note": "Has 4 of 5 required technologies"}}
+    {"factor": string, "note": string}
+    // e.g. {"factor": "Skills Match", "note": "Has 4 of 5 required technologies"}
     // cover at least: Skills Match, Experience Level, Domain/Role Relevance
     // Describe each in words only — no numeric scores, this is a qualitative read.
   ],
@@ -65,19 +74,19 @@ Return a single JSON object with exactly this shape:
   "matchedKeywords": string[],          // job requirements evidenced in the resume
   "missingKeywords": string[],          // important job requirements absent from the resume
   "keywordMatches": [                   // ONLY for the SCORING KEYWORDS listed above, if any were given
-    {{"keyword": string, "present": boolean, "evidence": string}}
+    {"keyword": string, "present": boolean, "evidence": string}
     // exactly one entry per keyword in the SCORING KEYWORDS list, same spelling,
     // judged independently from "requirements"/"matchedKeywords" above. Empty
     // array if no SCORING KEYWORDS section was given.
   ],
-  "candidateProfile": {{                // identity/contact info read directly off the resume
+  "candidateProfile": {                 // identity/contact info read directly off the resume
     "name": string,                     // candidate's full name as written on the resume
     "email": string,                    // contact email found on the resume; "" if none
     "phone": string,                    // contact phone number found on the resume; "" if none
     "location": string,                 // city/region found on the resume; "" if none
     "headline": string                  // short role/seniority summary, e.g. "Senior Backend Engineer, 7 yrs"
-  }}
-}}
+  }
+}
 Rules:
 - Ground every claim in the resume text. Do not fabricate skills or experience.
 - "requirements" is a hard gate: judge each conservatively — only mark "met": true when the resume clearly supports it.
@@ -110,7 +119,9 @@ def _format_structured_context(structured: StructuredResume | None) -> str:
         lines.append("Work history:")
         for entry in structured.work_experience:
             span = f"{entry.start_date or '?'} - {entry.end_date or '?'}"
-            lines.append(f"- {entry.title or 'Unknown title'} at {entry.company or 'Unknown company'} ({span})")
+            lines.append(
+                f"- {entry.title or 'Unknown title'} at {entry.company or 'Unknown company'} ({span})"
+            )
     if structured.education:
         lines.append("Education:")
         for entry in structured.education:
@@ -350,7 +361,9 @@ def _compute_keyword_score(
     if not scoring_keywords:
         return None
     tier_by_keyword = {kw["keyword"]: kw.get("tier", "important") for kw in scoring_keywords}
-    total_weight = sum(TIER_WEIGHTS.get(tier, TIER_WEIGHTS["important"]) for tier in tier_by_keyword.values())
+    total_weight = sum(
+        TIER_WEIGHTS.get(tier, TIER_WEIGHTS["important"]) for tier in tier_by_keyword.values()
+    )
     if total_weight == 0:
         return None
     present_keywords = {m["keyword"] for m in keyword_matches if m["present"]}
@@ -378,7 +391,9 @@ def _normalize_review(
     """
     recommendation = _str(data.get("recommendation")) or DEFAULT_RECOMMENDATION
 
-    requirements = _apply_deterministic_requirement_checks(_requirements(data.get("requirements")), structured)
+    requirements = _apply_deterministic_requirement_checks(
+        _requirements(data.get("requirements")), structured
+    )
     requirements_met = all(r["met"] for r in requirements)
     if not requirements_met:
         recommendation = DOES_NOT_MEET_REQUIREMENTS
@@ -416,6 +431,7 @@ async def score_resume(
     structured: StructuredResume | None = None,
     scoring_keywords: list[dict[str, Any]] | None = None,
     system_prompt: str | None = None,
+    user_prompt: str | None = None,
     api_base: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
@@ -429,11 +445,12 @@ async def score_resume(
     ``scoring_keywords`` is the vacancy's manager-configured keyword/tier
     list; when given, the model additionally judges per-keyword presence and
     `ScoreResult.keyword_score` is computed deterministically from it (see
-    `_compute_keyword_score`) — None when not given. ``system_prompt`` lets a
-    manager override the model instructions (stored in settings); when None,
-    the default constant is used. ``api_base``/``model``/``api_key`` are the
-    manager-editable LLM connection settings (also stored in settings); when
-    None, the .env-configured defaults are used.
+    `_compute_keyword_score`) — None when not given. ``system_prompt`` and
+    ``user_prompt`` let a manager override the model instructions (stored in
+    settings); when None, the default constants are used. ``api_base``/
+    ``model``/``api_key`` are the manager-editable LLM connection settings
+    (also stored in settings); when None, the .env-configured defaults are
+    used.
 
     Raises `ChatProviderError` if no AI provider is configured, or if the
     provider call fails — the caller is responsible for recording that as a
@@ -445,7 +462,14 @@ async def score_resume(
     if not provider.is_configured():
         raise ChatProviderError("No AI provider is configured.")
     return await _score_with_llm(
-        provider, resume_text, job_title, job_description, structured, scoring_keywords, system_prompt
+        provider,
+        resume_text,
+        job_title,
+        job_description,
+        structured,
+        scoring_keywords,
+        system_prompt,
+        user_prompt,
     )
 
 
@@ -457,9 +481,13 @@ async def _score_with_llm(
     structured: StructuredResume | None,
     scoring_keywords: list[dict[str, Any]] | None,
     system_prompt: str | None,
+    user_prompt: str | None,
 ) -> ScoreResult:
     """Screen the resume via the Ollama chat provider. Raises `ChatProviderError` on failure."""
-    user_prompt = USER_PROMPT.format(
+    # safe_substitute (not substitute): a manager's edited template that drops
+    # or misspells a placeholder degrades to the literal "$name" text instead
+    # of raising and failing every evaluation.
+    rendered_user_prompt = Template(user_prompt or USER_PROMPT).safe_substitute(
         job_title=job_title,
         job_description=job_description or "Not provided.",
         resume_text=resume_text[:12000],
@@ -468,7 +496,7 @@ async def _score_with_llm(
     )
     data = await provider.complete_json(
         system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
+        user_prompt=rendered_user_prompt,
     )
 
     review = _normalize_review(data, structured, resume_text, scoring_keywords)

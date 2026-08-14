@@ -79,6 +79,35 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+interface PromptResult {
+  prompt: string;
+  is_default: boolean;
+}
+
+/** Builds the get/set/reset trio for one manager-editable LLM prompt setting
+ * (`/api/settings/{path}`, `.../reset`) — every prompt in Settings (resume-
+ * review system/user, resume-structuring system/user, keyword-suggestion)
+ * shares this exact shape, so it's generated once per prompt instead of
+ * hand-written five times. */
+function promptEndpoints<Name extends string>(name: Name, path: string) {
+  return {
+    [`get${name}`]: () => request<PromptResult>(`/api/settings/${path}`),
+    [`set${name}`]: (prompt: string) =>
+      request<PromptResult>(`/api/settings/${path}`, {
+        method: "PUT",
+        body: JSON.stringify({ prompt }),
+      }),
+    [`reset${name}`]: () =>
+      request<PromptResult>(`/api/settings/${path}/reset`, { method: "POST" }),
+  } as {
+    [K in `get${Name}`]: () => Promise<PromptResult>;
+  } & {
+    [K in `set${Name}`]: (prompt: string) => Promise<PromptResult>;
+  } & {
+    [K in `reset${Name}`]: () => Promise<PromptResult>;
+  };
+}
+
 export const api = {
   me: () => request<{ user: UserContext }>("/api/auth/me"),
 
@@ -165,39 +194,11 @@ export const api = {
   resumeUrl: (applicationId: string) =>
     `${API_BASE_URL}/api/applications/${applicationId}/resume`,
 
-  getResumeReviewPrompt: () =>
-    request<{ prompt: string; is_default: boolean }>(
-      "/api/settings/resume-review-prompt"
-    ),
-
-  setResumeReviewPrompt: (prompt: string) =>
-    request<{ prompt: string; is_default: boolean }>(
-      "/api/settings/resume-review-prompt",
-      { method: "PUT", body: JSON.stringify({ prompt }) }
-    ),
-
-  resetResumeReviewPrompt: () =>
-    request<{ prompt: string; is_default: boolean }>(
-      "/api/settings/resume-review-prompt/reset",
-      { method: "POST" }
-    ),
-
-  getKeywordSuggestionPrompt: () =>
-    request<{ prompt: string; is_default: boolean }>(
-      "/api/settings/keyword-suggestion-prompt"
-    ),
-
-  setKeywordSuggestionPrompt: (prompt: string) =>
-    request<{ prompt: string; is_default: boolean }>(
-      "/api/settings/keyword-suggestion-prompt",
-      { method: "PUT", body: JSON.stringify({ prompt }) }
-    ),
-
-  resetKeywordSuggestionPrompt: () =>
-    request<{ prompt: string; is_default: boolean }>(
-      "/api/settings/keyword-suggestion-prompt/reset",
-      { method: "POST" }
-    ),
+  ...promptEndpoints("ResumeReviewPrompt", "resume-review-prompt"),
+  ...promptEndpoints("ResumeReviewUserPrompt", "resume-review-user-prompt"),
+  ...promptEndpoints("StructuringSystemPrompt", "resume-structuring-system-prompt"),
+  ...promptEndpoints("StructuringUserPrompt", "resume-structuring-user-prompt"),
+  ...promptEndpoints("KeywordSuggestionPrompt", "keyword-suggestion-prompt"),
 
   getLlmConfig: () => request<LlmConfig>("/api/settings/llm-config"),
 

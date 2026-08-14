@@ -15,86 +15,81 @@ def _svc() -> SettingsService:
     return SettingsService()
 
 
-class ResumeReviewPromptIn(BaseModel):
-    """Request body for setting the resume-review system prompt."""
+class PromptIn(BaseModel):
+    """Request body for setting a manager-editable prompt. Shared shape — every
+    prompt setting (system or task/user template) round-trips as {prompt}."""
 
     prompt: str
 
 
-class ResumeReviewPromptOut(BaseModel):
-    """Response carrying the active prompt plus whether it is the default."""
-
-    prompt: str
-    is_default: bool
-
-
-@router.get("/resume-review-prompt", response_model=ResumeReviewPromptOut)
-def get_resume_review_prompt(
-    user: UserContext = Depends(require_role("HR_ADMIN")),
-    svc: SettingsService = Depends(_svc),
-):
-    """Return the active resume-review system prompt and whether it is the default (manager-only)."""
-    return ResumeReviewPromptOut(**svc.get_resume_review_prompt())
-
-
-@router.put("/resume-review-prompt", response_model=ResumeReviewPromptOut)
-def put_resume_review_prompt(
-    body: ResumeReviewPromptIn,
-    user: UserContext = Depends(require_role("HR_ADMIN")),
-    svc: SettingsService = Depends(_svc),
-):
-    """Persist a manager-provided resume-review system prompt (manager-only)."""
-    return ResumeReviewPromptOut(**svc.set_resume_review_prompt(body.prompt))
-
-
-@router.post("/resume-review-prompt/reset", response_model=ResumeReviewPromptOut)
-def reset_resume_review_prompt(
-    user: UserContext = Depends(require_role("HR_ADMIN")),
-    svc: SettingsService = Depends(_svc),
-):
-    """Clear any customised resume-review prompt, restoring the default (manager-only)."""
-    return ResumeReviewPromptOut(**svc.reset_resume_review_prompt())
-
-
-class KeywordSuggestionPromptIn(BaseModel):
-    """Request body for setting the keyword-suggestion system prompt."""
-
-    prompt: str
-
-
-class KeywordSuggestionPromptOut(BaseModel):
-    """Response carrying the active keyword-suggestion prompt plus whether it is the default."""
+class PromptOut(BaseModel):
+    """Response carrying the active prompt plus whether it is the default. Shared
+    shape across every prompt setting endpoint below."""
 
     prompt: str
     is_default: bool
 
 
-@router.get("/keyword-suggestion-prompt", response_model=KeywordSuggestionPromptOut)
-def get_keyword_suggestion_prompt(
-    user: UserContext = Depends(require_role("HR_ADMIN")),
-    svc: SettingsService = Depends(_svc),
-):
-    """Return the active keyword-suggestion system prompt and whether it is the default (manager-only)."""
-    return KeywordSuggestionPromptOut(**svc.get_keyword_suggestion_prompt())
+def _prompt_routes(path: str, *, get, set_, reset) -> None:
+    """Register the GET/PUT/POST-reset trio for one manager-editable prompt.
+
+    All five prompt settings (resume-review system/user, resume-structuring
+    system/user, keyword-suggestion system) share the exact same three-route
+    shape — registered here once instead of five times to keep this file
+    from being 90% copy-paste.
+    """
+
+    @router.get(f"/{path}", response_model=PromptOut, name=f"get_{path}")
+    def _get(
+        user: UserContext = Depends(require_role("HR_ADMIN")), svc: SettingsService = Depends(_svc)
+    ):
+        return PromptOut(**get(svc))
+
+    @router.put(f"/{path}", response_model=PromptOut, name=f"put_{path}")
+    def _put(
+        body: PromptIn,
+        user: UserContext = Depends(require_role("HR_ADMIN")),
+        svc: SettingsService = Depends(_svc),
+    ):
+        return PromptOut(**set_(svc, body.prompt))
+
+    @router.post(f"/{path}/reset", response_model=PromptOut, name=f"reset_{path}")
+    def _reset(
+        user: UserContext = Depends(require_role("HR_ADMIN")), svc: SettingsService = Depends(_svc)
+    ):
+        return PromptOut(**reset(svc))
 
 
-@router.put("/keyword-suggestion-prompt", response_model=KeywordSuggestionPromptOut)
-def put_keyword_suggestion_prompt(
-    body: KeywordSuggestionPromptIn,
-    user: UserContext = Depends(require_role("HR_ADMIN")),
-    svc: SettingsService = Depends(_svc),
-):
-    """Persist a manager-provided keyword-suggestion system prompt (manager-only)."""
-    return KeywordSuggestionPromptOut(**svc.set_keyword_suggestion_prompt(body.prompt))
-
-
-@router.post("/keyword-suggestion-prompt/reset", response_model=KeywordSuggestionPromptOut)
-def reset_keyword_suggestion_prompt(
-    user: UserContext = Depends(require_role("HR_ADMIN")),
-    svc: SettingsService = Depends(_svc),
-):
-    """Clear any customised keyword-suggestion prompt, restoring the default (manager-only)."""
-    return KeywordSuggestionPromptOut(**svc.reset_keyword_suggestion_prompt())
+_prompt_routes(
+    "resume-review-prompt",
+    get=lambda svc: svc.get_resume_review_prompt(),
+    set_=lambda svc, prompt: svc.set_resume_review_prompt(prompt),
+    reset=lambda svc: svc.reset_resume_review_prompt(),
+)
+_prompt_routes(
+    "resume-review-user-prompt",
+    get=lambda svc: svc.get_resume_review_user_prompt(),
+    set_=lambda svc, prompt: svc.set_resume_review_user_prompt(prompt),
+    reset=lambda svc: svc.reset_resume_review_user_prompt(),
+)
+_prompt_routes(
+    "resume-structuring-system-prompt",
+    get=lambda svc: svc.get_structuring_system_prompt(),
+    set_=lambda svc, prompt: svc.set_structuring_system_prompt(prompt),
+    reset=lambda svc: svc.reset_structuring_system_prompt(),
+)
+_prompt_routes(
+    "resume-structuring-user-prompt",
+    get=lambda svc: svc.get_structuring_user_prompt(),
+    set_=lambda svc, prompt: svc.set_structuring_user_prompt(prompt),
+    reset=lambda svc: svc.reset_structuring_user_prompt(),
+)
+_prompt_routes(
+    "keyword-suggestion-prompt",
+    get=lambda svc: svc.get_keyword_suggestion_prompt(),
+    set_=lambda svc, prompt: svc.set_keyword_suggestion_prompt(prompt),
+    reset=lambda svc: svc.reset_keyword_suggestion_prompt(),
+)
 
 
 class LlmConfigIn(BaseModel):
@@ -139,7 +134,9 @@ def put_llm_config(
     svc: SettingsService = Depends(_svc),
 ):
     """Persist manager-provided LLM route/model/key settings (manager-only)."""
-    return LlmConfigOut(**svc.set_llm_config(api_base=body.api_base, model=body.model, api_key=body.api_key))
+    return LlmConfigOut(
+        **svc.set_llm_config(api_base=body.api_base, model=body.model, api_key=body.api_key)
+    )
 
 
 @router.post("/llm-config/reset", response_model=LlmConfigOut)

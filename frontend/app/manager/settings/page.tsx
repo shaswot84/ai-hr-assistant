@@ -14,6 +14,7 @@ interface PromptResult {
 function PromptSettings({
   title,
   description,
+  hint,
   rows = 14,
   get,
   set,
@@ -21,6 +22,9 @@ function PromptSettings({
 }: {
   title: string;
   description: string;
+  /** Shown below the textarea for templates with `$name` placeholders — the
+   * system-only prompts (no placeholders) omit this. */
+  hint?: string;
   rows?: number;
   get: () => Promise<PromptResult>;
   set: (prompt: string) => Promise<PromptResult>;
@@ -93,6 +97,7 @@ function PromptSettings({
         rows={rows}
         className="input flex-1 font-mono text-[13px] leading-relaxed"
       />
+      {hint && <p className="mt-1.5 text-xs text-zinc-400">{hint}</p>}
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
       <div className="mt-4 flex gap-3">
         <button type="button" onClick={handleSave} disabled={saving} className="btn-primary">
@@ -267,16 +272,41 @@ export default function ManagerSettingsPage() {
     <div className="space-y-6">
       <PageHeader
         title="AI Settings"
-        description="Configure the LLM provider and the system prompts used to screen resumes and generate scoring keywords."
+        description="Configure the LLM provider and every prompt in the recruitment pipeline — extraction, scoring, and keyword suggestion."
       />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <LlmConnectionSettings />
         <PromptSettings
           title="Resume-Screening System Prompt"
-          description="Controls how candidates are scored and matched"
+          description="Sets the model's persona/behavior when judging fit"
           get={api.getResumeReviewPrompt}
           set={api.setResumeReviewPrompt}
           reset={api.resetResumeReviewPrompt}
+        />
+        <PromptSettings
+          title="Resume-Screening Task Prompt"
+          description="The response schema and scoring instructions — the bulk of what actually drives the review"
+          hint="Placeholders: $job_title, $job_description, $resume_text, $structured_context, $scoring_keywords_context"
+          rows={18}
+          get={api.getResumeReviewUserPrompt}
+          set={api.setResumeReviewUserPrompt}
+          reset={api.resetResumeReviewUserPrompt}
+        />
+        <PromptSettings
+          title="Resume-Structuring System Prompt"
+          description="Sets the model's persona/behavior when extracting work history/education (runs before scoring)"
+          get={api.getStructuringSystemPrompt}
+          set={api.setStructuringSystemPrompt}
+          reset={api.resetStructuringSystemPrompt}
+        />
+        <PromptSettings
+          title="Resume-Structuring Task Prompt"
+          description="The extraction schema — what facts get pulled out and handed to the scoring step as verified data"
+          hint="Placeholder: $resume_text"
+          rows={16}
+          get={api.getStructuringUserPrompt}
+          set={api.setStructuringUserPrompt}
+          reset={api.resetStructuringUserPrompt}
         />
         <PromptSettings
           title="Keyword-Suggestion System Prompt"

@@ -27,7 +27,9 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message
 POLL_INTERVAL_SECONDS = 2.0
 
 
-async def process_job(db: Session, job: OutboxJob, object_store: SyncS3ObjectStore, email: EmailProvider) -> None:
+async def process_job(
+    db: Session, job: OutboxJob, object_store: SyncS3ObjectStore, email: EmailProvider
+) -> None:
     """Dispatch an outbox job to its handler based on job type."""
     if job.job_type == "EVALUATE_APPLICATION":
         await _evaluate_application(db, job, object_store)
@@ -47,7 +49,9 @@ async def process_job(db: Session, job: OutboxJob, object_store: SyncS3ObjectSto
         raise RuntimeError(f"Unknown job type: {job.job_type}")
 
 
-async def _evaluate_application(db: Session, job: OutboxJob, object_store: SyncS3ObjectStore) -> None:
+async def _evaluate_application(
+    db: Session, job: OutboxJob, object_store: SyncS3ObjectStore
+) -> None:
     """Extract resume text, score it against the vacancy, and persist an evaluation row."""
     application_id = uuid.UUID(str(job.payload["application_id"]))
     object_key = str(job.payload["cv_object_key"])
@@ -82,6 +86,9 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: SyncS
 
     settings_svc = SettingsService()
     system_prompt = settings_svc.resolved_prompt()
+    user_prompt = settings_svc.resolved_resume_review_user_prompt()
+    structuring_system_prompt = settings_svc.resolved_structuring_system_prompt()
+    structuring_user_prompt = settings_svc.resolved_structuring_user_prompt()
     llm_overrides = settings_svc.resolved_llm_overrides()
 
     started = time.monotonic()
@@ -91,6 +98,8 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: SyncS
         # everything (like years of experience) from raw text in one shot.
         structured = await extract_structured_resume(
             extraction.text,
+            system_prompt=structuring_system_prompt,
+            user_prompt=structuring_user_prompt,
             api_base=llm_overrides["api_base"],
             model=llm_overrides["model"],
             api_key=llm_overrides["api_key"],
@@ -102,6 +111,7 @@ async def _evaluate_application(db: Session, job: OutboxJob, object_store: SyncS
             structured=structured,
             scoring_keywords=vacancy.scoring_keywords if vacancy else None,
             system_prompt=system_prompt,
+            user_prompt=user_prompt,
             api_base=llm_overrides["api_base"],
             model=llm_overrides["model"],
             api_key=llm_overrides["api_key"],
