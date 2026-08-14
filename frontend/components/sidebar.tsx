@@ -194,7 +194,7 @@ function UserArea({ user }: { user: UserContext }) {
 
   function signOut() {
     clearAuthToken();
-    router.push("/login");
+    router.push("/signin");
   }
 
   return (
@@ -202,16 +202,15 @@ function UserArea({ user }: { user: UserContext }) {
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-[13px] font-semibold text-white">
         {user.display_name.charAt(0).toUpperCase()}
       </div>
-      <div className="min-w-0 flex-1 leading-tight">
+      <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] font-medium text-zinc-800">{user.display_name}</p>
-        <p className="truncate text-[11px] text-zinc-400">{user.email}</p>
       </div>
       <button
         type="button"
         onClick={signOut}
         aria-label="Sign out"
         title="Sign out"
-        className="rounded-md p-1.5 text-zinc-400 opacity-0 transition-all hover:bg-white hover:text-red-600 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+        className="rounded-md p-1.5 text-zinc-400 transition-colors hover:bg-white hover:text-red-600 focus-visible:outline-none"
       >
         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path

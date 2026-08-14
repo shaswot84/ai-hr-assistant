@@ -12,7 +12,7 @@ import { Spinner } from "@/components/loading";
  * Client-side auth guard + page shell (sidebar + top bar) wrapping every
  * role's pages. On mount it calls `/api/auth/me` to resolve the current
  * user; if the request fails (no token, expired token) or the role isn't
- * in `allowedRoles`, it redirects to /login.
+ * in `allowedRoles`, it redirects to /signin.
  */
 export function PortalGuard({
   allowedRoles,
@@ -34,14 +34,14 @@ export function PortalGuard({
       .then((res) => {
         if (cancelled) return;
         if (!allowedRoles.includes(res.user.coarse_role)) {
-          router.replace("/login");
+          router.replace("/signin");
           return;
         }
         setUser(res.user);
         setChecking(false);
       })
       .catch(() => {
-        if (!cancelled) router.replace("/login");
+        if (!cancelled) router.replace("/signin");
       });
     return () => {
       cancelled = true;
