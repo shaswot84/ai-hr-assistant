@@ -156,6 +156,7 @@ function ApplicationsTable({ rows }: { rows: ApplicationDetail[] }) {
 function ApplicationsList({ vacancyId }: { vacancyId: string }) {
   const [applications, setApplications] = useState<ApplicationDetail[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [failedExpanded, setFailedExpanded] = useState(false);
 
   useEffect(() => {
     api
@@ -185,18 +186,31 @@ function ApplicationsList({ vacancyId }: { vacancyId: string }) {
     <div className="space-y-4">
       {meeting.length > 0 && <ApplicationsTable rows={meeting} />}
 
-      {/* Kept as a fully separate section (not just sorted below) — a
-          manager scanning who's still in the running shouldn't have to
-          look past eliminated candidates to find them. */}
+      {/* Kept as a fully separate, collapsed-by-default section (not just
+          sorted below) — a manager scanning who's still in the running
+          shouldn't have to look past eliminated candidates to find them. */}
       {failing.length > 0 && (
         <div>
-          <div className="mb-3 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setFailedExpanded((v) => !v)}
+            className="mb-3 flex w-full items-center gap-2 text-left"
+            aria-expanded={failedExpanded}
+          >
+            <svg
+              className={`h-4 w-4 shrink-0 text-zinc-400 transition-transform ${failedExpanded ? "rotate-90" : ""}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
             <h3 className="text-sm font-semibold text-red-800">Doesn&apos;t Meet Requirements</h3>
             <span className="badge bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20">
               {failing.length}
             </span>
-          </div>
-          <ApplicationsTable rows={failing} />
+          </button>
+          {failedExpanded && <ApplicationsTable rows={failing} />}
         </div>
       )}
     </div>

@@ -9,7 +9,6 @@ import { EmptyState } from "@/components/empty-state";
 import { Pagination } from "@/components/pagination";
 import { SortableTh, Th, toggleSort, type SortState } from "@/components/table";
 import { Modal } from "@/components/modal";
-import { HireModal } from "@/components/hire-modal";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
 import type { ApplicationDetail, ApplicationStatus } from "@/lib/types";
@@ -57,8 +56,11 @@ function matchQuality(a: ApplicationDetail): number {
 }
 
 /** Shared table for both the "meets requirements" and "doesn't meet
- * requirements" sections — identical columns/actions, just fed a
- * different (already filtered + sorted + paginated) slice of rows. */
+ * requirements" sections — identical columns, just fed a different
+ * (already filtered + sorted + paginated) slice of rows. `showReject`
+ * controls whether the inline Reject action appears: only the
+ * doesn't-meet-requirements table gets it here — deciding on candidates
+ * still in the running happens from the full review page, not this list. */
 function ApplicationsTable({
   rows,
   total,
@@ -67,7 +69,7 @@ function ApplicationsTable({
   sort,
   onSort,
   onReject,
-  onHire,
+  showReject,
 }: {
   rows: ApplicationDetail[];
   total: number;
@@ -76,7 +78,7 @@ function ApplicationsTable({
   sort: SortState;
   onSort: (key: string) => void;
   onReject: (a: ApplicationDetail) => void;
-  onHire: (a: ApplicationDetail) => void;
+  showReject: boolean;
 }) {
   return (
     <div className="card overflow-hidden">
@@ -160,22 +162,13 @@ function ApplicationsTable({
                 </td>
                 <td className="table-td text-right">
                   <div className="inline-flex items-center gap-3">
-                    {a.application_status === "APPLIED" && (
+                    {showReject && a.application_status === "APPLIED" && (
                       <button
                         type="button"
                         className="link text-red-600 hover:text-red-700"
                         onClick={() => onReject(a)}
                       >
                         Reject
-                      </button>
-                    )}
-                    {a.application_status === "SHORTLISTED" && !a.hired && (
-                      <button
-                        type="button"
-                        className="link text-emerald-600 hover:text-emerald-700"
-                        onClick={() => onHire(a)}
-                      >
-                        Hire
                       </button>
                     )}
                     <Link
@@ -234,9 +227,9 @@ export default function ManagerAllApplicationsPage() {
   const [sort, setSort] = useState<SortState>({ key: "match", dir: "desc" });
   const [page, setPage] = useState(1);
   const [failedPage, setFailedPage] = useState(1);
+  const [failedExpanded, setFailedExpanded] = useState(false);
   const [rejecting, setRejecting] = useState<ApplicationDetail | null>(null);
   const [rejectBusy, setRejectBusy] = useState(false);
-  const [hireTarget, setHireTarget] = useState<ApplicationDetail | null>(null);
   const { addToast } = useToast();
 
   const refresh = useMemo(
@@ -413,31 +406,47 @@ export default function ManagerAllApplicationsPage() {
                   sort={sort}
                   onSort={handleSort}
                   onReject={setRejecting}
-                  onHire={setHireTarget}
+                  showReject={false}
                 />
               )}
 
-              {/* Kept as a fully separate section (not just sorted below) — a
-                  manager scanning who's still in the running for a role
-                  shouldn't have to look past eliminated candidates to find them. */}
+              {/* Kept as a fully separate, collapsed-by-default section (not
+                  just sorted below) — a manager scanning who's still in the
+                  running for a role shouldn't have to look past eliminated
+                  candidates to find them. */}
               {failedFiltered.length > 0 && (
                 <div>
-                  <div className="mb-3 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setFailedExpanded((v) => !v)}
+                    className="mb-3 flex w-full items-center gap-2 text-left"
+                    aria-expanded={failedExpanded}
+                  >
+                    <svg
+                      className={`h-4 w-4 shrink-0 text-zinc-400 transition-transform ${failedExpanded ? "rotate-90" : ""}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
                     <h2 className="text-sm font-semibold text-red-800">Doesn&apos;t Meet Requirements</h2>
                     <span className="badge bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20">
                       {failedFiltered.length}
                     </span>
-                  </div>
-                  <ApplicationsTable
-                    rows={failedPageRows}
-                    total={failedFiltered.length}
-                    page={curFailedPage}
-                    onPage={setFailedPage}
-                    sort={sort}
-                    onSort={handleSort}
-                    onReject={setRejecting}
-                    onHire={setHireTarget}
-                  />
+                  </button>
+                  {failedExpanded && (
+                    <ApplicationsTable
+                      rows={failedPageRows}
+                      total={failedFiltered.length}
+                      page={curFailedPage}
+                      onPage={setFailedPage}
+                      sort={sort}
+                      onSort={handleSort}
+                      onReject={setRejecting}
+                      showReject={true}
+                    />
+                  )}
                 </div>
               )}
             </>
@@ -477,23 +486,6 @@ export default function ManagerAllApplicationsPage() {
             </div>
           </div>
         </Modal>
-      )}
-
-      {/* Hire handoff (inline on SHORTLISTED rows) */}
-      {hireTarget && (
-        <HireModal
-          applicationId={hireTarget.application_id}
-          candidateName={hireTarget.candidate_name ?? hireTarget.candidate_email ?? "Candidate"}
-          onClose={() => setHireTarget(null)}
-          onHired={(employee) => {
-            setHireTarget(null);
-            addToast(
-              `${hireTarget.candidate_name ?? "Candidate"} hired as ${employee.first_name} ${employee.last_name} — other applications withdrawn.`,
-              "success"
-            );
-            refresh();
-          }}
-        />
       )}
     </div>
   );

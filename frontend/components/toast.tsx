@@ -59,8 +59,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={{ addToast }}>
       {children}
-      {/* top-20 clears the 4rem portal header (+ margin) so toasts never sit under the profile dropdown */}
-      <div className="fixed left-4 right-4 top-20 z-50 flex flex-col gap-2 sm:left-auto sm:right-4 sm:w-full sm:max-w-sm">
+      {/* Top-right of the portal header, where the user dropdown used to sit before it moved into the sidebar. */}
+      <div className="fixed left-4 right-4 top-3 z-50 flex flex-col gap-2 sm:left-auto sm:right-6 sm:w-full sm:max-w-sm">
         {toasts.map((toast) => (
           <div
             key={toast.id}
