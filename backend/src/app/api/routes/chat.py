@@ -30,9 +30,10 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.leave_agent.state import SessionStore
+from app.agents.leave_agent.state import RedisSessionStore, SessionStore
 from app.agents.supervisor.graph import build_supervisor_graph
 from app.api.deps import require_role
+from app.config.settings import get_settings
 from app.contracts.auth import UserContext
 from app.db.session import get_session
 from app.domain.conversation import ConversationMessage
@@ -107,11 +108,15 @@ def _leave_store() -> SessionStore:
 
     The leave agent keeps staged confirmations between turns; the session
     store must outlive a single request, so it's a module singleton like the
-    embedder/LLM above. See leave_agent/state.py for TTL/identity rules.
+    embedder/LLM above. When ``REDIS_URL`` is configured the store is
+    Redis-backed — the execution claim becomes a real cross-process lock, so
+    multi-worker deployments can't double-execute a confirmation. See
+    leave_agent/state.py for TTL/identity rules.
     """
     store = getattr(_leave_store, "_store", None)
     if store is None:
-        store = SessionStore()
+        url = get_settings().redis.url
+        store = RedisSessionStore(url=url) if url else SessionStore()
         _leave_store._store = store
     return store
 

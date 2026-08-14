@@ -33,6 +33,7 @@ help:
 	@echo ""
 	@echo "Quality:"
 	@echo "  make test        Run pytest"
+	@echo "  make test-integration   Run the pgvector integration tests (needs TEST_DATABASE_URL)"
 	@echo "  make lint        Run ruff check"
 
 # ---- Quick start -------------------------------------------------------
@@ -40,7 +41,7 @@ help:
 # Fresh checkout: ensure .env exists, bring up infra, migrate, then the app services, then seed.
 up: setup
 	$(DOCKER) build
-	$(DOCKER) up -d postgres minio mailpit
+	$(DOCKER) up -d postgres minio mailpit redis
 	$(MAKE) migrate
 	$(DOCKER) up -d backend worker recruitment_worker frontend
 	@echo "Stack is up:"
@@ -108,6 +109,13 @@ dev:
 
 test:
 	cd backend && .venv/bin/python -m pytest tests
+
+# pgvector integration tests (chat pipeline over real retrieval + the
+# repository/ingestion suites). Requires TEST_DATABASE_URL (CI provisions
+# pgvector and sets it; locally: docker compose up postgres then
+# TEST_DATABASE_URL=postgresql+asyncpg://hr:hr@localhost:5433/hr_assistant).
+test-integration:
+	cd backend && .venv/bin/python -m pytest tests/integration -q
 
 lint:
 	cd backend && .venv/bin/python -m ruff check src

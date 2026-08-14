@@ -191,6 +191,10 @@ _DRAFT_CANCEL_WORDS = (
     "scratch that",
     "cancel that",
     "drop it",
+    "on second thought",
+    "scratch it",
+    "forget about it",
+    "never mind that",
 )
 
 
@@ -289,15 +293,31 @@ def _stage_draft(
 
 _BALANCE_ASK_WORDS = ("balance", "remaining", "left", "how much", "do i have")
 
+# Possessive leave-noun phrases that read as balance asks when no request
+# wording is present: "show my pto" / "my time off" are balance asks, while
+# "can I book my time off" / "I want to use my annual leave" stay requests.
+_BALANCE_POSSESSIVE_PHRASES = (
+    "my leave",
+    "my pto",
+    "my time off",
+    "my vacation",
+    "my holiday",
+    "my annual leave",
+    "my sick leave",
+    "my casual leave",
+    "my unpaid leave",
+)
+
 
 def _is_balance_ask(user_message: str) -> bool:
     """Is this employee message asking for their OWN leave balance?
 
     Balance words ("balance", "remaining", "left", "how much", "do i have")
-    count at face value unless the message is about requests; the bare
-    "get my leave" (no "request") is a balance ask too, never a request
-    start. Never true for request/listing asks ("show my leave requests",
-    "can i get leave?").
+    count at face value unless the message is about requests; possessive
+    leave phrasing ("my pto", "my time off") is a balance ask too unless
+    the message also starts a request ("can I book my time off") — except
+    "get my leave", the existing bare balance ask. Never true for
+    request/listing asks ("show my leave requests", "can i get leave?").
     """
     lowered = user_message.lower()
     if "request" in lowered:
@@ -309,6 +329,11 @@ def _is_balance_ask(user_message: str) -> bool:
         return False
     if any(word in lowered for word in _BALANCE_ASK_WORDS):
         return True
+    if any(phrase in lowered for phrase in _BALANCE_POSSESSIVE_PHRASES):
+        request_wording = any(
+            word in lowered for word in _REQUEST_INTENT_WORDS if word != "get"
+        )
+        return not request_wording
     return "get" in lowered and "my leave" in lowered
 
 
@@ -872,6 +897,11 @@ _REQUEST_INTENT_WORDS = (
     "get",
     "take",
     "avail",
+    "i'd like",
+    "id like",
+    "can i have",
+    "go on leave",
+    "going on leave",
 )
 
 

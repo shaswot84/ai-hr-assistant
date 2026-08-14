@@ -1,9 +1,11 @@
 # Core stack for the AI HR Assistant MVP (ingestion pipeline + auth/recruitment).
 #
-# Keycloak / Redis are intentionally NOT included (not required yet). Ollama
-# (local embeddings) is opt-in behind the `local-models` profile because it
-# pulls ~2.5 GB of model weights; by default the backend/worker reuse an
-# Ollama already running on the host via host.docker.internal.
+# Redis backs the chat leave-agent session store (REDIS_URL) so staged
+# confirmations and the execution claim are shared across worker processes;
+# the app only uses it when REDIS_URL is set. Ollama (local embeddings) is
+# opt-in behind the `local-models` profile because it pulls ~2.5 GB of model
+# weights; by default the backend/worker reuse an Ollama already running on
+# the host via host.docker.internal.
 #
 #   docker compose up -d --build                # full stack
 #   docker compose --profile local-models up -d # + ollama in Docker
@@ -55,6 +57,18 @@ services:
       - "1025:1025"
       - "8025:8025"
 
+  # Redis: backs the chat leave-agent session store (REDIS_URL) so staged
+  # confirmations and the execution claim are shared across worker processes.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
@@ -76,6 +90,8 @@ services:
       AUTH_PROVIDER: jwt
       OLLAMA_URL: http://host.docker.internal:11434
       INGESTION_POLL_INTERVAL_SECONDS: "5"
+      # Redis-backed chat session store (multi-worker safe) when set.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # In-process cross-encoder reranker (BAAI/bge-reranker-base). The model
       # weights download from HuggingFace on first search into the HF cache
       # volume below, so the download survives container recreates.
@@ -105,6 +121,8 @@ services:
       postgres:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   # Ingestion pipeline worker (Knowledge Service): claims ingestion_job rows
