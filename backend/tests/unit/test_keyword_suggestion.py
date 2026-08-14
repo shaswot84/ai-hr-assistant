@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.evaluation.keyword_suggestion import (
+    DEFAULT_SYSTEM_PROMPT,
     TIER_WEIGHTS,
     SuggestedKeyword,
     _dedupe_keywords,
@@ -10,6 +11,7 @@ from app.evaluation.keyword_suggestion import (
     _normalize_tier,
     suggest_keywords,
 )
+from app.model_gateway.ollama import OllamaChatProvider
 from app.model_gateway.provider import ChatProviderError
 
 
@@ -76,3 +78,44 @@ async def test_suggest_keywords_raises_when_no_provider_configured():
             model=None,
             api_key=None,
         )
+
+
+async def test_suggest_keywords_uses_default_system_prompt_when_none_given(monkeypatch):
+    """No override configured (the common case) falls back to DEFAULT_SYSTEM_PROMPT."""
+    seen = {}
+
+    async def fake_complete_json(self, *, system_prompt, user_prompt):
+        seen["system_prompt"] = system_prompt
+        return {"keywords": [{"keyword": "python", "tier": "critical"}]}
+
+    monkeypatch.setattr(OllamaChatProvider, "is_configured", lambda self: True)
+    monkeypatch.setattr(OllamaChatProvider, "complete_json", fake_complete_json)
+
+    await suggest_keywords(
+        "Backend Engineer", "Python developer.", api_base="x", model="y", api_key="z"
+    )
+    assert seen["system_prompt"] == DEFAULT_SYSTEM_PROMPT
+
+
+async def test_suggest_keywords_uses_manager_customised_system_prompt(monkeypatch):
+    """A manager-edited prompt (via Settings) must actually reach the LLM call,
+    not just be stored — this is the whole point of it being configurable."""
+    seen = {}
+
+    async def fake_complete_json(self, *, system_prompt, user_prompt):
+        seen["system_prompt"] = system_prompt
+        return {"keywords": []}
+
+    monkeypatch.setattr(OllamaChatProvider, "is_configured", lambda self: True)
+    monkeypatch.setattr(OllamaChatProvider, "complete_json", fake_complete_json)
+
+    custom_prompt = "Only extract keywords explicitly listed under 'Requirements:'."
+    await suggest_keywords(
+        "Backend Engineer",
+        "Python developer.",
+        api_base="x",
+        model="y",
+        api_key="z",
+        system_prompt=custom_prompt,
+    )
+    assert seen["system_prompt"] == custom_prompt

@@ -273,6 +273,7 @@ async def suggest_vacancy_keywords(
             api_base=llm_overrides["api_base"],
             model=llm_overrides["model"],
             api_key=llm_overrides["api_key"],
+            system_prompt=settings_svc.resolved_keyword_suggestion_prompt(),
         )
     except ChatProviderError as err:
         raise HTTPException(status_code=502, detail=str(err)) from err

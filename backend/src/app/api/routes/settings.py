@@ -56,6 +56,47 @@ def reset_resume_review_prompt(
     return ResumeReviewPromptOut(**svc.reset_resume_review_prompt())
 
 
+class KeywordSuggestionPromptIn(BaseModel):
+    """Request body for setting the keyword-suggestion system prompt."""
+
+    prompt: str
+
+
+class KeywordSuggestionPromptOut(BaseModel):
+    """Response carrying the active keyword-suggestion prompt plus whether it is the default."""
+
+    prompt: str
+    is_default: bool
+
+
+@router.get("/keyword-suggestion-prompt", response_model=KeywordSuggestionPromptOut)
+def get_keyword_suggestion_prompt(
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: SettingsService = Depends(_svc),
+):
+    """Return the active keyword-suggestion system prompt and whether it is the default (manager-only)."""
+    return KeywordSuggestionPromptOut(**svc.get_keyword_suggestion_prompt())
+
+
+@router.put("/keyword-suggestion-prompt", response_model=KeywordSuggestionPromptOut)
+def put_keyword_suggestion_prompt(
+    body: KeywordSuggestionPromptIn,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: SettingsService = Depends(_svc),
+):
+    """Persist a manager-provided keyword-suggestion system prompt (manager-only)."""
+    return KeywordSuggestionPromptOut(**svc.set_keyword_suggestion_prompt(body.prompt))
+
+
+@router.post("/keyword-suggestion-prompt/reset", response_model=KeywordSuggestionPromptOut)
+def reset_keyword_suggestion_prompt(
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: SettingsService = Depends(_svc),
+):
+    """Clear any customised keyword-suggestion prompt, restoring the default (manager-only)."""
+    return KeywordSuggestionPromptOut(**svc.reset_keyword_suggestion_prompt())
+
+
 class LlmConfigIn(BaseModel):
     """Request body for setting the LLM connection (API route, model, key).
 

@@ -178,6 +178,23 @@ export const api = {
       { method: "POST" }
     ),
 
+  getKeywordSuggestionPrompt: () =>
+    request<{ prompt: string; is_default: boolean }>(
+      "/api/settings/keyword-suggestion-prompt"
+    ),
+
+  setKeywordSuggestionPrompt: (prompt: string) =>
+    request<{ prompt: string; is_default: boolean }>(
+      "/api/settings/keyword-suggestion-prompt",
+      { method: "PUT", body: JSON.stringify({ prompt }) }
+    ),
+
+  resetKeywordSuggestionPrompt: () =>
+    request<{ prompt: string; is_default: boolean }>(
+      "/api/settings/keyword-suggestion-prompt/reset",
+      { method: "POST" }
+    ),
+
   getLlmConfig: () => request<LlmConfig>("/api/settings/llm-config"),
 
   setLlmConfig: (body: { api_base: string; model: string; api_key: string }) =>

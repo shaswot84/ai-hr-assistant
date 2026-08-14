@@ -6,7 +6,26 @@ import { DetailSkeleton } from "@/components/loading";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
 
-function PromptSettings() {
+interface PromptResult {
+  prompt: string;
+  is_default: boolean;
+}
+
+function PromptSettings({
+  title,
+  description,
+  rows = 14,
+  get,
+  set,
+  reset,
+}: {
+  title: string;
+  description: string;
+  rows?: number;
+  get: () => Promise<PromptResult>;
+  set: (prompt: string) => Promise<PromptResult>;
+  reset: () => Promise<PromptResult>;
+}) {
   const { addToast } = useToast();
   const [prompt, setPrompt] = useState("");
   const [isDefault, setIsDefault] = useState(true);
@@ -15,21 +34,21 @@ function PromptSettings() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api
-      .getResumeReviewPrompt()
+    get()
       .then((res) => {
         setPrompt(res.prompt);
         setIsDefault(res.is_default);
       })
       .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load settings."))
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleSave() {
     setSaving(true);
     setError(null);
     try {
-      const res = await api.setResumeReviewPrompt(prompt);
+      const res = await set(prompt);
       setPrompt(res.prompt);
       setIsDefault(res.is_default);
       addToast("Settings saved.", "success");
@@ -44,7 +63,7 @@ function PromptSettings() {
     setSaving(true);
     setError(null);
     try {
-      const res = await api.resetResumeReviewPrompt();
+      const res = await reset();
       setPrompt(res.prompt);
       setIsDefault(res.is_default);
       addToast("Reset to default prompt.", "success");
@@ -61,8 +80,8 @@ function PromptSettings() {
     <section className="card flex h-full flex-col p-5">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-zinc-900">Resume-Screening System Prompt</h2>
-          <p className="text-xs text-zinc-400">Controls how candidates are scored and matched</p>
+          <h2 className="text-sm font-semibold text-zinc-900">{title}</h2>
+          <p className="text-xs text-zinc-400">{description}</p>
         </div>
         <span className={`badge ${isDefault ? "bg-zinc-100 text-zinc-600 ring-1 ring-inset ring-zinc-500/20" : "bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-600/20"}`}>
           {isDefault ? "Default" : "Customized"}
@@ -71,7 +90,7 @@ function PromptSettings() {
       <textarea
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
-        rows={14}
+        rows={rows}
         className="input flex-1 font-mono text-[13px] leading-relaxed"
       />
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
@@ -248,11 +267,24 @@ export default function ManagerSettingsPage() {
     <div className="space-y-6">
       <PageHeader
         title="AI Settings"
-        description="Configure the LLM provider and the system prompt used to screen resumes against a job posting — this controls how candidates are scored and matched."
+        description="Configure the LLM provider and the system prompts used to screen resumes and generate scoring keywords."
       />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <LlmConnectionSettings />
-        <PromptSettings />
+        <PromptSettings
+          title="Resume-Screening System Prompt"
+          description="Controls how candidates are scored and matched"
+          get={api.getResumeReviewPrompt}
+          set={api.setResumeReviewPrompt}
+          reset={api.resetResumeReviewPrompt}
+        />
+        <PromptSettings
+          title="Keyword-Suggestion System Prompt"
+          description="Controls the keywords/tiers suggested by 'Generate Weighted Keywords' when posting a vacancy"
+          get={api.getKeywordSuggestionPrompt}
+          set={api.setKeywordSuggestionPrompt}
+          reset={api.resetKeywordSuggestionPrompt}
+        />
       </div>
     </div>
   );

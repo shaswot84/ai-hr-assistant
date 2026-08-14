@@ -21,8 +21,26 @@ TIER_WEIGHTS: dict[Tier, int] = {"critical": 5, "important": 3, "nice_to_have": 
 DEFAULT_SYSTEM_PROMPT = (
     "You extract screening keywords from a job posting for a hiring manager to "
     "review and adjust. You are not scoring a candidate — only identifying what "
-    "to screen resumes for. Respond with ONLY a single valid JSON object matching "
-    "the schema in the user message. No markdown fences, no commentary."
+    "to screen resumes for.\n\n"
+    "Go beyond literal tool/technology names — infer the seniority level the "
+    "title and description imply (e.g. junior/associate, mid-level, senior, "
+    "staff/principal, or a people-manager/lead title) and let it shape which "
+    "keywords you suggest and how you tier them:\n"
+    "- Senior, staff, lead, or manager-level roles usually carry implicit "
+    "expectations of leadership, mentoring, cross-functional communication, "
+    "and stakeholder management even when the posting never spells them out — "
+    "include those as keywords, tiered 'important' unless the posting states "
+    "them as a hard requirement (then 'critical').\n"
+    "- Junior, entry-level, or individual-contributor postings should stay "
+    "focused on core technical fundamentals; don't invent leadership "
+    "requirements a junior posting never implies.\n"
+    "- Weigh other semantic context the literal wording won't spell out, too: "
+    "a customer-facing role implies communication/empathy skills, a sales "
+    "role implies negotiation/relationship-building, a regulated-industry "
+    "role implies compliance awareness, and so on — reflect what the role "
+    "actually demands, not just the nouns the posting happens to use.\n\n"
+    "Respond with ONLY a single valid JSON object matching the schema in the "
+    "user message. No markdown fences, no commentary."
 )
 
 USER_PROMPT = """Read the following job posting and extract the concrete skills, tools, \
@@ -52,7 +70,11 @@ Return a single JSON object with exactly this shape:
 }}
 Rules:
 - 8-15 keywords is typical — enough to meaningfully screen against, not an exhaustive list.
-- Each keyword must come from the posting's own content. Do not invent requirements.
+- Most keywords should come directly from the posting's own content. You may also
+  add a small number of level- or role-implied keywords (e.g. leadership for a
+  Lead/Manager title, communication for a customer-facing role) when the title or
+  description clearly calls for them, even if not explicitly named — but don't
+  invent requirements the role doesn't plausibly need.
 - Prefer distinct, specific keywords over near-duplicates (don't list both "Python" and "Python programming").
 - Output raw JSON only."""
 
@@ -114,13 +136,16 @@ async def suggest_keywords(
     api_base: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
+    system_prompt: str | None = None,
 ) -> KeywordSuggestionResult:
     """Extract candidate screening keywords + a suggested tier from a job posting.
 
     The manager reviews, checks/unchecks, and adjusts every tier before the
     vacancy is posted — this is a starting point, not the final rubric.
-    Raises ChatProviderError if no AI provider is configured or the call
-    fails; there is no deterministic fallback (a keyword list a manager
+    `system_prompt` defaults to DEFAULT_SYSTEM_PROMPT but is manager-editable
+    via Settings (see capabilities/settings.py), same as the resume-review
+    prompt. Raises ChatProviderError if no AI provider is configured or the
+    call fails; there is no deterministic fallback (a keyword list a manager
     can't trust the source of isn't worth generating).
     """
     provider = OllamaChatProvider(api_base=api_base, model=model, api_key=api_key)
@@ -128,7 +153,7 @@ async def suggest_keywords(
         raise ChatProviderError("No AI provider is configured.")
 
     data = await provider.complete_json(
-        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
         user_prompt=USER_PROMPT.format(title=title, description=description or "Not provided."),
     )
 

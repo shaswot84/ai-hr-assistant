@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from app.config.settings import ChatSettings
+from app.evaluation.keyword_suggestion import (
+    DEFAULT_SYSTEM_PROMPT as KEYWORD_SUGGESTION_DEFAULT_PROMPT,
+)
 from app.evaluation.scoring import DEFAULT_SYSTEM_PROMPT
 from app.repositories.env_settings import EnvFileSettingRepo
 
@@ -17,6 +20,10 @@ _CHAT_DEFAULT_API_KEY = ChatSettings.model_fields["api_key"].default
 
 #: Key used to store a manager-overridden resume-review system prompt.
 RESUME_REVIEW_PROMPT_KEY = "RESUME_REVIEW_SYSTEM_PROMPT"
+
+#: Key used to store a manager-overridden keyword-suggestion system prompt
+#: (the "Generate Weighted Keywords" step on vacancy creation).
+KEYWORD_SUGGESTION_PROMPT_KEY = "KEYWORD_SUGGESTION_SYSTEM_PROMPT"
 
 #: Keys used to store manager-overridden LLM connection settings — the same
 #: names `ChatSettings` (config/settings.py, env_prefix `OLLAMA_CHAT_`) reads
@@ -59,6 +66,29 @@ class SettingsService:
     def resolved_prompt(self) -> str:
         """Return the active system prompt for evaluation use (default if none overridden)."""
         return self._settings.get_value(RESUME_REVIEW_PROMPT_KEY) or DEFAULT_SYSTEM_PROMPT
+
+    # ---- keyword-suggestion system prompt ------------------------------
+
+    def get_keyword_suggestion_prompt(self) -> dict[str, str]:
+        """Return the active keyword-suggestion system prompt plus a flag if it was customised."""
+        stored = self._settings.get_value(KEYWORD_SUGGESTION_PROMPT_KEY)
+        is_default = not stored or stored.strip() == KEYWORD_SUGGESTION_DEFAULT_PROMPT.strip()
+        return {"prompt": (stored or KEYWORD_SUGGESTION_DEFAULT_PROMPT), "is_default": is_default}
+
+    def set_keyword_suggestion_prompt(self, prompt: str) -> dict[str, str]:
+        """Persist a manager-provided keyword-suggestion system prompt."""
+        normalized = prompt.strip() or KEYWORD_SUGGESTION_DEFAULT_PROMPT
+        self._settings.set_value(KEYWORD_SUGGESTION_PROMPT_KEY, normalized)
+        return {"prompt": normalized, "is_default": normalized == KEYWORD_SUGGESTION_DEFAULT_PROMPT.strip()}
+
+    def reset_keyword_suggestion_prompt(self) -> dict[str, str]:
+        """Clear any customised keyword-suggestion prompt so the default is used."""
+        self._settings.delete(KEYWORD_SUGGESTION_PROMPT_KEY)
+        return {"prompt": KEYWORD_SUGGESTION_DEFAULT_PROMPT, "is_default": True}
+
+    def resolved_keyword_suggestion_prompt(self) -> str:
+        """Return the active keyword-suggestion system prompt (default if none overridden)."""
+        return self._settings.get_value(KEYWORD_SUGGESTION_PROMPT_KEY) or KEYWORD_SUGGESTION_DEFAULT_PROMPT
 
     # ---- LLM connection (API route / model / key) ---------------------
 

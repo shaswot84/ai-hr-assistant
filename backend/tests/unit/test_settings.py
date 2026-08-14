@@ -106,3 +106,35 @@ def test_resume_review_prompt_round_trips_through_env_file(client, manager_conte
     reset_res = client.post("/api/settings/resume-review-prompt/reset", headers=headers)
     assert reset_res.status_code == 200
     assert reset_res.json()["is_default"] is True
+
+
+def test_keyword_suggestion_prompt_round_trips_through_env_file(client, manager_context, manager_password):
+    token = _login(client, manager_context.email, manager_password)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    get_res = client.get("/api/settings/keyword-suggestion-prompt", headers=headers)
+    assert get_res.status_code == 200
+    assert get_res.json()["is_default"] is True
+
+    custom = "Weight leadership keywords heavily for any title containing 'Manager' or 'Lead'."
+    put_res = client.put(
+        "/api/settings/keyword-suggestion-prompt", headers=headers, json={"prompt": custom}
+    )
+    assert put_res.status_code == 200
+    assert put_res.json()["prompt"] == custom
+    assert put_res.json()["is_default"] is False
+
+    get_res2 = client.get("/api/settings/keyword-suggestion-prompt", headers=headers)
+    assert get_res2.json()["prompt"] == custom
+
+    reset_res = client.post("/api/settings/keyword-suggestion-prompt/reset", headers=headers)
+    assert reset_res.status_code == 200
+    assert reset_res.json()["is_default"] is True
+
+
+def test_keyword_suggestion_prompt_requires_hr_admin(client, candidate_context, candidate_password):
+    token = _login(client, candidate_context.email, candidate_password)
+    res = client.get(
+        "/api/settings/keyword-suggestion-prompt", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert res.status_code == 403
