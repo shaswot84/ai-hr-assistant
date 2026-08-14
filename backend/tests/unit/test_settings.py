@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+import pytest
+
+#: Every manager-editable LLM prompt in the recruitment pipeline — the
+#: resume-review and resume-structuring prompts each have a system half (the
+#: model's persona/behavior) and a user/task half (the JSON schema and
+#: instructions); keyword-suggestion only has a system prompt.
+PROMPT_PATHS = [
+    "resume-review-prompt",
+    "resume-review-user-prompt",
+    "resume-structuring-system-prompt",
+    "resume-structuring-user-prompt",
+    "keyword-suggestion-prompt",
+]
+
 
 def _login(client, email, password) -> str:
     res = client.post("/api/auth/login", json={"email": email, "password": password})
@@ -137,4 +151,38 @@ def test_keyword_suggestion_prompt_requires_hr_admin(client, candidate_context, 
     res = client.get(
         "/api/settings/keyword-suggestion-prompt", headers={"Authorization": f"Bearer {token}"}
     )
+    assert res.status_code == 403
+
+
+@pytest.mark.parametrize("path", PROMPT_PATHS)
+def test_prompt_round_trips_through_env_file(client, manager_context, manager_password, path):
+    """Every manager-editable prompt (system and user/task halves alike)
+    follows the same get/put/reset contract — covers the new
+    resume-review-user-prompt and resume-structuring-*-prompt endpoints
+    alongside the two already spot-checked above."""
+    token = _login(client, manager_context.email, manager_password)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    get_res = client.get(f"/api/settings/{path}", headers=headers)
+    assert get_res.status_code == 200
+    assert get_res.json()["is_default"] is True
+
+    custom = f"Custom override for {path}.\nLine two with a \"quote\" in it."
+    put_res = client.put(f"/api/settings/{path}", headers=headers, json={"prompt": custom})
+    assert put_res.status_code == 200
+    assert put_res.json()["prompt"] == custom
+    assert put_res.json()["is_default"] is False
+
+    get_res2 = client.get(f"/api/settings/{path}", headers=headers)
+    assert get_res2.json()["prompt"] == custom
+
+    reset_res = client.post(f"/api/settings/{path}/reset", headers=headers)
+    assert reset_res.status_code == 200
+    assert reset_res.json()["is_default"] is True
+
+
+@pytest.mark.parametrize("path", PROMPT_PATHS)
+def test_prompt_requires_hr_admin(client, candidate_context, candidate_password, path):
+    token = _login(client, candidate_context.email, candidate_password)
+    res = client.get(f"/api/settings/{path}", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 403

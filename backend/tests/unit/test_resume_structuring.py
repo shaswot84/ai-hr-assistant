@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from app.evaluation.resume_structuring import (
+    DEFAULT_SYSTEM_PROMPT,
+    USER_PROMPT,
     WorkExperienceEntry,
     _compute_total_years,
     _is_current,
@@ -11,6 +13,7 @@ from app.evaluation.resume_structuring import (
     _parse_year,
     extract_structured_resume,
 )
+from app.model_gateway.ollama import OllamaChatProvider
 from app.model_gateway.provider import ChatProviderError
 
 
@@ -104,3 +107,54 @@ async def test_extract_structured_resume_raises_without_llm_configured():
     text = "Jane Doe\nEXPERIENCE\nEngineer at Acme, 2019 to 2022\nEDUCATION\nB.S. CS, 2019"
     with pytest.raises(ChatProviderError):
         await extract_structured_resume(text)
+
+
+async def test_extract_structured_resume_uses_default_prompts_when_none_given(monkeypatch):
+    seen = {}
+
+    async def fake_complete_json(self, *, system_prompt, user_prompt):
+        seen["system_prompt"] = system_prompt
+        seen["user_prompt"] = user_prompt
+        return {"workExperience": [], "education": [], "skills": []}
+
+    monkeypatch.setattr(OllamaChatProvider, "is_configured", lambda self: True)
+    monkeypatch.setattr(OllamaChatProvider, "complete_json", fake_complete_json)
+
+    await extract_structured_resume("Jane Doe resume text.", api_base="x", model="y", api_key="z")
+    assert seen["system_prompt"] == DEFAULT_SYSTEM_PROMPT
+    assert "Jane Doe resume text." in seen["user_prompt"]
+
+
+async def test_extract_structured_resume_uses_manager_customised_prompts(monkeypatch):
+    """A manager-edited system/user prompt must actually reach the LLM call."""
+    seen = {}
+
+    async def fake_complete_json(self, *, system_prompt, user_prompt):
+        seen["system_prompt"] = system_prompt
+        seen["user_prompt"] = user_prompt
+        return {"workExperience": [], "education": [], "skills": []}
+
+    monkeypatch.setattr(OllamaChatProvider, "is_configured", lambda self: True)
+    monkeypatch.setattr(OllamaChatProvider, "complete_json", fake_complete_json)
+
+    custom_system = "TEST-MARKER: extract only dates."
+    custom_user = 'Return {"years": number} for: $resume_text'
+    await extract_structured_resume(
+        "Jane Doe resume text.",
+        system_prompt=custom_system,
+        user_prompt=custom_user,
+        api_base="x",
+        model="y",
+        api_key="z",
+    )
+    assert seen["system_prompt"] == custom_system
+    # str.format() would raise on the stray `{`/`}` above — string.Template must not.
+    assert seen["user_prompt"] == 'Return {"years": number} for: Jane Doe resume text.'
+
+
+def test_default_user_prompt_has_no_str_format_style_placeholders():
+    """Regression guard: USER_PROMPT must use `string.Template` `$name`
+    placeholders, not `{name}` — the template's JSON schema is full of
+    literal braces that would collide with `.format()`."""
+    assert "{resume_text}" not in USER_PROMPT
+    assert "$resume_text" in USER_PROMPT

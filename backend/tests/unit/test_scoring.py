@@ -5,7 +5,9 @@ import pytest
 from app.evaluation.resume_structuring import StructuredResume, WorkExperienceEntry
 from app.evaluation.scoring import (
     DEFAULT_RECOMMENDATION,
+    DEFAULT_SYSTEM_PROMPT,
     DOES_NOT_MEET_REQUIREMENTS,
+    USER_PROMPT,
     _apply_deterministic_requirement_checks,
     _compute_keyword_score,
     _normalize_review,
@@ -14,6 +16,7 @@ from app.evaluation.scoring import (
     _requirements,
     score_resume,
 )
+from app.model_gateway.ollama import OllamaChatProvider
 from app.model_gateway.provider import ChatProviderError
 
 
@@ -154,6 +157,103 @@ async def test_score_resume_raises_when_no_provider_configured():
             model=None,
             api_key=None,
         )
+
+
+async def test_score_resume_uses_default_prompts_when_none_given(monkeypatch):
+    """No manager override configured (the common case) falls back to the
+    built-in system/user prompt constants."""
+    seen = {}
+
+    async def fake_complete_json(self, *, system_prompt, user_prompt):
+        seen["system_prompt"] = system_prompt
+        seen["user_prompt"] = user_prompt
+        return {"summary": "ok"}
+
+    monkeypatch.setattr(OllamaChatProvider, "is_configured", lambda self: True)
+    monkeypatch.setattr(OllamaChatProvider, "complete_json", fake_complete_json)
+
+    await score_resume(
+        resume_text="Python developer.",
+        job_title="Backend Engineer",
+        job_description="Need Python.",
+        api_base="x",
+        model="y",
+        api_key="z",
+    )
+    assert seen["system_prompt"] == DEFAULT_SYSTEM_PROMPT
+    assert "Backend Engineer" in seen["user_prompt"]
+    assert "Python developer." in seen["user_prompt"]
+
+
+async def test_score_resume_uses_manager_customised_prompts(monkeypatch):
+    """A manager-edited system/user prompt (via Settings) must actually reach
+    the LLM call, not just be stored — this is the whole point of it being
+    configurable."""
+    seen = {}
+
+    async def fake_complete_json(self, *, system_prompt, user_prompt):
+        seen["system_prompt"] = system_prompt
+        seen["user_prompt"] = user_prompt
+        return {"summary": "ok"}
+
+    monkeypatch.setattr(OllamaChatProvider, "is_configured", lambda self: True)
+    monkeypatch.setattr(OllamaChatProvider, "complete_json", fake_complete_json)
+
+    custom_system = "TEST-MARKER: only judge Python skills."
+    custom_user = "Custom task for $job_title: $resume_text"
+    await score_resume(
+        resume_text="Python developer.",
+        job_title="Backend Engineer",
+        job_description="Need Python.",
+        system_prompt=custom_system,
+        user_prompt=custom_user,
+        api_base="x",
+        model="y",
+        api_key="z",
+    )
+    assert seen["system_prompt"] == custom_system
+    assert seen["user_prompt"] == "Custom task for Backend Engineer: Python developer."
+
+
+async def test_score_resume_user_prompt_survives_stray_braces(monkeypatch):
+    """The task template is manager-editable and full of literal JSON braces
+    (the response schema) — substitution must be brace-safe (string.Template,
+    not str.format), so an edited template with unescaped `{`/`}` doesn't
+    crash the whole evaluation.
+    """
+    seen = {}
+
+    async def fake_complete_json(self, *, system_prompt, user_prompt):
+        seen["user_prompt"] = user_prompt
+        return {"summary": "ok"}
+
+    monkeypatch.setattr(OllamaChatProvider, "is_configured", lambda self: True)
+    monkeypatch.setattr(OllamaChatProvider, "complete_json", fake_complete_json)
+
+    # Deliberately unescaped, unmatched braces plus an unknown $placeholder —
+    # str.format() would raise on this; safe_substitute must not.
+    custom_user = 'Return {"score": number} for $resume_text. Unknown: $not_a_real_placeholder'
+    await score_resume(
+        resume_text="Python developer.",
+        job_title="Backend Engineer",
+        job_description="Need Python.",
+        user_prompt=custom_user,
+        api_base="x",
+        model="y",
+        api_key="z",
+    )
+    assert '{"score": number}' in seen["user_prompt"]
+    assert "Python developer." in seen["user_prompt"]
+    assert "$not_a_real_placeholder" in seen["user_prompt"]
+
+
+def test_default_user_prompt_has_no_str_format_style_placeholders():
+    """Regression guard: the shipped USER_PROMPT constant must use
+    `string.Template` `$name` placeholders, not `{name}` — otherwise the raw
+    JSON-schema braces in the template would collide with `.format()`.
+    """
+    assert "{job_title}" not in USER_PROMPT
+    assert "$job_title" in USER_PROMPT
 
 
 def test_reconcile_keywords_moves_taxonomy_recognized_alias_from_missing_to_matched():

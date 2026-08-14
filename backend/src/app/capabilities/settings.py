@@ -4,7 +4,12 @@ from app.config.settings import ChatSettings
 from app.evaluation.keyword_suggestion import (
     DEFAULT_SYSTEM_PROMPT as KEYWORD_SUGGESTION_DEFAULT_PROMPT,
 )
-from app.evaluation.scoring import DEFAULT_SYSTEM_PROMPT
+from app.evaluation.resume_structuring import (
+    DEFAULT_SYSTEM_PROMPT as STRUCTURING_DEFAULT_SYSTEM_PROMPT,
+)
+from app.evaluation.resume_structuring import USER_PROMPT as STRUCTURING_DEFAULT_USER_PROMPT
+from app.evaluation.scoring import DEFAULT_SYSTEM_PROMPT as SCORING_DEFAULT_SYSTEM_PROMPT
+from app.evaluation.scoring import USER_PROMPT as SCORING_DEFAULT_USER_PROMPT
 from app.repositories.env_settings import EnvFileSettingRepo
 
 #: The out-of-the-box defaults baked into the code (used as the fallback
@@ -18,11 +23,14 @@ _CHAT_DEFAULT_API_BASE = ChatSettings.model_fields["api_base"].default
 _CHAT_DEFAULT_MODEL = ChatSettings.model_fields["model"].default
 _CHAT_DEFAULT_API_KEY = ChatSettings.model_fields["api_key"].default
 
-#: Key used to store a manager-overridden resume-review system prompt.
+#: Keys used to store manager-overridden LLM prompts — one pair (system +
+#: task/user template) per LLM call in the recruitment pipeline, plus the
+#: keyword-suggestion prompt which has no editable user template (its
+#: schema/rules aren't manager-facing).
 RESUME_REVIEW_PROMPT_KEY = "RESUME_REVIEW_SYSTEM_PROMPT"
-
-#: Key used to store a manager-overridden keyword-suggestion system prompt
-#: (the "Generate Weighted Keywords" step on vacancy creation).
+RESUME_REVIEW_USER_PROMPT_KEY = "RESUME_REVIEW_USER_PROMPT"
+STRUCTURING_SYSTEM_PROMPT_KEY = "RESUME_STRUCTURING_SYSTEM_PROMPT"
+STRUCTURING_USER_PROMPT_KEY = "RESUME_STRUCTURING_USER_PROMPT"
 KEYWORD_SUGGESTION_PROMPT_KEY = "KEYWORD_SUGGESTION_SYSTEM_PROMPT"
 
 #: Keys used to store manager-overridden LLM connection settings — the same
@@ -37,7 +45,7 @@ LLM_API_KEY_KEY = "OLLAMA_CHAT_API_KEY"
 class SettingsService:
     """Application configuration management (capability layer).
 
-    Manager-editable settings (the resume-review system prompt, the LLM
+    Manager-editable settings (the recruitment-pipeline prompts, the LLM
     connection) are stored directly in `.env` via `EnvFileSettingRepo`,
     which re-reads the file on every call — so a change made through the
     API takes effect on the worker's very next job, no restart needed.
@@ -46,49 +54,116 @@ class SettingsService:
     def __init__(self) -> None:
         self._settings = EnvFileSettingRepo()
 
+    # ---- generic prompt get/set/reset/resolve --------------------------
+    #
+    # Every manager-editable prompt (resume-review system/user, keyword-
+    # suggestion system, resume-structuring system/user) follows the exact
+    # same shape — stored value or default, with an `is_default` flag for
+    # the UI. Implemented once here; the named methods below are just typed,
+    # discoverable wrappers around a (key, default) pair so callers and
+    # routes don't have to pass raw setting keys around.
+
+    def _get_prompt(self, key: str, default: str) -> dict[str, str]:
+        stored = self._settings.get_value(key)
+        is_default = not stored or stored.strip() == default.strip()
+        return {"prompt": (stored or default), "is_default": is_default}
+
+    def _set_prompt(self, key: str, default: str, prompt: str) -> dict[str, str]:
+        normalized = prompt.strip() or default
+        self._settings.set_value(key, normalized)
+        return {"prompt": normalized, "is_default": normalized == default.strip()}
+
+    def _reset_prompt(self, key: str, default: str) -> dict[str, str]:
+        self._settings.delete(key)
+        return {"prompt": default, "is_default": True}
+
+    def _resolved_prompt(self, key: str, default: str) -> str:
+        return self._settings.get_value(key) or default
+
+    # ---- resume-review system prompt (the ATS-screener persona) -------
+
     def get_resume_review_prompt(self) -> dict[str, str]:
-        """Return the active resume-review system prompt plus a flag if it was customised."""
-        stored = self._settings.get_value(RESUME_REVIEW_PROMPT_KEY)
-        is_default = not stored or stored.strip() == DEFAULT_SYSTEM_PROMPT.strip()
-        return {"prompt": (stored or DEFAULT_SYSTEM_PROMPT), "is_default": is_default}
+        return self._get_prompt(RESUME_REVIEW_PROMPT_KEY, SCORING_DEFAULT_SYSTEM_PROMPT)
 
     def set_resume_review_prompt(self, prompt: str) -> dict[str, str]:
-        """Persist a manager-provided resume-review system prompt."""
-        normalized = prompt.strip() or DEFAULT_SYSTEM_PROMPT
-        self._settings.set_value(RESUME_REVIEW_PROMPT_KEY, normalized)
-        return {"prompt": normalized, "is_default": normalized == DEFAULT_SYSTEM_PROMPT.strip()}
+        return self._set_prompt(RESUME_REVIEW_PROMPT_KEY, SCORING_DEFAULT_SYSTEM_PROMPT, prompt)
 
     def reset_resume_review_prompt(self) -> dict[str, str]:
-        """Clear any customised prompt so the default is used."""
-        self._settings.delete(RESUME_REVIEW_PROMPT_KEY)
-        return {"prompt": DEFAULT_SYSTEM_PROMPT, "is_default": True}
+        return self._reset_prompt(RESUME_REVIEW_PROMPT_KEY, SCORING_DEFAULT_SYSTEM_PROMPT)
 
     def resolved_prompt(self) -> str:
-        """Return the active system prompt for evaluation use (default if none overridden)."""
-        return self._settings.get_value(RESUME_REVIEW_PROMPT_KEY) or DEFAULT_SYSTEM_PROMPT
+        """Return the active resume-review system prompt for evaluation use."""
+        return self._resolved_prompt(RESUME_REVIEW_PROMPT_KEY, SCORING_DEFAULT_SYSTEM_PROMPT)
+
+    # ---- resume-review user/task prompt (schema + scoring instructions) -
+
+    def get_resume_review_user_prompt(self) -> dict[str, str]:
+        return self._get_prompt(RESUME_REVIEW_USER_PROMPT_KEY, SCORING_DEFAULT_USER_PROMPT)
+
+    def set_resume_review_user_prompt(self, prompt: str) -> dict[str, str]:
+        return self._set_prompt(RESUME_REVIEW_USER_PROMPT_KEY, SCORING_DEFAULT_USER_PROMPT, prompt)
+
+    def reset_resume_review_user_prompt(self) -> dict[str, str]:
+        return self._reset_prompt(RESUME_REVIEW_USER_PROMPT_KEY, SCORING_DEFAULT_USER_PROMPT)
+
+    def resolved_resume_review_user_prompt(self) -> str:
+        """Return the active resume-review task template for evaluation use."""
+        return self._resolved_prompt(RESUME_REVIEW_USER_PROMPT_KEY, SCORING_DEFAULT_USER_PROMPT)
+
+    # ---- resume-structuring system prompt (the extraction persona) ----
+
+    def get_structuring_system_prompt(self) -> dict[str, str]:
+        return self._get_prompt(STRUCTURING_SYSTEM_PROMPT_KEY, STRUCTURING_DEFAULT_SYSTEM_PROMPT)
+
+    def set_structuring_system_prompt(self, prompt: str) -> dict[str, str]:
+        return self._set_prompt(
+            STRUCTURING_SYSTEM_PROMPT_KEY, STRUCTURING_DEFAULT_SYSTEM_PROMPT, prompt
+        )
+
+    def reset_structuring_system_prompt(self) -> dict[str, str]:
+        return self._reset_prompt(STRUCTURING_SYSTEM_PROMPT_KEY, STRUCTURING_DEFAULT_SYSTEM_PROMPT)
+
+    def resolved_structuring_system_prompt(self) -> str:
+        """Return the active resume-structuring system prompt for evaluation use."""
+        return self._resolved_prompt(
+            STRUCTURING_SYSTEM_PROMPT_KEY, STRUCTURING_DEFAULT_SYSTEM_PROMPT
+        )
+
+    # ---- resume-structuring user/task prompt (extraction schema) ------
+
+    def get_structuring_user_prompt(self) -> dict[str, str]:
+        return self._get_prompt(STRUCTURING_USER_PROMPT_KEY, STRUCTURING_DEFAULT_USER_PROMPT)
+
+    def set_structuring_user_prompt(self, prompt: str) -> dict[str, str]:
+        return self._set_prompt(
+            STRUCTURING_USER_PROMPT_KEY, STRUCTURING_DEFAULT_USER_PROMPT, prompt
+        )
+
+    def reset_structuring_user_prompt(self) -> dict[str, str]:
+        return self._reset_prompt(STRUCTURING_USER_PROMPT_KEY, STRUCTURING_DEFAULT_USER_PROMPT)
+
+    def resolved_structuring_user_prompt(self) -> str:
+        """Return the active resume-structuring task template for evaluation use."""
+        return self._resolved_prompt(STRUCTURING_USER_PROMPT_KEY, STRUCTURING_DEFAULT_USER_PROMPT)
 
     # ---- keyword-suggestion system prompt ------------------------------
 
     def get_keyword_suggestion_prompt(self) -> dict[str, str]:
-        """Return the active keyword-suggestion system prompt plus a flag if it was customised."""
-        stored = self._settings.get_value(KEYWORD_SUGGESTION_PROMPT_KEY)
-        is_default = not stored or stored.strip() == KEYWORD_SUGGESTION_DEFAULT_PROMPT.strip()
-        return {"prompt": (stored or KEYWORD_SUGGESTION_DEFAULT_PROMPT), "is_default": is_default}
+        return self._get_prompt(KEYWORD_SUGGESTION_PROMPT_KEY, KEYWORD_SUGGESTION_DEFAULT_PROMPT)
 
     def set_keyword_suggestion_prompt(self, prompt: str) -> dict[str, str]:
-        """Persist a manager-provided keyword-suggestion system prompt."""
-        normalized = prompt.strip() or KEYWORD_SUGGESTION_DEFAULT_PROMPT
-        self._settings.set_value(KEYWORD_SUGGESTION_PROMPT_KEY, normalized)
-        return {"prompt": normalized, "is_default": normalized == KEYWORD_SUGGESTION_DEFAULT_PROMPT.strip()}
+        return self._set_prompt(
+            KEYWORD_SUGGESTION_PROMPT_KEY, KEYWORD_SUGGESTION_DEFAULT_PROMPT, prompt
+        )
 
     def reset_keyword_suggestion_prompt(self) -> dict[str, str]:
-        """Clear any customised keyword-suggestion prompt so the default is used."""
-        self._settings.delete(KEYWORD_SUGGESTION_PROMPT_KEY)
-        return {"prompt": KEYWORD_SUGGESTION_DEFAULT_PROMPT, "is_default": True}
+        return self._reset_prompt(KEYWORD_SUGGESTION_PROMPT_KEY, KEYWORD_SUGGESTION_DEFAULT_PROMPT)
 
     def resolved_keyword_suggestion_prompt(self) -> str:
         """Return the active keyword-suggestion system prompt (default if none overridden)."""
-        return self._settings.get_value(KEYWORD_SUGGESTION_PROMPT_KEY) or KEYWORD_SUGGESTION_DEFAULT_PROMPT
+        return self._resolved_prompt(
+            KEYWORD_SUGGESTION_PROMPT_KEY, KEYWORD_SUGGESTION_DEFAULT_PROMPT
+        )
 
     # ---- LLM connection (API route / model / key) ---------------------
 
