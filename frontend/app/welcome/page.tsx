@@ -2,6 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { api } from "@/lib/api";
+import { getAuthToken } from "@/lib/auth";
+
+const ROLE_HOME: Record<string, string> = {
+  HR_ADMIN: "/manager",
+  CANDIDATE: "/candidate",
+  EMPLOYEE: "/employee",
+};
 
 interface ChatBubble {
   id: string;
@@ -21,6 +30,12 @@ const STUB_REPLY =
  * lamp is pulled. Chat is a UI shell for now (see STUB_REPLY) — the real
  * RBAC-aware assistant wiring is separate, in-progress work. */
 export default function WelcomePage() {
+  const router = useRouter();
+  // A signed-in visitor has no business back on the anonymous landing page —
+  // send them straight to their portal instead. A stale/invalid token is
+  // treated as anonymous (this page IS the anonymous destination, unlike
+  // /signin there's nowhere further "down" to bounce them).
+  const [checkingSession, setCheckingSession] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [messages, setMessages] = useState<ChatBubble[]>([
     { id: "greeting", role: "assistant", text: GREETING },
@@ -29,12 +44,37 @@ export default function WelcomePage() {
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let cancelled = false;
+    const token = getAuthToken();
+    if (!token) {
+      Promise.resolve().then(() => {
+        if (!cancelled) setCheckingSession(false);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    api
+      .me()
+      .then((res) => {
+        if (!cancelled) router.replace(ROLE_HOME[res.user.coarse_role] ?? "/candidate");
+      })
+      .catch(() => {
+        if (!cancelled) setCheckingSession(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  useEffect(() => {
+    if (checkingSession) return;
     // triggers the CSS transition below on the frame after mount, so the
     // page visibly settles in rather than snapping into place after the
     // login page's ignite wash
     const id = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(id);
-  }, []);
+  }, [checkingSession]);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -50,6 +90,10 @@ export default function WelcomePage() {
       { id: `${Date.now()}-a`, role: "assistant", text: STUB_REPLY },
     ]);
     setDraft("");
+  }
+
+  if (checkingSession) {
+    return <div className="min-h-screen bg-zinc-50" />;
   }
 
   return (

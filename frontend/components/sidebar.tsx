@@ -210,7 +210,7 @@ function UserArea({ user }: { user: UserContext }) {
         onClick={signOut}
         aria-label="Sign out"
         title="Sign out"
-        className="rounded-md p-1.5 text-zinc-400 opacity-0 transition-all hover:bg-white hover:text-red-600 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+        className="rounded-md p-1.5 text-zinc-400 transition-colors hover:bg-white hover:text-red-600 focus-visible:outline-none"
       >
         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path

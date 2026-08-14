@@ -111,7 +111,7 @@ export default function CandidateLayout({ children }: { children: React.ReactNod
     <div className="flex min-h-screen flex-col bg-zinc-50">
       <header className="border-b border-zinc-200 bg-white">
         <div className="mx-auto flex w-full max-w-4xl items-center justify-between px-4 py-4 sm:px-6">
-          <div className="flex items-center gap-2.5">
+          <Link href="/welcome" className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 shadow-sm">
               <svg className="h-[18px] w-[18px] text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path
@@ -123,12 +123,12 @@ export default function CandidateLayout({ children }: { children: React.ReactNod
               </svg>
             </div>
             <div className="leading-tight">
-              <p className="text-sm font-semibold tracking-tight text-zinc-900">Summit Technologies</p>
-              <p className="text-[11px] text-zinc-400">Careers</p>
+              <p className="text-sm font-semibold tracking-tight text-zinc-900">AI HR Assistant</p>
+              <p className="text-[11px] text-zinc-400">HR Platform</p>
             </div>
-          </div>
-          <Link href="/signin" className="link text-sm">
-            Sign in
+          </Link>
+          <Link href="/signin" className="btn-primary">
+            Sign In
           </Link>
         </div>
       </header>

@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
-import { setAuthToken } from "@/lib/auth";
+import { getAuthToken, setAuthToken } from "@/lib/auth";
 import { useToast } from "@/components/toast";
 
 const ROLE_HOME: Record<string, string> = {
@@ -28,6 +28,10 @@ const DEMO_LABELS: Record<string, string> = {
 export default function SignInPage() {
   const router = useRouter();
   const { addToast } = useToast();
+  // A signed-in visitor has no reason to see the sign-in form again — send
+  // them straight to their portal. A stale/invalid token just means they're
+  // not really signed in, so fall through to the form as normal.
+  const [checkingSession, setCheckingSession] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -35,6 +39,30 @@ export default function SignInPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const token = getAuthToken();
+    if (!token) {
+      Promise.resolve().then(() => {
+        if (!cancelled) setCheckingSession(false);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    api
+      .me()
+      .then((res) => {
+        if (!cancelled) router.replace(ROLE_HOME[res.user.coarse_role] ?? "/welcome");
+      })
+      .catch(() => {
+        if (!cancelled) setCheckingSession(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   function fillDemo(role: keyof typeof DEMOS) {
     setEmail(DEMOS[role].email);
@@ -55,6 +83,10 @@ export default function SignInPage() {
       setError(err instanceof ApiError ? err.detail : "Could not sign in. Is the backend running?");
       setSubmitting(false);
     }
+  }
+
+  if (checkingSession) {
+    return <div className="min-h-screen bg-zinc-50" />;
   }
 
   return (
