@@ -74,6 +74,39 @@ def test_set_value_quotes_and_escapes_multiline_values(env_file):
     assert len(matching) == 1
 
 
+def test_set_value_escapes_literal_dollar_signs(env_file):
+    """Manager-editable prompts can contain real `string.Template`
+    placeholders like `$resume_text` (see evaluation/scoring.py's
+    USER_PROMPT) — those must round-trip exactly, and must not appear
+    unescaped in the file, since Docker Compose interpolates `$VAR`/`${VAR}`
+    references inside `.env` values on its own, independent of this repo's
+    parsing, and would otherwise warn/blank on an unset "resume_text" var.
+    """
+    value_with_placeholders = "Task: $job_title\n\n$resume_text"
+    repo = EnvFileSettingRepo(str(env_file))
+    repo.set_value("RESUME_REVIEW_USER_PROMPT", value_with_placeholders)
+    assert repo.get_value("RESUME_REVIEW_USER_PROMPT") == value_with_placeholders
+
+    raw_line = next(
+        line for line in env_file.read_text().splitlines() if line.startswith("RESUME_REVIEW_USER_PROMPT=")
+    )
+    # every $ is doubled — Compose reads $$ as a literal, escaped $ and
+    # won't try to interpolate it as a variable reference
+    assert raw_line == 'RESUME_REVIEW_USER_PROMPT="Task: $$job_title\\n\\n$$resume_text"'
+
+
+def test_set_value_dollar_sign_round_trips_without_other_special_chars(env_file):
+    """A short, single-line value containing `$` (no newline/quote/padding)
+    would otherwise be written bare — confirm it's still escaped even
+    outside the quoted-multiline branch.
+    """
+    repo = EnvFileSettingRepo(str(env_file))
+    repo.set_value("SOME_KEY", "$HOME/path")
+    assert repo.get_value("SOME_KEY") == "$HOME/path"
+    raw_line = next(line for line in env_file.read_text().splitlines() if line.startswith("SOME_KEY="))
+    assert raw_line == "SOME_KEY=$$HOME/path"
+
+
 def test_set_value_empty_string_round_trips(env_file):
     repo = EnvFileSettingRepo(str(env_file))
     repo.set_value("OLLAMA_CHAT_API_KEY", "")
