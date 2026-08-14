@@ -100,6 +100,29 @@ async def test_route_intent_overrides_llm_misclassification_to_knowledge():
 
 
 @pytest.mark.asyncio
+async def test_route_intent_overrides_llm_misclassification_to_leave():
+    """The reverse direction: a clearly TRANSACTIONAL leave ask is re-routed
+    to the leave agent even when the LLM (wrongly) says knowledge — it has the
+    tools (balance / requests / types) the knowledge agent doesn't."""
+    llm = FakeLLM("knowledge")
+    assert await route_intent(llm, "show my leave requests", []) == "leave"
+    assert await route_intent(llm, "which leave types can i request", []) == "leave"
+    assert await route_intent(llm, "my leave balance", []) == "leave"
+    assert await route_intent(llm, "how do i cancel my leave request", []) == "leave"
+
+
+@pytest.mark.asyncio
+async def test_route_intent_reverse_override_never_steals_policy_questions():
+    """Policy/definition wording blocks the reverse override — a knowledge
+    question about leave policy stays on the knowledge agent even when the
+    LLM and the transactional wording could both pull it toward leave."""
+    llm = FakeLLM("knowledge")
+    assert await route_intent(llm, "what is the annual leave policy", []) == "knowledge"
+    assert await route_intent(llm, "show me the leave policy", []) == "knowledge"
+    assert await route_intent(llm, "how does sick leave accrual work", []) == "knowledge"
+
+
+@pytest.mark.asyncio
 async def test_route_intent_keeps_transactional_leave_with_llm():
     """Transactional leave stays on leave even with policy-adjacent words."""
     llm = FakeLLM("leave")

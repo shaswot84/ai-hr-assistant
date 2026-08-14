@@ -96,6 +96,35 @@ _DEFINITION_GUARD_WORDS = frozenset(
     }
 )
 
+# Reverse-direction guard: a clearly TRANSACTIONAL leave ask ("show my leave
+# requests", "which leave types can i request") that the LLM misroutes to
+# knowledge is re-routed to the leave agent, which is the one with the tools
+# to answer it. Policy framing ("what is the annual leave policy?") blocks
+# the override so KB questions never get swallowed by the leave agent.
+_LEAVE_SUBJECT_WORDS = frozenset(
+    {"leave", "pto", "vacation", "holiday", "holidays", "time off", "day off", "absence", "absences"}
+)
+_TRANSACTIONAL_FRAMING_WORDS = frozenset(
+    {
+        "balance",
+        "remaining",
+        "left",
+        "how much",
+        "do i have",
+        "request",
+        "requests",
+        "apply",
+        "book",
+        "cancel",
+        "withdraw",
+        "submit",
+        "list",
+        "show",
+        "view",
+        "my",
+    }
+)
+
 
 # Heuristic fallback keywords. "leave" is checked first so an ambiguous
 # "how do I apply for leave?" routes to leave, not recruitment.
@@ -169,6 +198,18 @@ def _is_knowledge_definition_question(lowered: str) -> bool:
     return any(phrase in lowered for phrase in _DEFINITION_PHRASES)
 
 
+def _is_transactional_leave_ask(lowered: str) -> bool:
+    """Is this a TRANSACTIONAL leave ask (balance / requests / types / cancel)
+    rather than a knowledge question about leave?
+
+    Requires both leave vocabulary and transactional framing; policy wording
+    is excluded by the caller so "show me the leave policy" never re-routes.
+    """
+    if not any(word in lowered for word in _LEAVE_SUBJECT_WORDS):
+        return False
+    return any(word in lowered for word in _TRANSACTIONAL_FRAMING_WORDS)
+
+
 def heuristic_route(query: str) -> str:
     """Deterministic keyword routing; knowledge is the safe default.
 
@@ -216,14 +257,24 @@ async def route_intent(llm: LLM | None, query: str, history: list[BaseMessage]) 
     except Exception:  # noqa: BLE001 - routing never fails because of the LLM
         return heuristic_route(query)
     route = _parse_route(raw) or heuristic_route(query)
-    # Deterministic override on the LLM path: a clearly knowledge-framed
-    # leave question (policy / definition wording) reaches the knowledge
-    # agent even when the model misclassifies it as leave, so the LLM path
-    # and the heuristic fallback agree on the boundary.
     lowered = query.lower()
+    # Forward deterministic override: a clearly knowledge-framed leave question
+    # (policy / definition wording) reaches the knowledge agent even when the
+    # model misclassifies it as leave, so the LLM path and the heuristic
+    # fallback agree on the boundary.
     if route == "leave" and (
         _is_knowledge_policy_question(lowered)
         or _is_knowledge_definition_question(lowered)
     ):
         return "knowledge"
+    # Reverse deterministic override: a clearly TRANSACTIONAL leave ask ("show
+    # my leave requests", "which leave types can i request") reaches the leave
+    # agent even when the model misclassifies it as knowledge — policy wording
+    # keeps such questions on the knowledge agent.
+    if (
+        route == "knowledge"
+        and not _is_knowledge_policy_question(lowered)
+        and _is_transactional_leave_ask(lowered)
+    ):
+        return "leave"
     return route

@@ -171,6 +171,85 @@ async def test_full_submit_flow_yes_executes_request(
     assert request.status == "PENDING"
 
 
+# --- deterministic list flows (requests / leave types) ---------------------
+
+
+@pytest.mark.asyncio
+async def test_list_my_requests_is_deterministic(db, manager_context, employee_context):
+    """'show my leave requests' is answered from the REAL data without the
+    model — list_my_leave_requests is never left to the model to pick."""
+    svc = LeaveService(db)
+    leave_type = _create_leave_type(svc, manager_context)
+    today = get_clock().today()
+    svc.request_leave(
+        employee_context,
+        leave_type_id=leave_type.leave_type_id,
+        start_date=today + timedelta(days=5),
+        end_date=today + timedelta(days=6),
+        reason=None,
+    )
+    state = _state(employee_context)
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="show my leave requests",
+    )
+
+    assert provider.calls == 0
+    assert result.tool_called == "list_my_leave_requests"
+    assert "Your leave requests:" in result.reply
+    assert "PENDING" in result.reply
+
+
+@pytest.mark.asyncio
+async def test_list_my_requests_empty_reply_is_deterministic(
+    db, manager_context, employee_context
+):
+    """No requests yet -> the deterministic empty reply, no model."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context)
+    state = _state(employee_context)
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="show my requests",
+    )
+
+    assert provider.calls == 0
+    assert "You have no leave requests." in result.reply
+
+
+@pytest.mark.asyncio
+async def test_list_requests_does_not_steal_cancel_intent(
+    db, manager_context, employee_context
+):
+    """'cancel my leave request LR-...' is a write intent — the list
+    interception must never swallow it into a listing."""
+    svc = LeaveService(db)
+    state = _state(employee_context)
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="cancel my leave request LR-2026-001",
+    )
+
+    assert provider.calls == 0
+    assert "Your leave requests:" not in result.reply
+    assert "Leave request not found." in result.reply  # deterministic cancel preflight
+
+
 @pytest.mark.asyncio
 async def test_cancel_words_drop_the_draft(
     db, manager_context, employee_context
@@ -477,7 +556,7 @@ async def test_types_question_list_is_the_answer_without_draft(
     db, manager_context, employee_context
 ):
     """A direct question about types is answered by the list itself — no
-    'which type' follow-up, no draft."""
+    'which type' follow-up, no draft, and NO model (the list is deterministic)."""
     svc = LeaveService(db)
     _create_leave_type(svc, manager_context, name="Annual Leave")
     _create_leave_type(svc, manager_context, name="Sick Leave")
@@ -499,7 +578,7 @@ async def test_types_question_list_is_the_answer_without_draft(
         user_message="which leave types are there",
     )
 
-    assert provider.calls == 1
+    assert provider.calls == 0
     assert "Available leave types:" in result.reply
     assert "Which leave type would you like to take?" not in result.reply
     assert state.draft is None
@@ -521,7 +600,7 @@ async def test_no_dates_no_draft_falls_through_to_model(
         state=state,
         service=svc,
         chat_provider=provider,
-        user_message="what leave types are there",
+        user_message="i want to know about leave",
     )
 
     assert provider.calls == 1
