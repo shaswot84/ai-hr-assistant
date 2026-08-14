@@ -181,15 +181,6 @@ body {
     @apply bg-zinc-100 font-medium text-zinc-900;
   }
 
-  /* ---------- Dropdown menu ---------- */
-  .menu-item {
-    @apply flex w-full items-center gap-2.5 px-3 py-2 text-sm text-zinc-700 transition-colors duration-100 hover:bg-zinc-50;
-  }
-
-  .menu-item-danger {
-    @apply text-red-600 hover:bg-red-50;
-  }
-
   /* ---------- Misc ---------- */
   .link {
     @apply text-sm font-medium text-blue-600 transition-colors hover:text-blue-700;

@@ -9,7 +9,6 @@ import { EmptyState } from "@/components/empty-state";
 import { Pagination } from "@/components/pagination";
 import { SortableTh, Th, toggleSort, type SortState } from "@/components/table";
 import { Modal } from "@/components/modal";
-import { HireModal } from "@/components/hire-modal";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
 import type { ApplicationDetail, ApplicationStatus } from "@/lib/types";
@@ -24,10 +23,173 @@ const STATUS_FILTERS: Array<{ label: string; value: ApplicationStatus | "ALL" }>
   { label: "Withdrawn", value: "WITHDRAWN" },
 ];
 
+const RECOMMENDATION_TONE: Record<string, string> = {
+  "Strong Match": "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  "Good Match": "bg-blue-50 text-blue-700 ring-blue-600/20",
+  "Possible Match": "bg-amber-50 text-amber-700 ring-amber-600/20",
+  "Weak Match": "bg-red-50 text-red-700 ring-red-600/20",
+};
+
 function scoreTone(score: number) {
-  if (score >= 70) return "bg-emerald-50 text-emerald-700";
-  if (score >= 40) return "bg-amber-50 text-amber-700";
-  return "bg-red-50 text-red-700";
+  if (score >= 70) return "text-emerald-600";
+  if (score >= 40) return "text-amber-600";
+  return "text-red-600";
+}
+
+/** A candidate who clearly failed a stated hard requirement — kept in a
+ * separate list entirely from everyone else (rather than just sorted
+ * below them), so a manager reviewing "who's actually in the running"
+ * never has to scan past eliminated candidates to find them. */
+function failsRequirements(a: ApplicationDetail): boolean {
+  return (
+    a.evaluated && !!a.evaluation && !a.evaluation.failed && a.evaluation.detail?.requirements_met === false
+  );
+}
+
+/** Ranking within a single list: higher weighted keyword score first;
+ * unscored/still-screening applications sink to the bottom. Since the two
+ * requirement tiers are now separate lists (not interleaved), this only
+ * ever needs to rank within one tier at a time. */
+function matchQuality(a: ApplicationDetail): number {
+  if (!a.evaluated || !a.evaluation || a.evaluation.failed) return -1;
+  return a.evaluation.keyword_score ?? 0;
+}
+
+/** Shared table for both the "meets requirements" and "doesn't meet
+ * requirements" sections — identical columns, just fed a different
+ * (already filtered + sorted + paginated) slice of rows. `showReject`
+ * controls whether the inline Reject action appears: only the
+ * doesn't-meet-requirements table gets it here — deciding on candidates
+ * still in the running happens from the full review page, not this list. */
+function ApplicationsTable({
+  rows,
+  total,
+  page,
+  onPage,
+  sort,
+  onSort,
+  onReject,
+  showReject,
+}: {
+  rows: ApplicationDetail[];
+  total: number;
+  page: number;
+  onPage: (page: number) => void;
+  sort: SortState;
+  onSort: (key: string) => void;
+  onReject: (a: ApplicationDetail) => void;
+  showReject: boolean;
+}) {
+  return (
+    <div className="card overflow-hidden">
+      <div className="table-scroll max-h-[560px]">
+        <table className="w-full">
+          <thead className="bg-zinc-50">
+            <tr className="group">
+              <SortableTh sortKey="candidate" sort={sort} onSort={onSort}>
+                Candidate
+              </SortableTh>
+              <SortableTh sortKey="vacancy" sort={sort} onSort={onSort} className="hidden md:table-cell">
+                Vacancy
+              </SortableTh>
+              <SortableTh sortKey="match" sort={sort} onSort={onSort} align="right" className="hidden sm:table-cell">
+                Match
+              </SortableTh>
+              <SortableTh sortKey="applied" sort={sort} onSort={onSort} className="hidden sm:table-cell">
+                Applied
+              </SortableTh>
+              <SortableTh sortKey="status" sort={sort} onSort={onSort}>
+                Status
+              </SortableTh>
+              <Th align="right">Actions</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100">
+            {rows.map((a) => (
+              <tr key={a.application_id} className="table-row">
+                <td className="table-td">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-[13px] font-semibold text-zinc-600">
+                      {(a.candidate_name ?? a.candidate_email ?? "?").charAt(0).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-zinc-900">
+                        {a.candidate_name ?? a.candidate_email}
+                      </p>
+                      <p className="truncate text-xs text-zinc-400 md:hidden">{a.vacancy_title}</p>
+                    </div>
+                  </div>
+                </td>
+                <td className="table-td hidden text-zinc-500 md:table-cell">{a.vacancy_title ?? "—"}</td>
+                <td className="table-td hidden text-right sm:table-cell">
+                  {!a.evaluated || !a.evaluation ? (
+                    <span className="text-xs text-zinc-400">screening…</span>
+                  ) : a.evaluation.failed ? (
+                    <span
+                      className="badge bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20"
+                      title={a.evaluation.overview}
+                    >
+                      Failed
+                    </span>
+                  ) : a.evaluation.keyword_score !== null ? (
+                    <span className={`font-semibold tabular-nums ${scoreTone(a.evaluation.keyword_score)}`}>
+                      {a.evaluation.keyword_score}%
+                    </span>
+                  ) : (
+                    <span
+                      className={`badge ring-1 ring-inset ${RECOMMENDATION_TONE[a.evaluation.detail?.recommendation ?? ""] ?? "bg-zinc-100 text-zinc-600 ring-zinc-500/20"}`}
+                    >
+                      {a.evaluation.detail?.recommendation ?? "Reviewed"}
+                    </span>
+                  )}
+                </td>
+                <td className="table-td hidden text-xs text-zinc-500 sm:table-cell">
+                  {new Date(a.applied_at).toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </td>
+                <td className="table-td">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <StatusBadge status={a.application_status} />
+                    {a.hired && (
+                      <span className="badge bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
+                        Hired
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="table-td text-right">
+                  <div className="inline-flex items-center gap-3">
+                    {showReject && a.application_status === "APPLIED" && (
+                      <button
+                        type="button"
+                        className="link text-red-600 hover:text-red-700"
+                        onClick={() => onReject(a)}
+                      >
+                        Reject
+                      </button>
+                    )}
+                    <Link
+                      href={`/manager/applications/${a.application_id}`}
+                      className="link inline-flex items-center gap-1"
+                    >
+                      Review
+                      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </Link>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={onPage} />
+    </div>
+  );
 }
 
 function sortApplications(list: ApplicationDetail[], sort: SortState): ApplicationDetail[] {
@@ -44,12 +206,8 @@ function sortApplications(list: ApplicationDetail[], sort: SortState): Applicati
     case "vacancy":
       sorted.sort((a, b) => (a.vacancy_title ?? "").localeCompare(b.vacancy_title ?? "") * dir);
       break;
-    case "score":
-      sorted.sort((a, b) => {
-        const av = a.evaluated && a.evaluation ? a.evaluation.score : -1;
-        const bv = b.evaluated && b.evaluation ? b.evaluation.score : -1;
-        return (av - bv) * dir;
-      });
+    case "match":
+      sorted.sort((a, b) => (matchQuality(a) - matchQuality(b)) * dir);
       break;
     case "applied":
       sorted.sort((a, b) => (new Date(a.applied_at).getTime() - new Date(b.applied_at).getTime()) * dir);
@@ -66,11 +224,12 @@ export default function ManagerAllApplicationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<ApplicationStatus | "ALL">("ALL");
-  const [sort, setSort] = useState<SortState>({ key: "applied", dir: "desc" });
+  const [sort, setSort] = useState<SortState>({ key: "match", dir: "desc" });
   const [page, setPage] = useState(1);
+  const [failedPage, setFailedPage] = useState(1);
+  const [failedExpanded, setFailedExpanded] = useState(false);
   const [rejecting, setRejecting] = useState<ApplicationDetail | null>(null);
   const [rejectBusy, setRejectBusy] = useState(false);
-  const [hireTarget, setHireTarget] = useState<ApplicationDetail | null>(null);
   const { addToast } = useToast();
 
   const refresh = useMemo(
@@ -103,10 +262,10 @@ export default function ManagerAllApplicationsPage() {
     }
   }
 
-  const filtered = useMemo(() => {
+  const searched = useMemo(() => {
     if (!applications) return [];
     const q = search.toLowerCase();
-    const searched = applications.filter((a) => {
+    return applications.filter((a) => {
       const matchesStatus = statusFilter === "ALL" || a.application_status === statusFilter;
       const matchesSearch =
         !q ||
@@ -115,12 +274,28 @@ export default function ManagerAllApplicationsPage() {
         (a.vacancy_title ?? "").toLowerCase().includes(q);
       return matchesStatus && matchesSearch;
     });
-    return sortApplications(searched, sort);
-  }, [applications, search, statusFilter, sort]);
+  }, [applications, search, statusFilter]);
+
+  // Requirements-failed candidates are a separate list entirely, not just
+  // sorted below everyone else — a manager scanning who's still in the
+  // running shouldn't have to look past eliminated candidates to find them.
+  const filtered = useMemo(
+    () => sortApplications(searched.filter((a) => !failsRequirements(a)), sort),
+    [searched, sort]
+  );
+  const failedFiltered = useMemo(
+    () => sortApplications(searched.filter(failsRequirements), sort),
+    [searched, sort]
+  );
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const curPage = Math.min(page, pageCount);
   const pageRows = filtered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE);
+
+  const failedPageCount = Math.max(1, Math.ceil(failedFiltered.length / PAGE_SIZE));
+  const curFailedPage = Math.min(failedPage, failedPageCount);
+  const failedPageRows = failedFiltered.slice((curFailedPage - 1) * PAGE_SIZE, curFailedPage * PAGE_SIZE);
+
   const countByStatus = useMemo(() => {
     if (!applications) return new Map<string, number>();
     const m = new Map<string, number>();
@@ -131,6 +306,7 @@ export default function ManagerAllApplicationsPage() {
   function handleSort(key: string) {
     setSort((s) => toggleSort(s, key));
     setPage(1);
+    setFailedPage(1);
   }
 
   return (
@@ -176,6 +352,7 @@ export default function ManagerAllApplicationsPage() {
             onChange={(e) => {
               setSearch(e.target.value);
               setPage(1);
+              setFailedPage(1);
             }}
           />
         </div>
@@ -187,6 +364,7 @@ export default function ManagerAllApplicationsPage() {
               onClick={() => {
                 setStatusFilter(f.value);
                 setPage(1);
+                setFailedPage(1);
               }}
               className={`tab ${statusFilter === f.value ? "tab-active" : ""}`}
             >
@@ -206,7 +384,7 @@ export default function ManagerAllApplicationsPage() {
 
       {applications !== null && (
         <>
-          {filtered.length === 0 ? (
+          {filtered.length === 0 && failedFiltered.length === 0 ? (
             <div className="card">
               <EmptyState
                 title={search || statusFilter !== "ALL" ? "No matching applications" : "No applications yet"}
@@ -218,114 +396,60 @@ export default function ManagerAllApplicationsPage() {
               />
             </div>
           ) : (
-            <div className="card overflow-hidden">
-              <div className="table-scroll max-h-[560px]">
-                <table className="w-full">
-                  <thead className="bg-zinc-50">
-                    <tr className="group">
-                      <SortableTh sortKey="candidate" sort={sort} onSort={handleSort}>
-                        Candidate
-                      </SortableTh>
-                      <SortableTh sortKey="vacancy" sort={sort} onSort={handleSort} className="hidden md:table-cell">
-                        Vacancy
-                      </SortableTh>
-                      <SortableTh sortKey="score" sort={sort} onSort={handleSort} align="right" className="hidden sm:table-cell">
-                        Match
-                      </SortableTh>
-                      <SortableTh sortKey="applied" sort={sort} onSort={handleSort} className="hidden sm:table-cell">
-                        Applied
-                      </SortableTh>
-                      <SortableTh sortKey="status" sort={sort} onSort={handleSort}>
-                        Status
-                      </SortableTh>
-                      <Th align="right">Actions</Th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-100">
-                    {pageRows.map((a) => (
-                      <tr key={a.application_id} className="table-row">
-                        <td className="table-td">
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-[13px] font-semibold text-zinc-600">
-                              {(a.candidate_name ?? a.candidate_email ?? "?").charAt(0).toUpperCase()}
-                            </div>
-                            <div className="min-w-0">
-                              <p className="truncate font-medium text-zinc-900">
-                                {a.candidate_name ?? a.candidate_email}
-                              </p>
-                              <p className="truncate text-xs text-zinc-400 md:hidden">{a.vacancy_title}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="table-td hidden text-zinc-500 md:table-cell">
-                          {a.vacancy_title ?? "—"}
-                        </td>
-                        <td className="table-td hidden text-right sm:table-cell">
-                          {a.evaluated && a.evaluation ? (
-                            <span
-                              className={`badge tabular-nums ${scoreTone(a.evaluation.score)}`}
-                            >
-                              {a.evaluation.score}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-zinc-400">screening…</span>
-                          )}
-                        </td>
-                        <td className="table-td hidden text-xs text-zinc-500 sm:table-cell">
-                          {new Date(a.applied_at).toLocaleDateString("en-US", {
-                            month: "short",
-                            day: "numeric",
-                            year: "numeric",
-                          })}
-                        </td>
-                        <td className="table-td">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <StatusBadge status={a.application_status} />
-                            {a.hired && (
-                              <span className="badge bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-                                Hired
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="table-td text-right">
-                          <div className="inline-flex items-center gap-3">
-                            {a.application_status === "APPLIED" && (
-                              <button
-                                type="button"
-                                className="link text-red-600 hover:text-red-700"
-                                onClick={() => setRejecting(a)}
-                              >
-                                Reject
-                              </button>
-                            )}
-                            {a.application_status === "SHORTLISTED" && !a.hired && (
-                              <button
-                                type="button"
-                                className="link text-emerald-600 hover:text-emerald-700"
-                                onClick={() => setHireTarget(a)}
-                              >
-                                Hire
-                              </button>
-                            )}
-                            <Link
-                              href={`/manager/applications/${a.application_id}`}
-                              className="link inline-flex items-center gap-1"
-                            >
-                              Review
-                              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                              </svg>
-                            </Link>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <Pagination page={curPage} pageSize={PAGE_SIZE} total={filtered.length} onPage={setPage} />
-            </div>
+            <>
+              {filtered.length > 0 && (
+                <ApplicationsTable
+                  rows={pageRows}
+                  total={filtered.length}
+                  page={curPage}
+                  onPage={setPage}
+                  sort={sort}
+                  onSort={handleSort}
+                  onReject={setRejecting}
+                  showReject={false}
+                />
+              )}
+
+              {/* Kept as a fully separate, collapsed-by-default section (not
+                  just sorted below) — a manager scanning who's still in the
+                  running for a role shouldn't have to look past eliminated
+                  candidates to find them. */}
+              {failedFiltered.length > 0 && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setFailedExpanded((v) => !v)}
+                    className="mb-3 flex w-full items-center gap-2 text-left"
+                    aria-expanded={failedExpanded}
+                  >
+                    <svg
+                      className={`h-4 w-4 shrink-0 text-zinc-400 transition-transform ${failedExpanded ? "rotate-90" : ""}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    <h2 className="text-sm font-semibold text-red-800">Doesn&apos;t Meet Requirements</h2>
+                    <span className="badge bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20">
+                      {failedFiltered.length}
+                    </span>
+                  </button>
+                  {failedExpanded && (
+                    <ApplicationsTable
+                      rows={failedPageRows}
+                      total={failedFiltered.length}
+                      page={curFailedPage}
+                      onPage={setFailedPage}
+                      sort={sort}
+                      onSort={handleSort}
+                      onReject={setRejecting}
+                      showReject={true}
+                    />
+                  )}
+                </div>
+              )}
+            </>
           )}
         </>
       )}
@@ -362,23 +486,6 @@ export default function ManagerAllApplicationsPage() {
             </div>
           </div>
         </Modal>
-      )}
-
-      {/* Hire handoff (inline on SHORTLISTED rows) */}
-      {hireTarget && (
-        <HireModal
-          applicationId={hireTarget.application_id}
-          candidateName={hireTarget.candidate_name ?? hireTarget.candidate_email ?? "Candidate"}
-          onClose={() => setHireTarget(null)}
-          onHired={(employee) => {
-            setHireTarget(null);
-            addToast(
-              `${hireTarget.candidate_name ?? "Candidate"} hired as ${employee.first_name} ${employee.last_name} — other applications withdrawn.`,
-              "success"
-            );
-            refresh();
-          }}
-        />
       )}
     </div>
   );

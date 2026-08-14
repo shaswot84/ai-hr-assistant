@@ -38,9 +38,15 @@ export default function ManagerDashboardPage() {
     const open = vacancies.filter((v) => v.status === "OPEN").length;
     const closed = vacancies.filter((v) => v.status === "CLOSED").length;
     const shortlisted = applications.filter((a) => a.application_status === "SHORTLISTED").length;
-    const evaluated = applications.filter((a) => a.evaluated && a.evaluation);
-    const avgScore = evaluated.length
-      ? Math.round(evaluated.reduce((s, a) => s + (a.evaluation?.score ?? 0), 0) / evaluated.length)
+    // Only successful screenings carry a real score/requirements verdict —
+    // a failed evaluation (no AI provider, etc.) has nothing to count here.
+    const screened = applications.filter((a) => a.evaluated && a.evaluation && !a.evaluation.failed);
+    // Deterministically computed from the vacancy's weighted scoring
+    // keywords (sum of matched tier weights / total) — legitimate to
+    // average, unlike the old free-generated score this replaced.
+    const scored = screened.filter((a) => a.evaluation?.keyword_score !== null);
+    const avgKeywordScore = scored.length
+      ? Math.round(scored.reduce((sum, a) => sum + (a.evaluation?.keyword_score ?? 0), 0) / scored.length)
       : null;
 
     // 7-day trend window for the Applications metric delta.
@@ -63,7 +69,7 @@ export default function ManagerDashboardPage() {
       value: applications.filter((a) => a.application_status === s).length,
     }));
 
-    return { open, closed, shortlisted, avgScore, last7, prev7, breakdown };
+    return { open, closed, shortlisted, avgKeywordScore, last7, prev7, breakdown };
   }, [applications, vacancies]);
 
   // Applications per day over the selected range window.
@@ -187,11 +193,11 @@ export default function ManagerDashboardPage() {
           />
           <MetricCard
             label="Avg Match Score"
-            value={stats.avgScore ?? "—"}
+            value={stats.avgKeywordScore === null ? "—" : `${stats.avgKeywordScore}%`}
             sub={
-              stats.avgScore === null
+              stats.avgKeywordScore === null
                 ? "No screenings yet"
-                : "Across AI-screened resumes"
+                : "Weighted keyword match, across screened resumes"
             }
             iconClass="bg-amber-50 text-amber-600"
             icon={

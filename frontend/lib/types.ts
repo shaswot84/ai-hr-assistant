@@ -7,6 +7,17 @@ export interface UserContext {
   coarse_role: CoarseRole;
 }
 
+/** How much a scoring keyword counts toward `Evaluation.keyword_score` —
+ * fixed weights (critical=5, important=3, nice_to_have=1), not a raw number
+ * the manager sets directly, so the ratio can change without touching
+ * stored vacancy data. */
+export type KeywordTier = "critical" | "important" | "nice_to_have";
+
+export interface ScoringKeyword {
+  keyword: string;
+  tier: KeywordTier;
+}
+
 export interface Vacancy {
   vacancy_id: string;
   title: string;
@@ -16,13 +27,26 @@ export interface Vacancy {
   opening_date: string | null;
   closing_date: string | null;
   status: "DRAFT" | "OPEN" | "CLOSED";
+  /** The rubric applications are scored against — required at creation, so
+   * every vacancy has a real, explainable score once applications come in. */
+  scoring_keywords: ScoringKeyword[];
   created_at: string;
 }
 
-export interface ScoreFactor {
+/** One qualitative dimension behind the recommendation. Deliberately has no
+ * numeric score — an LLM asked for "a number" with no rubric produces digits
+ * that look precise but aren't comparable across candidates. */
+export interface KeyFactor {
   factor: string;
-  score: number;
   note: string;
+}
+
+/** One explicit must-have from the job description, checked against the resume — a hard
+ * pass/fail gate, distinct from the soft `key_factors` ranking dimensions. */
+export interface Requirement {
+  requirement: string;
+  met: boolean;
+  evidence: string;
 }
 
 /** Identity/contact info the AI extracted directly from the resume text (best-effort). */
@@ -34,22 +58,75 @@ export interface CandidateProfile {
   headline: string;
 }
 
+/** One work-history entry pulled from the resume, dates kept as written. */
+export interface WorkExperienceEntry {
+  title: string;
+  company: string;
+  start_date: string;
+  end_date: string;
+  /** Parsed year behind start_date/end_date, or null if that date string
+   * didn't contain a recognizable year (e.g. a garbled extraction) — the
+   * same signal the years-of-experience math is computed from. */
+  start_year: number | null;
+  end_year: number | null;
+  is_current: boolean;
+}
+
+export interface EducationEntry {
+  degree: string;
+  institution: string;
+  graduation_year: number | null;
+}
+
+/** Structured facts extracted from the resume, separate from the job-fit score.
+ * `total_years_experience` is always computed deterministically from the parsed
+ * work-history dates — never the model's own guess. */
+export interface StructuredResumeSummary {
+  work_experience: WorkExperienceEntry[];
+  education: EducationEntry[];
+  skills: string[];
+  total_years_experience: number;
+}
+
+/** Recommendation forced whenever a candidate fails one or more hard requirements —
+ * distinct from a merely-low score band, so it can be styled/filtered separately. */
+export const DOES_NOT_MEET_REQUIREMENTS = "Does Not Meet Requirements";
+
+/** Whether one of the vacancy's configured scoring keywords was found in the
+ * resume. The tier (and its weight) lives on `Vacancy.scoring_keywords`, not
+ * here — this is purely the per-resume presence judgment `keyword_score` is
+ * computed from. */
+export interface KeywordMatch {
+  keyword: string;
+  present: boolean;
+  evidence: string;
+}
+
 /** ATS-style screening result: does this resume match the job, and why — not a resume review. */
 export interface EvaluationDetail {
-  match_score: number;
+  requirements: Requirement[];
+  requirements_met: boolean;
   recommendation: string;
   summary: string;
-  score_factors: ScoreFactor[];
+  key_factors: KeyFactor[];
   strengths: string[];
   weaknesses: string[];
   matched_keywords: string[];
   missing_keywords: string[];
+  keyword_matches: KeywordMatch[];
   candidate_profile: CandidateProfile | null;
+  structured_resume: StructuredResumeSummary | null;
 }
 
+/** `failed` marks a screening that couldn't run at all (AI provider
+ * unavailable) — show an error + retry action instead of treating it as a
+ * real result. `keyword_score` is 0-100, deterministically computed from
+ * the vacancy's weighted scoring keywords — every point is auditable via
+ * `detail.keyword_matches`, unlike the free-generated score this replaced. */
 export interface Evaluation {
-  score: number;
   overview: string;
+  failed: boolean;
+  keyword_score: number | null;
   model: string | null;
   evaluated_at: string;
   detail: EvaluationDetail | null;
@@ -84,11 +161,13 @@ export interface ApplicationDetail extends Application {
   hired?: boolean;
 }
 
-/** The AI provider connection used for resume screening — manager-editable, API key is write-only. */
+/** The AI provider connection used for resume screening — manager-editable.
+ * Persisted directly to `.env` and read fresh on every use, so a change here
+ * takes effect on the very next resume evaluation with no restart needed. */
 export interface LlmConfig {
   api_base: string;
   model: string;
-  api_key_set: boolean;
+  api_key: string;
   is_default: boolean;
 }
 

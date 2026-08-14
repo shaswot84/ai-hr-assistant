@@ -8,21 +8,33 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import get_optional_user, require_role
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
+from app.capabilities.settings import SettingsService
 from app.contracts.auth import UserContext
 from app.db.sync_session import get_db
 from app.domain.identity import Department, Person
+from app.evaluation.keyword_suggestion import suggest_keywords
 from app.integrations.object_store import SyncS3ObjectStore
+from app.knowledge.resume_extraction import extract_text, is_ats_friendly, looks_like_resume
+from app.model_gateway.provider import ChatProviderError
 from app.schemas.recruitment import (
     ApplicationDetailOut,
     ApplicationOut,
     ApplicationStatusOut,
     CandidateProfile,
     DecisionRequest,
+    EducationOut,
     EvaluationDetail,
     EvaluationOut,
-    ScoreFactor,
+    KeyFactor,
+    KeywordMatch,
+    KeywordSuggestionOut,
+    KeywordSuggestionRequest,
+    Requirement,
+    ScoringKeyword,
+    StructuredResumeOut,
     VacancyCreate,
     VacancyOut,
+    WorkExperienceOut,
 )
 
 router = APIRouter(prefix="/api", tags=["recruitment"])
@@ -31,10 +43,50 @@ MAX_RESUME_BYTES = 10 * 1024 * 1024  # 10MB
 ALLOWED_RESUME_TYPES = (".pdf", ".docx")
 
 
+def _to_structured_resume(raw: dict | None) -> StructuredResumeOut | None:
+    """Build a typed StructuredResumeOut from the stored structuring result, or None if absent.
+
+    Unlike the rest of `raw_payload` (LLM output, camelCase), this comes
+    from `resume_structuring.StructuredResume.to_dict()` — already
+    snake_case, but extracted explicitly here (not `**raw`) since that dict
+    also carries the parsed `start_year`/`end_year` alongside the raw date
+    strings — passed through (not dropped) so the UI can tell a cleanly
+    parsed date from a garbled one instead of displaying either the same way.
+    """
+    if not isinstance(raw, dict):
+        return None
+    return StructuredResumeOut(
+        work_experience=[
+            WorkExperienceOut(
+                title=e.get("title", ""),
+                company=e.get("company", ""),
+                start_date=e.get("start_date", ""),
+                end_date=e.get("end_date", ""),
+                start_year=e.get("start_year"),
+                end_year=e.get("end_year"),
+                is_current=bool(e.get("is_current", False)),
+            )
+            for e in raw.get("work_experience", [])
+            if isinstance(e, dict)
+        ],
+        education=[
+            EducationOut(
+                degree=e.get("degree", ""),
+                institution=e.get("institution", ""),
+                graduation_year=e.get("graduation_year"),
+            )
+            for e in raw.get("education", [])
+            if isinstance(e, dict)
+        ],
+        skills=raw.get("skills", []),
+        total_years_experience=raw.get("total_years_experience", 0.0),
+    )
+
+
 def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
     """Build a typed EvaluationDetail from a stored raw evaluation payload, or None if absent.
 
-    The LLM's raw payload uses camelCase keys (`matchScore`, `scoreFactors`,
+    The LLM's raw payload uses camelCase keys (`keyFactors`, `matchedKeywords`,
     ...); translated explicitly here rather than via a Pydantic alias
     generator, matching the wire format (snake_case) every other field in
     this API uses.
@@ -43,17 +95,24 @@ def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
         return None
     profile = raw_payload.get("candidateProfile")
     return EvaluationDetail(
-        match_score=raw_payload.get("matchScore", 0),
+        requirements=[
+            Requirement(**r) for r in raw_payload.get("requirements", []) if isinstance(r, dict)
+        ],
+        requirements_met=raw_payload.get("requirementsMet", True),
         recommendation=raw_payload.get("recommendation", ""),
         summary=raw_payload.get("summary", ""),
-        score_factors=[
-            ScoreFactor(**f) for f in raw_payload.get("scoreFactors", []) if isinstance(f, dict)
+        key_factors=[
+            KeyFactor(**f) for f in raw_payload.get("keyFactors", []) if isinstance(f, dict)
         ],
         strengths=raw_payload.get("strengths", []),
         weaknesses=raw_payload.get("weaknesses", []),
         matched_keywords=raw_payload.get("matchedKeywords", []),
         missing_keywords=raw_payload.get("missingKeywords", []),
+        keyword_matches=[
+            KeywordMatch(**m) for m in raw_payload.get("keywordMatches", []) if isinstance(m, dict)
+        ],
         candidate_profile=CandidateProfile(**profile) if isinstance(profile, dict) else None,
+        structured_resume=_to_structured_resume(raw_payload.get("structuredResume")),
     )
 
 
@@ -68,8 +127,9 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
         evaluated=evaluation is not None,
         evaluation=(
             EvaluationOut(
-                score=evaluation.score,
                 overview=evaluation.overview,
+                failed=evaluation.failed,
+                keyword_score=evaluation.keyword_score,
                 model=evaluation.model,
                 evaluated_at=evaluation.evaluated_at,
                 detail=_to_detail(evaluation.raw_payload),
@@ -144,6 +204,7 @@ def _vacancy_out(v) -> VacancyOut:
         opening_date=v.opening_date,
         closing_date=v.closing_date,
         status=v.status,
+        scoring_keywords=v.scoring_keywords or [],
         created_at=v.created_at,
     )
 
@@ -183,12 +244,42 @@ def create_vacancy(
             employment_type=body.employment_type,
             opening_date=body.opening_date,
             closing_date=body.closing_date,
+            scoring_keywords=[kw.model_dump() for kw in body.scoring_keywords],
         )
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
     vo = _vacancy_out(vacancy)
     vo.department_name = body.department_name
     return vo
+
+
+@router.post("/vacancies/keywords/suggest", response_model=KeywordSuggestionOut)
+async def suggest_vacancy_keywords(
+    body: KeywordSuggestionRequest,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+):
+    """Suggest scoring keywords + tiers from a job title/description (manager-only).
+
+    A starting point for the manager to review, check/uncheck, and re-tier
+    before posting — not the final rubric. Runs before the vacancy exists,
+    so it takes the title/description directly rather than a vacancy_id.
+    """
+    settings_svc = SettingsService()
+    llm_overrides = settings_svc.resolved_llm_overrides()
+    try:
+        result = await suggest_keywords(
+            body.title,
+            body.description,
+            api_base=llm_overrides["api_base"],
+            model=llm_overrides["model"],
+            api_key=llm_overrides["api_key"],
+            system_prompt=settings_svc.resolved_keyword_suggestion_prompt(),
+        )
+    except ChatProviderError as err:
+        raise HTTPException(status_code=502, detail=str(err)) from err
+    return KeywordSuggestionOut(
+        keywords=[ScoringKeyword(keyword=kw.keyword, tier=kw.tier) for kw in result.keywords]
+    )
 
 
 @router.get("/vacancies/{vacancy_id}", response_model=VacancyOut)
@@ -270,6 +361,14 @@ def apply_to_vacancy(
     if not filename.lower().endswith(ALLOWED_RESUME_TYPES):
         raise HTTPException(status_code=400, detail="Only PDF or DOCX resumes are accepted.")
 
+    extraction = extract_text(data, filename, file.content_type or "")
+    is_resume, reason = looks_like_resume(extraction.text)
+    if not is_resume:
+        raise HTTPException(status_code=400, detail=reason)
+    is_parsable, parsability_reason = is_ats_friendly(extraction.text)
+    if not is_parsable:
+        raise HTTPException(status_code=400, detail=parsability_reason)
+
     # upload to MinIO FIRST; only then create the application row
     try:
         object_key = SyncS3ObjectStore().put_resume(data, filename, file.content_type or "")
@@ -319,6 +418,14 @@ def apply_as_new_candidate(
     filename = file.filename or ""
     if not filename.lower().endswith(ALLOWED_RESUME_TYPES):
         raise HTTPException(status_code=400, detail="Only PDF or DOCX resumes are accepted.")
+
+    extraction = extract_text(data, filename, file.content_type or "")
+    is_resume, reason = looks_like_resume(extraction.text)
+    if not is_resume:
+        raise HTTPException(status_code=400, detail=reason)
+    is_parsable, parsability_reason = is_ats_friendly(extraction.text)
+    if not is_parsable:
+        raise HTTPException(status_code=400, detail=parsability_reason)
 
     # upload to MinIO FIRST; only then provision the account + application row
     try:
@@ -450,6 +557,22 @@ def decide_application(
         raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'.")
     try:
         application = svc.decide_application(user, application_id, approve=body.action == "approve")
+    except PermissionError_ as err:
+        raise HTTPException(status_code=403, detail=str(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    return _to_application_out(application, svc.latest_evaluation(application_id))
+
+
+@router.post("/applications/{application_id}/re-evaluate", response_model=ApplicationOut)
+def re_evaluate_application(
+    application_id: uuid.UUID,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: RecruitmentService = Depends(_svc),
+):
+    """Re-run the AI screening for an application (manager-only) — e.g. after fixing a missing API key."""
+    try:
+        application = svc.re_evaluate_application(user, application_id)
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:

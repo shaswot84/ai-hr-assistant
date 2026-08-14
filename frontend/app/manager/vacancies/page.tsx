@@ -12,7 +12,7 @@ import { Pagination } from "@/components/pagination";
 import { SortableTh, Th, toggleSort, type SortState } from "@/components/table";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
-import type { Vacancy } from "@/lib/types";
+import type { KeywordTier, ScoringKeyword, Vacancy } from "@/lib/types";
 
 const EMPLOYMENT_TYPES = ["FULL_TIME", "PART_TIME", "CONTRACT", "INTERNSHIP"];
 const PAGE_SIZE = 8;
@@ -24,6 +24,23 @@ const emptyForm = {
   employmentType: "FULL_TIME",
   openingDate: "",
   closingDate: "",
+};
+
+/** A generated keyword plus whether the manager kept it — the checkbox
+ * decides inclusion, the tier decides its weight (fixed critical=5,
+ * important=3, nice_to_have=1 mapping applied server-side at scoring time). */
+type EditableKeyword = ScoringKeyword & { checked: boolean };
+
+const TIER_ORDER: KeywordTier[] = ["critical", "important", "nice_to_have"];
+const TIER_LABELS: Record<KeywordTier, string> = {
+  critical: "Critical",
+  important: "Important",
+  nice_to_have: "Nice to have",
+};
+const TIER_ACTIVE_STYLES: Record<KeywordTier, string> = {
+  critical: "bg-red-600 text-white",
+  important: "bg-amber-500 text-white",
+  nice_to_have: "bg-zinc-500 text-white",
 };
 
 function sortVacancies(list: Vacancy[], sort: SortState): Vacancy[] {
@@ -67,6 +84,9 @@ function ManagerVacanciesContent() {
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [keywords, setKeywords] = useState<EditableKeyword[]>([]);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
 
   const refresh = useMemo(
     () => () =>
@@ -91,8 +111,35 @@ function ManagerVacanciesContent() {
     }
   }, [searchParams, router]);
 
+  const checkedKeywordCount = keywords.filter((k) => k.checked).length;
+
+  async function handleGenerateKeywords() {
+    setGenerateError(null);
+    setGenerating(true);
+    try {
+      const result = await api.suggestKeywords(form.title, form.description);
+      setKeywords(result.keywords.map((kw) => ({ ...kw, checked: true })));
+    } catch (err) {
+      setGenerateError(err instanceof ApiError ? err.detail : "Failed to generate keywords.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function toggleKeyword(index: number) {
+    setKeywords((prev) => prev.map((kw, i) => (i === index ? { ...kw, checked: !kw.checked } : kw)));
+  }
+
+  function setKeywordTier(index: number, tier: KeywordTier) {
+    setKeywords((prev) => prev.map((kw, i) => (i === index ? { ...kw, tier } : kw)));
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (checkedKeywordCount === 0) {
+      setError("Keep at least one scoring keyword — it's what applications get ranked against.");
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -103,6 +150,9 @@ function ManagerVacanciesContent() {
         employment_type: form.employmentType,
         opening_date: form.openingDate || null,
         closing_date: form.closingDate || null,
+        scoring_keywords: keywords
+          .filter((k) => k.checked)
+          .map(({ keyword, tier }) => ({ keyword, tier })),
       });
       addToast("Vacancy posted successfully.", "success");
       setModalOpen(false);
@@ -133,6 +183,14 @@ function ManagerVacanciesContent() {
     setPage(1);
   }
 
+  function openCreateModal() {
+    setForm(emptyForm);
+    setKeywords([]);
+    setGenerateError(null);
+    setError(null);
+    setModalOpen(true);
+  }
+
   return (
     <>
       <div className="space-y-6">
@@ -142,10 +200,7 @@ function ManagerVacanciesContent() {
           actions={
             <button
               type="button"
-              onClick={() => {
-                setForm(emptyForm);
-                setModalOpen(true);
-              }}
+              onClick={openCreateModal}
               className="btn-primary"
             >
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -198,7 +253,7 @@ function ManagerVacanciesContent() {
               }
               action={
                 !search ? (
-                  <button type="button" className="btn-primary" onClick={() => setModalOpen(true)}>
+                  <button type="button" className="btn-primary" onClick={openCreateModal}>
                     Post a Vacancy
                   </button>
                 ) : undefined
@@ -324,6 +379,70 @@ function ManagerVacanciesContent() {
                 placeholder="Responsibilities, requirements, and what makes this role a good fit…"
               />
             </div>
+
+            <div className="col-span-2">
+              <div className="flex items-center justify-between">
+                <label className="label mb-0">Scoring Keywords *</label>
+                <button
+                  type="button"
+                  disabled={generating || !form.title.trim()}
+                  onClick={handleGenerateKeywords}
+                  className="btn-secondary text-xs"
+                >
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={1.5}
+                      d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"
+                    />
+                  </svg>
+                  {generating ? "Generating…" : keywords.length ? "Regenerate" : "Generate Weighted Keywords"}
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-zinc-400">
+                Applications will be ranked against these — uncheck any that don&apos;t belong, and set how
+                much each one should count.
+              </p>
+
+              {generateError && <p className="mt-2 text-sm text-red-600">{generateError}</p>}
+
+              {keywords.length > 0 && (
+                <div className="mt-3 divide-y divide-zinc-100 rounded-lg border border-zinc-200">
+                  {keywords.map((kw, i) => (
+                    <div key={`${kw.keyword}-${i}`} className="flex items-center gap-3 px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={kw.checked}
+                        onChange={() => toggleKeyword(i)}
+                        className="h-4 w-4 shrink-0 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span
+                        className={`flex-1 truncate text-sm ${kw.checked ? "text-zinc-900" : "text-zinc-400 line-through"}`}
+                      >
+                        {kw.keyword}
+                      </span>
+                      <div className="flex shrink-0 gap-1 rounded-md bg-zinc-100 p-0.5">
+                        {TIER_ORDER.map((tier) => (
+                          <button
+                            key={tier}
+                            type="button"
+                            disabled={!kw.checked}
+                            onClick={() => setKeywordTier(i, tier)}
+                            className={`rounded px-2 py-1 text-[11px] font-medium transition-colors disabled:opacity-40 ${
+                              kw.tier === tier ? TIER_ACTIVE_STYLES[tier] : "text-zinc-500 hover:bg-zinc-200"
+                            }`}
+                          >
+                            {TIER_LABELS[tier]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div>
               <label className="label">Opening Date</label>
               <input
@@ -350,7 +469,12 @@ function ManagerVacanciesContent() {
             <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">
               Cancel
             </button>
-            <button type="submit" disabled={submitting} className="btn-primary">
+            <button
+              type="submit"
+              disabled={submitting || checkedKeywordCount === 0}
+              title={checkedKeywordCount === 0 ? "Generate and keep at least one scoring keyword first" : undefined}
+              className="btn-primary"
+            >
               {submitting ? "Creating…" : "Create Vacancy"}
             </button>
           </div>

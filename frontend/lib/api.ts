@@ -24,6 +24,7 @@ import type {
   LeaveType,
   LeaveTypeCreateBody,
   LlmConfig,
+  ScoringKeyword,
   UserContext,
   Vacancy,
   ChatCitation,
@@ -104,10 +105,19 @@ export const api = {
     employment_type: string;
     opening_date?: string | null;
     closing_date?: string | null;
+    scoring_keywords: ScoringKeyword[];
   }) =>
     request<Vacancy>("/api/vacancies", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+
+  /** Suggest scoring keywords + tiers from a job title/description — a starting
+   * point for the manager to review, check/uncheck, and re-tier before posting. */
+  suggestKeywords: (title: string, description: string) =>
+    request<{ keywords: ScoringKeyword[] }>("/api/vacancies/keywords/suggest", {
+      method: "POST",
+      body: JSON.stringify({ title, description }),
     }),
 
   allApplications: () => request<ApplicationDetail[]>("/api/applications"),
@@ -145,6 +155,12 @@ export const api = {
       body: JSON.stringify({ action }),
     }),
 
+  /** Re-run the AI screening (e.g. after fixing a missing/invalid API key). */
+  reEvaluate: (applicationId: string) =>
+    request<Application>(`/api/applications/${applicationId}/re-evaluate`, {
+      method: "POST",
+    }),
+
   /** URL of the candidate's uploaded resume; opened directly (the browser sends the stored token via a query-less GET, so this is used inside an authenticated fetch/download, not a plain <a href>). */
   resumeUrl: (applicationId: string) =>
     `${API_BASE_URL}/api/applications/${applicationId}/resume`,
@@ -166,9 +182,26 @@ export const api = {
       { method: "POST" }
     ),
 
+  getKeywordSuggestionPrompt: () =>
+    request<{ prompt: string; is_default: boolean }>(
+      "/api/settings/keyword-suggestion-prompt"
+    ),
+
+  setKeywordSuggestionPrompt: (prompt: string) =>
+    request<{ prompt: string; is_default: boolean }>(
+      "/api/settings/keyword-suggestion-prompt",
+      { method: "PUT", body: JSON.stringify({ prompt }) }
+    ),
+
+  resetKeywordSuggestionPrompt: () =>
+    request<{ prompt: string; is_default: boolean }>(
+      "/api/settings/keyword-suggestion-prompt/reset",
+      { method: "POST" }
+    ),
+
   getLlmConfig: () => request<LlmConfig>("/api/settings/llm-config"),
 
-  setLlmConfig: (body: { api_base: string; model: string; api_key?: string }) =>
+  setLlmConfig: (body: { api_base: string; model: string; api_key: string }) =>
     request<LlmConfig>("/api/settings/llm-config", {
       method: "PUT",
       body: JSON.stringify(body),

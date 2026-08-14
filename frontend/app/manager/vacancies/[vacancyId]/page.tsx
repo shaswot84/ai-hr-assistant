@@ -9,7 +9,13 @@ import { DetailSkeleton, ListSkeleton } from "@/components/loading";
 import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
-import type { ApplicationDetail, Vacancy } from "@/lib/types";
+import type { ApplicationDetail, KeywordTier, Vacancy } from "@/lib/types";
+
+const KEYWORD_TIER_TONE: Record<KeywordTier, string> = {
+  critical: "bg-red-50 text-red-700 ring-red-600/20",
+  important: "bg-amber-50 text-amber-700 ring-amber-600/20",
+  nice_to_have: "bg-zinc-100 text-zinc-600 ring-zinc-500/20",
+};
 
 function ArchiveButton({ vacancy, onChange }: { vacancy: Vacancy; onChange: (v: Vacancy) => void }) {
   const { addToast } = useToast();
@@ -39,35 +45,38 @@ function ArchiveButton({ vacancy, onChange }: { vacancy: Vacancy; onChange: (v: 
   );
 }
 
+const RECOMMENDATION_TONE: Record<string, string> = {
+  "Strong Match": "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  "Good Match": "bg-blue-50 text-blue-700 ring-blue-600/20",
+  "Possible Match": "bg-amber-50 text-amber-700 ring-amber-600/20",
+  "Weak Match": "bg-red-50 text-red-700 ring-red-600/20",
+};
+
 function scoreTone(score: number) {
-  if (score >= 70) return "bg-emerald-50 text-emerald-700";
-  if (score >= 40) return "bg-amber-50 text-amber-700";
-  return "bg-red-50 text-red-700";
+  if (score >= 70) return "text-emerald-600";
+  if (score >= 40) return "text-amber-600";
+  return "text-red-600";
 }
 
-function ApplicationsList({ vacancyId }: { vacancyId: string }) {
-  const [applications, setApplications] = useState<ApplicationDetail[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+/** Ranking within a single list (requirements-met and requirements-failed
+ * are now entirely separate lists, so this only ever ranks within one
+ * tier at a time): higher weighted keyword score first; unscored/failed
+ * screenings sink to the bottom. */
+function matchQuality(a: ApplicationDetail): number {
+  if (!a.evaluated || !a.evaluation || a.evaluation.failed) return -1;
+  return a.evaluation.keyword_score ?? 0;
+}
 
-  useEffect(() => {
-    api
-      .vacancyApplications(vacancyId)
-      .then(setApplications)
-      .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load applications."));
-  }, [vacancyId]);
+/** A candidate who clearly failed a stated hard requirement — kept in a
+ * separate list entirely from everyone else, so a manager scanning who's
+ * still in the running doesn't have to look past eliminated candidates. */
+function failsRequirements(a: ApplicationDetail): boolean {
+  return (
+    a.evaluated && !!a.evaluation && !a.evaluation.failed && a.evaluation.detail?.requirements_met === false
+  );
+}
 
-  if (error) return <div className="notice border-red-200 bg-red-50 text-red-700">{error}</div>;
-  if (applications === null) return <ListSkeleton rows={3} />;
-  if (applications.length === 0)
-    return (
-      <div className="card">
-        <EmptyState
-          title="No applications yet"
-          description="Candidates will appear here once they start applying to this role."
-        />
-      </div>
-    );
-
+function ApplicationsTable({ rows }: { rows: ApplicationDetail[] }) {
   return (
     <div className="card overflow-hidden">
       <div className="table-scroll">
@@ -81,7 +90,7 @@ function ApplicationsList({ vacancyId }: { vacancyId: string }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100">
-            {applications.map((a) => (
+            {rows.map((a) => (
               <tr key={a.application_id} className="table-row">
                 <td className="table-td">
                   <Link
@@ -111,12 +120,25 @@ function ApplicationsList({ vacancyId }: { vacancyId: string }) {
                   })}
                 </td>
                 <td className="table-td hidden sm:table-cell">
-                  {a.evaluated && a.evaluation ? (
-                    <span className={`badge tabular-nums ${scoreTone(a.evaluation.score)}`}>
-                      {a.evaluation.score}
+                  {!a.evaluated || !a.evaluation ? (
+                    <span className="text-xs text-zinc-400">—</span>
+                  ) : a.evaluation.failed ? (
+                    <span
+                      className="badge bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20"
+                      title={a.evaluation.overview}
+                    >
+                      Failed
+                    </span>
+                  ) : a.evaluation.keyword_score !== null ? (
+                    <span className={`font-semibold tabular-nums ${scoreTone(a.evaluation.keyword_score)}`}>
+                      {a.evaluation.keyword_score}%
                     </span>
                   ) : (
-                    <span className="text-xs text-zinc-400">—</span>
+                    <span
+                      className={`badge ring-1 ring-inset ${RECOMMENDATION_TONE[a.evaluation.detail?.recommendation ?? ""] ?? "bg-zinc-100 text-zinc-600 ring-zinc-500/20"}`}
+                    >
+                      {a.evaluation.detail?.recommendation ?? "Reviewed"}
+                    </span>
                   )}
                 </td>
                 <td className="table-td">
@@ -127,6 +149,70 @@ function ApplicationsList({ vacancyId }: { vacancyId: string }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function ApplicationsList({ vacancyId }: { vacancyId: string }) {
+  const [applications, setApplications] = useState<ApplicationDetail[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [failedExpanded, setFailedExpanded] = useState(false);
+
+  useEffect(() => {
+    api
+      .vacancyApplications(vacancyId)
+      .then(setApplications)
+      .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load applications."));
+  }, [vacancyId]);
+
+  if (error) return <div className="notice border-red-200 bg-red-50 text-red-700">{error}</div>;
+  if (applications === null) return <ListSkeleton rows={3} />;
+  if (applications.length === 0)
+    return (
+      <div className="card">
+        <EmptyState
+          title="No applications yet"
+          description="Candidates will appear here once they start applying to this role."
+        />
+      </div>
+    );
+
+  const meeting = applications
+    .filter((a) => !failsRequirements(a))
+    .sort((a, b) => matchQuality(b) - matchQuality(a));
+  const failing = applications.filter(failsRequirements).sort((a, b) => matchQuality(b) - matchQuality(a));
+
+  return (
+    <div className="space-y-4">
+      {meeting.length > 0 && <ApplicationsTable rows={meeting} />}
+
+      {/* Kept as a fully separate, collapsed-by-default section (not just
+          sorted below) — a manager scanning who's still in the running
+          shouldn't have to look past eliminated candidates to find them. */}
+      {failing.length > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setFailedExpanded((v) => !v)}
+            className="mb-3 flex w-full items-center gap-2 text-left"
+            aria-expanded={failedExpanded}
+          >
+            <svg
+              className={`h-4 w-4 shrink-0 text-zinc-400 transition-transform ${failedExpanded ? "rotate-90" : ""}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            <h3 className="text-sm font-semibold text-red-800">Doesn&apos;t Meet Requirements</h3>
+            <span className="badge bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20">
+              {failing.length}
+            </span>
+          </button>
+          {failedExpanded && <ApplicationsTable rows={failing} />}
+        </div>
+      )}
     </div>
   );
 }
@@ -178,6 +264,23 @@ export default function ManagerVacancyDetailPage() {
                   <p className="mt-4 max-w-3xl whitespace-pre-wrap text-sm leading-relaxed text-zinc-600">
                     {vacancy.description}
                   </p>
+                )}
+                {vacancy.scoring_keywords.length > 0 && (
+                  <div className="mt-4">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                      Scoring Keywords
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {vacancy.scoring_keywords.map((kw) => (
+                        <span
+                          key={kw.keyword}
+                          className={`badge ring-1 ring-inset ${KEYWORD_TIER_TONE[kw.tier]}`}
+                        >
+                          {kw.keyword}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
               <div className="shrink-0">

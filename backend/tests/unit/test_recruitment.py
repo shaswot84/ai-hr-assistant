@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 from datetime import UTC, datetime
 
 import pytest
+from docx import Document
 from sqlalchemy import select
 
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
@@ -10,8 +12,13 @@ from app.domain.identity import ApplicationUser, Candidate, Person
 from app.domain.outbox import OutboxJob
 from app.domain.recruitment import ApplicationEvaluation
 
+DEFAULT_TEST_KEYWORDS = [
+    {"keyword": "python", "tier": "critical"},
+    {"keyword": "fastapi", "tier": "important"},
+]
 
-def _create_vacancy(svc, actor):
+
+def _create_vacancy(svc, actor, *, scoring_keywords=None):
     return svc.create_vacancy(
         actor,
         title="Senior Backend Engineer",
@@ -20,6 +27,7 @@ def _create_vacancy(svc, actor):
         employment_type="full_time",
         opening_date=None,
         closing_date=None,
+        scoring_keywords=scoring_keywords or DEFAULT_TEST_KEYWORDS,
     )
 
 
@@ -99,6 +107,32 @@ def test_decide_application_reject_sets_rejected_at(db, manager_context, candida
     assert decided.rejected_at is not None
 
 
+def test_re_evaluate_application_requires_hr_admin(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    with pytest.raises(PermissionError_):
+        svc.re_evaluate_application(candidate_context, application.application_id)
+
+
+def test_re_evaluate_application_enqueues_a_fresh_evaluation_job(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+
+    svc.re_evaluate_application(manager_context, application.application_id)
+
+    jobs = db.scalars(
+        select(OutboxJob).where(
+            OutboxJob.aggregate_id == application.application_id,
+            OutboxJob.job_type == "EVALUATE_APPLICATION",
+        )
+    ).all()
+    # one from apply(), one from the manual retry
+    assert len(jobs) == 2
+    assert jobs[-1].payload["cv_object_key"] == "resumes/a.pdf"
+
+
 def test_archive_and_reopen_vacancy(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
     vacancy = _create_vacancy(svc, manager_context)
@@ -125,6 +159,7 @@ def test_list_all_applications_spans_every_vacancy(db, manager_context, candidat
         employment_type="full_time",
         opening_date=None,
         closing_date=None,
+        scoring_keywords=DEFAULT_TEST_KEYWORDS,
     )
     app_a = svc.apply(candidate_context, vacancy_id=vacancy_a.vacancy_id, cv_object_key="resumes/a.pdf")
     app_b = svc.apply(candidate_context, vacancy_id=vacancy_b.vacancy_id, cv_object_key="resumes/b.pdf")
@@ -140,25 +175,25 @@ def test_list_all_applications_requires_hr_admin(db, candidate_context):
         svc.list_all_applications(candidate_context)
 
 
-def _seed_evaluation(db, application_id):
+def _seed_evaluation(db, application_id, *, keyword_score=None, keyword_matches=None):
     """Attach an AI screening result (LLM-shaped raw_payload) to an application."""
     db.add(
         ApplicationEvaluation(
             application_id=application_id,
-            score=76,
             overview="Strong match.",
             raw_payload={
-                "matchScore": 76,
                 "recommendation": "Good Match",
                 "summary": "Strong match.",
-                "scoreFactors": [
-                    {"factor": "Skills Match", "score": 80, "note": "Has most required skills."},
+                "keyFactors": [
+                    {"factor": "Skills Match", "note": "Has most required skills."},
                 ],
                 "strengths": ["Strong Python background"],
                 "weaknesses": ["No Kubernetes experience mentioned"],
                 "matchedKeywords": ["python", "fastapi"],
                 "missingKeywords": ["kubernetes"],
+                "keywordMatches": keyword_matches or [],
             },
+            keyword_score=keyword_score,
             model="test-model",
             prompt_version="v1",
             evaluated_at=datetime.now(UTC),
@@ -287,7 +322,7 @@ def test_manager_application_detail_serializes_screening_as_snake_case(
     db, client, manager_context, candidate_context, manager_password
 ):
     """Regression test: the LLM's raw evaluation payload uses camelCase keys
-    (`matchedKeywords`, `scoreFactors`, ...), but every other field in this
+    (`matchedKeywords`, `keyFactors`, ...), but every other field in this
     API is snake_case on the wire. A schema that round-tripped those
     camelCase keys straight through to the HTTP response (via a Pydantic
     alias generator) previously broke the frontend, which reads
@@ -315,9 +350,100 @@ def test_manager_application_detail_serializes_screening_as_snake_case(
     detail = res.json()["evaluation"]["detail"]
     assert detail["matched_keywords"] == ["python", "fastapi"]
     assert detail["missing_keywords"] == ["kubernetes"]
-    assert detail["match_score"] == 76
-    assert detail["score_factors"][0]["factor"] == "Skills Match"
+    assert "match_score" not in detail
+    assert "score" not in detail
+    assert detail["key_factors"][0]["factor"] == "Skills Match"
     assert "matchedKeywords" not in detail
+
+
+def test_manager_application_detail_exposes_keyword_score_and_matches(
+    db, client, manager_context, candidate_context, manager_password
+):
+    """The deterministically-computed weighted keyword score and its
+    per-keyword breakdown must be reachable from the manager-facing API —
+    this is the new score's whole value proposition (auditable, not a
+    number the manager has to just trust).
+    """
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(
+        candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
+    )
+    _seed_evaluation(
+        db,
+        application.application_id,
+        keyword_score=78,
+        keyword_matches=[
+            {"keyword": "python", "present": True, "evidence": "Listed in skills."},
+            {"keyword": "fastapi", "present": False, "evidence": "Not mentioned."},
+        ],
+    )
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": manager_context.email, "password": manager_password},
+    )
+    token = login.json()["access_token"]
+    res = client.get(
+        f"/api/applications/{application.application_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 200
+    evaluation = res.json()["evaluation"]
+    assert evaluation["keyword_score"] == 78
+    assert evaluation["detail"]["keyword_matches"] == [
+        {"keyword": "python", "present": True, "evidence": "Listed in skills."},
+        {"keyword": "fastapi", "present": False, "evidence": "Not mentioned."},
+    ]
+
+
+def test_manager_sees_failed_evaluation_and_can_retry(
+    db, client, manager_context, candidate_context, manager_password
+):
+    """When the AI provider is unavailable, the worker records `failed=True`
+    with an error message instead of a score. The manager-facing API must
+    surface that flag, and the re-evaluate endpoint must let them retry.
+    """
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(
+        candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
+    )
+    db.add(
+        ApplicationEvaluation(
+            application_id=application.application_id,
+            overview="No AI provider is configured.",
+            raw_payload={"error": "No AI provider is configured."},
+            failed=True,
+            model="none",
+            prompt_version="none",
+            evaluated_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": manager_context.email, "password": manager_password},
+    )
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = client.get(f"/api/applications/{application.application_id}", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["evaluation"]["failed"] is True
+    assert res.json()["evaluation"]["overview"] == "No AI provider is configured."
+
+    retry = client.post(f"/api/applications/{application.application_id}/re-evaluate", headers=headers)
+    assert retry.status_code == 200
+
+    jobs = db.scalars(
+        select(OutboxJob).where(
+            OutboxJob.aggregate_id == application.application_id,
+            OutboxJob.job_type == "EVALUATE_APPLICATION",
+        )
+    ).all()
+    assert len(jobs) == 2  # the original apply()-triggered job plus the retry
 
 
 def test_candidate_application_view_excludes_screening_result(
@@ -392,3 +518,96 @@ def test_all_applications_http_endpoint(
     assert res.status_code == 200
     ids = {a["application_id"] for a in res.json()}
     assert str(application.application_id) in ids
+
+
+def _build_docx_bytes(paragraphs: list[str]) -> bytes:
+    """Build an in-memory DOCX file with the given paragraph text."""
+    doc = Document()
+    for text in paragraphs:
+        doc.add_paragraph(text)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def test_apply_rejects_non_resume_upload(db, client, manager_context, candidate_context, candidate_password):
+    """Regression test: previously any readable PDF/DOCX got scored as a
+    resume regardless of content. A document with no resume signals
+    (no contact info, no experience/education section, no dates) must be
+    rejected at upload time, before storage or an application row exist.
+    """
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": candidate_context.email, "password": candidate_password},
+    )
+    token = login.json()["access_token"]
+
+    unrelated_text = "This is a general company newsletter update with no resume-related content. " * 5
+    garbage = _build_docx_bytes([unrelated_text])
+    res = client.post(
+        f"/api/vacancies/{vacancy.vacancy_id}/applications",
+        headers={"Authorization": f"Bearer {token}"},
+        files={
+            "file": (
+                "note.docx",
+                garbage,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert res.status_code == 400
+    assert "doesn't look like a resume" in res.json()["detail"]
+    assert svc.list_all_applications(manager_context) == []
+
+
+def test_apply_accepts_real_resume_upload(
+    db, client, manager_context, candidate_context, candidate_password, monkeypatch
+):
+    """The gate must not false-reject a real resume. Storage is monkeypatched
+    so this stays a hermetic unit test rather than depending on live MinIO.
+    """
+    monkeypatch.setattr(
+        "app.api.routes.recruitment.SyncS3ObjectStore.put_resume",
+        lambda self, data, filename, content_type: "resumes/fake-key.docx",
+    )
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": candidate_context.email, "password": candidate_password},
+    )
+    token = login.json()["access_token"]
+
+    resume = _build_docx_bytes(
+        [
+            "Jane Doe",
+            "jane.doe@example.com | (555) 123-4567 | San Francisco, CA",
+            "SUMMARY",
+            "Backend engineer with 6 years of experience building scalable APIs.",
+            "EXPERIENCE",
+            "Senior Backend Engineer, Acme Corp — 2021 to 2026",
+            "Led the migration of the monolith to microservices.",
+            "Backend Engineer, Startup Inc — 2019 to 2021",
+            "EDUCATION",
+            "B.S. Computer Science, State University, 2019",
+            "SKILLS",
+            "Python, FastAPI, PostgreSQL, Docker, Kubernetes",
+        ]
+    )
+    res = client.post(
+        f"/api/vacancies/{vacancy.vacancy_id}/applications",
+        headers={"Authorization": f"Bearer {token}"},
+        files={
+            "file": (
+                "resume.docx",
+                resume,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert res.status_code == 201
+    assert res.json()["application_status"] == "APPLIED"

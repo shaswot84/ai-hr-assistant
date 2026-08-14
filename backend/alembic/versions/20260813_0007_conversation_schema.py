@@ -1,7 +1,7 @@
 """Conversation schema (conversation, conversation_message)
 
-Revision ID: 20260812_0005
-Revises: 20260812_0004
+Revision ID: 20260813_0007
+Revises: 20260813_0006
 Create Date: 2026-08-12
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "20260812_0005"
-down_revision: str | None = "20260812_0004"
+revision: str = "20260813_0007"
+down_revision: str | None = "20260813_0006"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

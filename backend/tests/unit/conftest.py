@@ -14,6 +14,8 @@ Postgres-only `Vector` columns that SQLite can't create.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -76,6 +78,14 @@ def _clean_tables():
     with engine.begin() as conn:
         for table in reversed(Base.metadata.sorted_tables):
             conn.execute(table.delete())
+
+
+@pytest.fixture(autouse=True)
+def _clean_settings_env_file():
+    """Empty the throwaway settings .env file between tests for isolation."""
+    yield
+    path = os.environ["SETTINGS_ENV_FILE_PATH"]
+    open(path, "w").close()
 
 
 @pytest.fixture()

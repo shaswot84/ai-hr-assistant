@@ -28,98 +28,119 @@ SAMPLE_LEAVE_TYPES = [
     ("Unpaid Leave", "Leave beyond paid entitlements.", Decimal(0), True, False, None),
 ]
 
-# (title, department, employment_type, description, days_open) — a spread of
-# roles/departments so the candidate portal and AI scoring demo have variety.
+# A deliberately small, varied spread of departments and seniority levels
+# (junior IC, senior IC, mid-level manager, junior/mid IC, senior exec) —
+# not meant to be exhaustive, just enough for the requirements-gate/ranking
+# UI to have believable, differently-shaped roles to demo against.
+# `scoring_keywords` is a hardcoded example rubric per role (not
+# LLM-generated — seeding must stay fast and work with no AI provider
+# configured) mirroring what "Generate Weighted Keywords" would plausibly
+# suggest from the description: critical = stated as a requirement,
+# important = a strongly implied core skill, nice_to_have = mentioned but
+# not central.
 SAMPLE_VACANCIES = [
-    (
-        "Senior Backend Engineer",
-        "Engineering",
-        "FULL_TIME",
-        (
-            "We're hiring a Senior Backend Engineer to design and build scalable APIs. "
-            "Requirements: Python, FastAPI, PostgreSQL, Docker, Kubernetes, AWS, and "
-            "mentoring junior engineers."
+    {
+        "title": "Junior Frontend Developer",
+        "department": "Engineering",
+        "employment_type": "FULL_TIME",
+        "description": (
+            "We're hiring a Junior Frontend Developer to help build our customer-facing "
+            "web app. Requirements: solid HTML, CSS, and JavaScript fundamentals, some "
+            "hands-on experience with React, and familiarity with Git. This is an "
+            "entry-level role — you'll be paired with senior engineers for mentorship "
+            "as you grow."
         ),
-        30,
-    ),
-    (
-        "Product Designer",
-        "Design",
-        "FULL_TIME",
-        (
-            "We're looking for a Product Designer with strong Figma, prototyping, and user "
-            "research skills. Experience with design systems and cross-functional "
-            "collaboration with engineering is a must."
+        "days_open": 21,
+        "scoring_keywords": [
+            {"keyword": "html", "tier": "critical"},
+            {"keyword": "css", "tier": "critical"},
+            {"keyword": "javascript", "tier": "critical"},
+            {"keyword": "react", "tier": "important"},
+            {"keyword": "git", "tier": "important"},
+            {"keyword": "responsive design", "tier": "nice_to_have"},
+        ],
+    },
+    {
+        "title": "Senior Backend Engineer",
+        "department": "Engineering",
+        "employment_type": "FULL_TIME",
+        "description": (
+            "We're hiring a Senior Backend Engineer to lead the design of our core "
+            "services and mentor engineers on the team. Requirements: 7+ years of "
+            "backend engineering experience, deep expertise in Python, hands-on system "
+            "design for distributed systems, and a track record of mentoring or leading "
+            "other engineers. AWS experience is a strong plus."
         ),
-        21,
-    ),
-    (
-        "Data Analyst",
-        "Data",
-        "FULL_TIME",
-        (
-            "Seeking a Data Analyst to turn raw data into decisions. Requirements: SQL, "
-            "Python (pandas), dashboarding (Looker/Tableau/Metabase), A/B test analysis, "
-            "and clear written communication with non-technical stakeholders."
+        "days_open": 30,
+        "scoring_keywords": [
+            {"keyword": "python", "tier": "critical"},
+            {"keyword": "distributed systems", "tier": "critical"},
+            {"keyword": "system design", "tier": "critical"},
+            {"keyword": "mentoring", "tier": "important"},
+            {"keyword": "aws", "tier": "important"},
+            {"keyword": "kubernetes", "tier": "nice_to_have"},
+        ],
+    },
+    {
+        "title": "Marketing Manager",
+        "department": "Marketing",
+        "employment_type": "FULL_TIME",
+        "description": (
+            "We're hiring a Marketing Manager to own campaign strategy and lead a small "
+            "team. Requirements: 5+ years of B2B marketing experience, a track record of "
+            "managing marketing budgets, and experience leading or mentoring a team. "
+            "Familiarity with GA4 and marketing analytics tools is expected."
         ),
-        30,
-    ),
-    (
-        "HR Generalist",
-        "Human Resources",
-        "FULL_TIME",
-        (
-            "Join our People team as an HR Generalist covering recruitment coordination, "
-            "onboarding, employee relations, and policy administration. Requirements: 2+ "
-            "years HR experience, HRIS familiarity, and strong interpersonal skills."
+        "days_open": 21,
+        "scoring_keywords": [
+            {"keyword": "b2b marketing", "tier": "critical"},
+            {"keyword": "budget management", "tier": "critical"},
+            {"keyword": "team leadership", "tier": "important"},
+            {"keyword": "marketing analytics", "tier": "important"},
+            {"keyword": "content strategy", "tier": "nice_to_have"},
+        ],
+    },
+    {
+        "title": "Data Analyst",
+        "department": "Data",
+        "employment_type": "FULL_TIME",
+        "description": (
+            "We're hiring a Data Analyst to help turn raw data into decisions across the "
+            "company. Requirements: strong SQL skills and experience building dashboards "
+            "or reports, plus the ability to communicate findings to non-technical "
+            "stakeholders. Experience with Python (pandas) or Tableau is a plus."
         ),
-        30,
-    ),
-    (
-        "DevOps Engineer",
-        "Engineering",
-        "FULL_TIME",
-        (
-            "Looking for a DevOps Engineer to own our cloud infrastructure. Requirements: "
-            "Kubernetes, Terraform, AWS, CI/CD pipelines (GitHub Actions), Docker, "
-            "observability (Prometheus/Grafana), and on-call incident response experience."
+        "days_open": 30,
+        "scoring_keywords": [
+            {"keyword": "sql", "tier": "critical"},
+            {"keyword": "data visualization", "tier": "critical"},
+            {"keyword": "stakeholder communication", "tier": "important"},
+            {"keyword": "python", "tier": "important"},
+            {"keyword": "tableau", "tier": "nice_to_have"},
+        ],
+    },
+    {
+        "title": "Director of Sales",
+        "department": "Sales",
+        "employment_type": "FULL_TIME",
+        "description": (
+            "We're hiring a Director of Sales to lead our sales organization through its "
+            "next stage of growth. Requirements: 10+ years of sales experience with at "
+            "least 5 years in a sales leadership role, a proven track record of building "
+            "and leading high-performing sales teams, and experience driving significant "
+            "revenue growth. Strong executive communication skills and enterprise sales "
+            "experience are essential."
         ),
-        30,
-    ),
-    (
-        "Marketing Manager",
-        "Marketing",
-        "FULL_TIME",
-        (
-            "We need a Marketing Manager to own campaign strategy across paid, content, and "
-            "lifecycle channels. Requirements: 4+ years B2B/B2C marketing, analytics tools "
-            "(GA4/Mixpanel), budget management, and experience briefing design/content teams."
-        ),
-        21,
-    ),
-    (
-        "Frontend Engineer",
-        "Engineering",
-        "FULL_TIME",
-        (
-            "We're hiring a Frontend Engineer with strong experience in React, TypeScript, "
-            "and modern state management. You'll own UI implementation, performance, and "
-            "accessibility, working closely with design and backend teams. Experience with "
-            "Next.js and component design systems is required."
-        ),
-        21,
-    ),
-    (
-        "Customer Support Specialist",
-        "Operations",
-        "PART_TIME",
-        (
-            "Part-time Customer Support Specialist to handle inbound tickets via email and "
-            "chat. Requirements: excellent written communication, patience, familiarity "
-            "with helpdesk tools (Zendesk/Intercom), and a knack for de-escalating issues."
-        ),
-        14,
-    ),
+        "days_open": 30,
+        "scoring_keywords": [
+            {"keyword": "sales leadership", "tier": "critical"},
+            {"keyword": "revenue growth", "tier": "critical"},
+            {"keyword": "team leadership", "tier": "critical"},
+            {"keyword": "executive communication", "tier": "important"},
+            {"keyword": "enterprise sales", "tier": "important"},
+            {"keyword": "crm strategy", "tier": "nice_to_have"},
+        ],
+    },
 ]
 
 
@@ -373,21 +394,22 @@ def seed() -> None:
         # sample vacancies, one per title (idempotent: skip titles that already exist)
         created = 0
         if manager is not None:
-            for title, dept_name, employment_type, description, days_open in SAMPLE_VACANCIES:
-                if db.scalar(select(Vacancy).where(Vacancy.title == title)) is not None:
+            for vac in SAMPLE_VACANCIES:
+                if db.scalar(select(Vacancy).where(Vacancy.title == vac["title"])) is not None:
                     continue
-                dept = _get_or_create_department(db, dept_name)
+                dept = _get_or_create_department(db, vac["department"])
                 db.add(
                     Vacancy(
-                        title=title,
+                        title=vac["title"],
                         department_id=dept.department_id,
-                        description=description,
-                        employment_type=employment_type,
+                        description=vac["description"],
+                        employment_type=vac["employment_type"],
                         opening_date=clock.today(),
-                        closing_date=clock.today() + timedelta(days=days_open),
+                        closing_date=clock.today() + timedelta(days=vac["days_open"]),
                         created_by_employee_id=manager.employee_id,
                         approval_status="APPROVED",
                         status="OPEN",
+                        scoring_keywords=vac["scoring_keywords"],
                         created_at=now,
                         updated_at=now,
                     )
@@ -395,9 +417,12 @@ def seed() -> None:
                 created += 1
 
         db.commit()
+
         print(
             f"Seed complete: demo manager + employee + candidate ready, "
-            f"{created} new vacancy(ies) added."
+            f"{created} new vacancy(ies) added. Sample applications with real resumes are "
+            f"seeded separately via `python -m app.db.seed_sample_applications` (requires a "
+            f"configured AI provider and the worker running)."
         )
     finally:
         db.close()

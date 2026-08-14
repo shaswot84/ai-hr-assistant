@@ -6,14 +6,13 @@ from pydantic import BaseModel
 from app.api.deps import require_role
 from app.capabilities.settings import SettingsService
 from app.contracts.auth import UserContext
-from app.db.sync_session import get_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
-def _svc(db=Depends(get_db)) -> SettingsService:
-    """FastAPI dependency that builds a SettingsService bound to the request's DB session."""
-    return SettingsService(db)
+def _svc() -> SettingsService:
+    """FastAPI dependency that builds a SettingsService (reads/writes .env directly)."""
+    return SettingsService()
 
 
 class ResumeReviewPromptIn(BaseModel):
@@ -57,20 +56,70 @@ def reset_resume_review_prompt(
     return ResumeReviewPromptOut(**svc.reset_resume_review_prompt())
 
 
+class KeywordSuggestionPromptIn(BaseModel):
+    """Request body for setting the keyword-suggestion system prompt."""
+
+    prompt: str
+
+
+class KeywordSuggestionPromptOut(BaseModel):
+    """Response carrying the active keyword-suggestion prompt plus whether it is the default."""
+
+    prompt: str
+    is_default: bool
+
+
+@router.get("/keyword-suggestion-prompt", response_model=KeywordSuggestionPromptOut)
+def get_keyword_suggestion_prompt(
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: SettingsService = Depends(_svc),
+):
+    """Return the active keyword-suggestion system prompt and whether it is the default (manager-only)."""
+    return KeywordSuggestionPromptOut(**svc.get_keyword_suggestion_prompt())
+
+
+@router.put("/keyword-suggestion-prompt", response_model=KeywordSuggestionPromptOut)
+def put_keyword_suggestion_prompt(
+    body: KeywordSuggestionPromptIn,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: SettingsService = Depends(_svc),
+):
+    """Persist a manager-provided keyword-suggestion system prompt (manager-only)."""
+    return KeywordSuggestionPromptOut(**svc.set_keyword_suggestion_prompt(body.prompt))
+
+
+@router.post("/keyword-suggestion-prompt/reset", response_model=KeywordSuggestionPromptOut)
+def reset_keyword_suggestion_prompt(
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: SettingsService = Depends(_svc),
+):
+    """Clear any customised keyword-suggestion prompt, restoring the default (manager-only)."""
+    return KeywordSuggestionPromptOut(**svc.reset_keyword_suggestion_prompt())
+
+
 class LlmConfigIn(BaseModel):
-    """Request body for setting the LLM connection (API route, model, key)."""
+    """Request body for setting the LLM connection (API route, model, key).
+
+    The form always shows the real current key (see LlmConfigOut), so this
+    is the manager's actual intent, not a write-only diff — an empty
+    api_key here means "no key configured", not "leave it unchanged".
+    """
 
     api_base: str
     model: str
-    api_key: str | None = None  # write-only; blank/omitted leaves the stored key unchanged
+    api_key: str = ""
 
 
 class LlmConfigOut(BaseModel):
-    """Response carrying the active LLM connection settings — never the raw API key."""
+    """Response carrying the active LLM connection settings, including the real API key.
+
+    Shown as-is on the manager-only Settings page (behind a show/hide
+    toggle in the UI) — it's the same key the manager themselves entered.
+    """
 
     api_base: str
     model: str
-    api_key_set: bool
+    api_key: str
     is_default: bool
 
 

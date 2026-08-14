@@ -1,15 +1,205 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 import pdfplumber
 from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
+from app.model_gateway.ollama import OllamaChatProvider
+from app.model_gateway.provider import ChatProviderError
+
 MIN_USABLE_LENGTH = 40
+
+# Signals used by `classify_resume` — deterministic, no LLM call, so a
+# clearly-blank or clearly-unrelated upload is rejected without needing an
+# AI provider. No single signal is required (contact info is commonly
+# missing from real resumes), so several independent, differently-weighted
+# signals are combined instead of gating on any one of them.
+MIN_RESUME_LENGTH = 50
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+_PHONE_RE = re.compile(r"(?:\+?\d[\d .()-]{8,}\d)")
+_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+
+# Resume section headers: real resumes almost always have at least one of
+# these as its own short line (e.g. "EDUCATION" on its own line), which is
+# a much stronger signal than the word merely appearing inside a sentence
+# (e.g. "Executive Summary" in an unrelated business report).
+_SECTION_HEADERS = (
+    "experience",
+    "employment history",
+    "work history",
+    "professional experience",
+    "education",
+    "academic background",
+    "skills",
+    "technical skills",
+    "core competencies",
+    "qualifications",
+    "certifications",
+    "projects",
+    "professional summary",
+    "career objective",
+    "objective",
+    "achievements",
+    "publications",
+    "volunteer experience",
+    "languages",
+    "references",
+    "curriculum vitae",
+)
+# Degree/education phrasing, useful for education-only resumes (e.g. new
+# graduates) that may not have an explicit "EDUCATION" section header.
+_DEGREE_KEYWORDS = (
+    "bachelor",
+    "master",
+    "b.s.",
+    "b.a.",
+    "m.s.",
+    "m.a.",
+    "phd",
+    "ph.d",
+    "associate degree",
+    "diploma",
+    "university",
+    "college",
+)
+
+_CLASSIFY_SYSTEM_PROMPT = (
+    "You classify uploaded job-application files. Respond with ONLY a single "
+    'valid JSON object: {"is_resume": boolean}. No markdown, no commentary.'
+)
+
+# ── ATS-parsability check ──────────────────────────────────────────────
+#
+# Distinct from `classify_resume` above: that asks "is this document a
+# resume at all"; this asks "did our extraction pipeline get clean, usable
+# text out of it" — a real resume in a table-heavy, multi-column, or
+# image-based layout can pass the resume classifier (it has the right
+# words) while still extracting as scrambled, out-of-reading-order text
+# that no automated screening could reliably judge.
+MIN_PARSABLE_LENGTH = 150  # a meaningfully higher bar than classify_resume's
+# floor (50) — that one only asks "is there enough text to be a resume at
+# all"; this one asks "is there enough text to judge formatting quality".
+_WORD_RE = re.compile(r"[A-Za-z]+")
+_MAX_AVG_WORD_LENGTH = 10.0  # merged words with no space between them
+_MAX_SINGLE_CHAR_WORD_RATIO = 0.25  # letters scattered as their own "words"
+
+_PARSABILITY_SYSTEM_PROMPT = (
+    "You judge whether extracted resume text looks cleanly formatted. Respond "
+    'with ONLY a single valid JSON object: {"well_formatted": boolean}. No '
+    "markdown, no commentary."
+)
+
+
+def _word_garbling_signals(text: str) -> tuple[float, float]:
+    """Return (avg_word_length, single_char_word_ratio) for alphabetic tokens.
+
+    Multi-column or table layouts that get flattened into a single text
+    stream by the PDF/DOCX extractor often merge adjacent columns into one
+    run-on "word", or scatter letters as isolated one-character tokens —
+    both show up here even though the raw character count looks fine.
+    """
+    words = _WORD_RE.findall(text)
+    if not words:
+        return 0.0, 0.0
+    avg_len = sum(len(w) for w in words) / len(words)
+    single_char = sum(1 for w in words if len(w) == 1)
+    return avg_len, single_char / len(words)
+
+
+def assess_parsability(text: str) -> tuple[Literal["ok", "poor", "ambiguous"], str]:
+    """Deterministic first-pass judgment of extraction quality: ok, poor, or ambiguous.
+
+    Combines four independent signals (enough content to judge, word-level
+    garbling, recognizable section headers, line-dense structure) rather
+    than gating on any one — the same "weighted signals, not a single
+    trigger" approach as `classify_resume`, since any individual signal can
+    be a false alarm on its own (e.g. a resume genuinely light on section
+    headers) but several together are a reliable sign of bad extraction.
+    """
+    if len(text) < MIN_PARSABLE_LENGTH:
+        return "poor", (
+            "Not enough text could be extracted to review this resume reliably. "
+            "It may be a scanned image or use an unusual layout."
+        )
+
+    avg_word_length, single_char_ratio = _word_garbling_signals(text)
+    header_count = _distinct_header_line_count(text)
+    has_structure = _has_line_structure(text)
+
+    bad_signals = (
+        (avg_word_length > _MAX_AVG_WORD_LENGTH)
+        + (single_char_ratio > _MAX_SINGLE_CHAR_WORD_RATIO)
+        + (header_count == 0)
+        + (not has_structure)
+    )
+
+    reason = (
+        "This resume couldn't be reliably parsed — it may use tables, multiple "
+        "columns, images, or another layout automated screening struggles with. "
+        "Please re-upload using a single-column, text-based PDF or DOCX resume."
+    )
+    if bad_signals >= 3:
+        return "poor", reason
+    if bad_signals == 0:
+        return "ok", ""
+    return "ambiguous", ""
+
+
+async def verify_parsability_with_llm(text: str) -> bool:
+    """Ask the configured LLM to judge genuinely ambiguous extraction quality.
+
+    Only meant for the "ambiguous" band `assess_parsability` can't confidently
+    decide on its own. Raises ChatProviderError if no AI provider is
+    configured or the call fails — callers should fail open (accept) in
+    that case, same reasoning as `verify_resume_with_llm`.
+    """
+    provider = OllamaChatProvider()
+    if not provider.is_configured():
+        raise ChatProviderError("No AI provider is configured.")
+    data = await provider.complete_json(
+        system_prompt=_PARSABILITY_SYSTEM_PROMPT,
+        user_prompt=(
+            "The following text was extracted from an uploaded resume file. Does "
+            "it read as coherent, properly-ordered resume content, or does it "
+            "look garbled/scrambled (merged words, text out of reading order, "
+            "fragments from a table or multi-column layout)?\n\n"
+            f"{text[:4000]}"
+        ),
+    )
+    return bool(data.get("well_formatted"))
+
+
+def is_ats_friendly(text: str) -> tuple[bool, str]:
+    """Decide whether extracted resume text is well-formatted enough to screen, for use in a sync context.
+
+    Same shape as `looks_like_resume`: confident cases resolved by
+    `assess_parsability` alone, ambiguous cases get one LLM tie-break call.
+    Fails open (accepts) when no provider is configured or the call fails,
+    so a real candidate is never blocked purely because the tie-breaker was
+    unavailable.
+    """
+    verdict, reason = assess_parsability(text)
+    if verdict != "ambiguous":
+        return verdict == "ok", reason
+
+    try:
+        well_formatted = asyncio.run(verify_parsability_with_llm(text))
+    except ChatProviderError:
+        return True, ""
+    if well_formatted:
+        return True, ""
+    return False, (
+        "This resume couldn't be reliably parsed — it may use tables, multiple "
+        "columns, images, or another layout automated screening struggles with. "
+        "Please re-upload using a single-column, text-based PDF or DOCX resume."
+    )
 
 
 class UnsupportedFileError(Exception):
@@ -101,6 +291,116 @@ def _extract_from_docx(data: bytes) -> ExtractResult:
             ),
         )
     return ExtractResult(text=text)
+
+
+def _distinct_header_line_count(text: str) -> int:
+    """Count distinct section headers that appear as their own short line."""
+    matched: set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip().lower()
+        if not line or len(line) > 40:
+            continue  # section headers are short standalone lines, not sentences
+        for keyword in _SECTION_HEADERS:
+            if keyword in line:
+                matched.add(keyword)
+    return len(matched)
+
+
+def _has_line_structure(text: str) -> bool:
+    """Resumes tend to be line-dense (many short lines) rather than prose paragraphs."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 4:
+        return False
+    short_lines = [line for line in lines if len(line) <= 80]
+    return len(short_lines) / len(lines) >= 0.6
+
+
+def classify_resume(text: str) -> tuple[Literal["resume", "not_resume", "ambiguous"], str]:
+    """Deterministic first-pass classification: confident accept, confident reject, or ambiguous.
+
+    Combines five independent, weighted signals (contact info, distinct
+    section headers, degree/education phrasing, a year/date, line-dense
+    structure) rather than requiring any single one — a real resume missing
+    just its contact details (a common case) or using unconventional
+    headers can still score high enough to be confidently accepted.
+    Genuinely borderline cases (e.g. a completion certificate with a name
+    and a date) fall into "ambiguous" rather than being guessed either way.
+    """
+    if len(text) < MIN_RESUME_LENGTH:
+        return "not_resume", "Not enough readable text was found in this file."
+
+    lower = text.lower()
+    has_contact = bool(_EMAIL_RE.search(text) or _PHONE_RE.search(text))
+    header_count = _distinct_header_line_count(text)
+    has_degree = any(keyword in lower for keyword in _DEGREE_KEYWORDS)
+    has_dates = bool(_YEAR_RE.search(text))
+    has_structure = _has_line_structure(text)
+
+    score = (
+        (2 if has_contact else 0)
+        + (3 if header_count >= 2 else 1 if header_count == 1 else 0)
+        + (2 if has_degree else 0)
+        + (1 if has_dates else 0)
+        + (1 if has_structure else 0)
+    )
+
+    if score >= 3:
+        return "resume", ""
+    if score == 0:
+        return "not_resume", (
+            "This file doesn't look like a resume — no contact info, "
+            "experience/education sections, or dates were found."
+        )
+    return "ambiguous", ""
+
+
+async def verify_resume_with_llm(text: str) -> bool:
+    """Ask the configured LLM to classify genuinely ambiguous text as a resume or not.
+
+    Only meant for the "ambiguous" band `classify_resume` can't confidently
+    decide on its own. Raises ChatProviderError if no AI provider is
+    configured or the call fails — callers should fail open (accept) in
+    that case rather than block a real candidate purely because the
+    tie-breaker was unavailable.
+    """
+    provider = OllamaChatProvider()
+    if not provider.is_configured():
+        raise ChatProviderError("No AI provider is configured.")
+    data = await provider.complete_json(
+        system_prompt=_CLASSIFY_SYSTEM_PROMPT,
+        user_prompt=(
+            "Is the following document a resume/CV — a job candidate's own work "
+            "history, education, and/or skills? Judge the content, not its "
+            "formatting or completeness.\n\n"
+            f"{text[:4000]}"
+        ),
+    )
+    return bool(data.get("is_resume"))
+
+
+def looks_like_resume(text: str) -> tuple[bool, str]:
+    """Decide whether extracted text is plausibly a resume, for use in a sync context.
+
+    Confident cases are resolved by `classify_resume` alone. Ambiguous cases
+    get one LLM tie-break call via `asyncio.run` — safe here because this is
+    only ever called from FastAPI's sync `def` route handlers, which run in
+    a threadpool thread with no event loop of their own. Falls back to
+    accepting (fail open) when no provider is configured or the call fails.
+
+    Returns (is_resume, reason) — reason is a user-facing message when
+    `is_resume` is False, empty string otherwise.
+    """
+    verdict, reason = classify_resume(text)
+    if verdict != "ambiguous":
+        return verdict == "resume", reason
+
+    try:
+        is_resume = asyncio.run(verify_resume_with_llm(text))
+    except ChatProviderError:
+        return True, ""
+    if is_resume:
+        return True, ""
+    return False, "This file doesn't look like a resume."
 
 
 def _iter_block_items(document: Document):

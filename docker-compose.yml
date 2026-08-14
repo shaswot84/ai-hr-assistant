@@ -93,6 +93,10 @@ services:
     volumes:
       - ./backend/src:/app/src
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+      # Manager-editable settings (LLM route/model/key, resume-review prompt)
+      # are read AND written directly from this file — read-write only here,
+      # since the backend API is the only writer (workers below mount :ro).
+      - ./.env:/app/.env
     ports:
       - "${BACKEND_HOST_PORT:-8000}:8000"
     extra_hosts:
@@ -147,6 +151,9 @@ services:
       AUTH_PROVIDER: jwt
     volumes:
       - ./backend/src:/app/src
+      # Read-only: this worker reads the manager-editable LLM/prompt
+      # settings on every job, but only the backend API writes them.
+      - ./.env:/app/.env:ro
     depends_on:
       postgres:
         condition: service_healthy
