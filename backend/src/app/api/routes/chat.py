@@ -141,6 +141,8 @@ def build_chat_graph(session: AsyncSession, user: UserContext):
         leave_actor=user,
         leave_store=_leave_store(),
         leave_chat_provider=OllamaChatProvider(),
+        knowledge_actor=user,
+        recruitment_actor=user,
     )
 
 

@@ -9,18 +9,21 @@ service / guard so nothing touches a model server or a database.
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agents.knowledge_agent.agent import (
     KnowledgeTurn,
+    balance_relevant,
     fallback_message,
     rewrite_query,
     stream_knowledge_turn,
     strip_invalid_markers,
     verified_citations,
 )
+from app.contracts.auth import UserContext
 from app.knowledge.contracts import Citation, KnowledgeResult
 from app.model_gateway.interfaces import LLM
 from app.safety.contracts import (
@@ -94,6 +97,41 @@ class FakeGuard:
 
     async def guard(self, context) -> GuardResult:
         return self.result
+
+
+class _FakeLeaveType:
+    """A LeaveType-shaped stub (get_leave_balance reads ``.leave_name``)."""
+
+    def __init__(self, name: str) -> None:
+        self.leave_name = name
+
+
+class FakeLeaveService:
+    """A LeaveService stub exposing the two methods the balance enrichment
+    calls: ``list_leave_types`` (for mentioned_leave_type) and
+    ``list_my_balance`` (for get_leave_balance)."""
+
+    def __init__(self, rows: list[dict] | None = None, types: list[_FakeLeaveType] | None = None) -> None:
+        self.rows = rows or [
+            {
+                "leave_type": _FakeLeaveType("Sick Leave"),
+                "year": 2026,
+                "allocated_days": Decimal(10),
+                "used_days": Decimal("5.5"),
+                "remaining_days": Decimal("4.5"),
+            }
+        ]
+        self.types = types or [_FakeLeaveType("Sick Leave")]
+
+    def list_leave_types(self):
+        return self.types
+
+    def list_my_balance(self, actor, year=None):
+        return self.rows
+
+
+def _employee() -> UserContext:
+    return UserContext(subject="emp-1", email="emp@x.com", display_name="Emp", coarse_role="EMPLOYEE")
 
 
 def make_result(*, low_confidence: bool = False, confidence: float = 0.9) -> KnowledgeResult:
@@ -194,6 +232,114 @@ async def test_stream_knowledge_turn_rewrites_then_retrieves():
     assert state_update["safety"] == "PASS"
     assert [c.document_title for c in state_update["citations"]] == ["Leave Policy"]
     assert state_update["messages"][-1].content == "Grounded answer from the policy. [1]"
+
+
+# --- balance reconciliation (policy + real balance) -------------------------
+
+
+def test_balance_relevant_matrix():
+    """Only amount/entitlement phrasing combined with leave vocabulary is
+    balance-relevant — definitional and procedural questions are not."""
+    assert balance_relevant("how many sick days do i get")
+    assert balance_relevant("how much annual leave am I entitled to")
+    assert balance_relevant("what is my sick leave balance")
+    assert balance_relevant("how many days of casual leave do I have")
+    assert not balance_relevant("what is the annual leave policy")
+    assert not balance_relevant("when can I take annual leave")
+    assert not balance_relevant("what is the dress code")
+    assert not balance_relevant("how many days until payroll")
+
+
+@pytest.mark.asyncio
+async def test_stream_knowledge_turn_appends_employee_balance():
+    """A balance-relevant employee question gets the REAL balance appended to
+    the policy answer deterministically and injected into the generation
+    context, so the policy number and actual remaining days travel together."""
+    service = FakeKnowledgeService(make_result())
+    writer = EventCollector()
+
+    state = await stream_knowledge_turn(
+        service=service,
+        llm=FakeLLM("rewritten"),
+        query="how many sick days do i get",
+        history=[],
+        writer=writer,
+        actor=_employee(),
+        leave_service=FakeLeaveService(),
+    )
+
+    assert state["answer"] == (
+        "Grounded answer from the policy. [1]\n\n"
+        "Your leave balance:\nSick Leave: 4.5 of 10 days remaining"
+    )
+    assert state["messages"][-1].content == state["answer"]
+    # The generation prompt saw the authoritative balance (labeled so the LLM
+    # never attaches citation markers to balance numbers).
+    assert "CURRENT LEAVE BALANCE" in service.stream_histories[0]
+    assert "Sick Leave: 4.5 of 10 days remaining" in service.stream_histories[0]
+
+
+@pytest.mark.asyncio
+async def test_stream_knowledge_turn_skips_balance_for_candidate():
+    """Non-employees (candidates / HR admins) have no leave of their own — no
+    balance block is appended."""
+    service = FakeKnowledgeService(make_result())
+    actor = UserContext(subject="cand-1", email="c@x.com", display_name="C", coarse_role="CANDIDATE")
+
+    state = await stream_knowledge_turn(
+        service=service,
+        llm=FakeLLM("rewritten"),
+        query="how many sick days do i get",
+        history=[],
+        writer=EventCollector(),
+        actor=actor,
+        leave_service=FakeLeaveService(),
+    )
+
+    assert state["answer"] == "Grounded answer from the policy. [1]"
+    assert "Your leave balance:" not in state["answer"]
+
+
+@pytest.mark.asyncio
+async def test_stream_knowledge_turn_skips_balance_for_non_balance_query():
+    """A definitional question mentions leave but is not balance-relevant — no
+    balance fetch, no append."""
+    service = FakeKnowledgeService(make_result())
+
+    state = await stream_knowledge_turn(
+        service=service,
+        llm=FakeLLM("rewritten"),
+        query="what is the annual leave policy",
+        history=[],
+        writer=EventCollector(),
+        actor=_employee(),
+        leave_service=FakeLeaveService(),
+    )
+
+    assert state["answer"] == "Grounded answer from the policy. [1]"
+    assert "Your leave balance:" not in state["answer"]
+
+
+@pytest.mark.asyncio
+async def test_refusal_still_appends_balance():
+    """Even when the KB has no evidence, the real balance is still a true
+    answer to the balance half of the question — it is appended to the
+    honest refusal."""
+    service = FakeKnowledgeService(make_result(low_confidence=True))
+
+    state = await stream_knowledge_turn(
+        service=service,
+        llm=FakeLLM("rewritten"),
+        query="how many sick days do i get",
+        history=[],
+        writer=EventCollector(),
+        actor=_employee(),
+        leave_service=FakeLeaveService(),
+    )
+
+    assert "couldn't find enough evidence" in state["answer"]
+    assert "Your leave balance:\nSick Leave: 4.5 of 10 days remaining" in state["answer"]
+    assert state["citations"] == []
 
 
 @pytest.mark.asyncio

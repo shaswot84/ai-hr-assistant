@@ -106,17 +106,21 @@ async def test_routes_to_leave_stub():
 
 
 @pytest.mark.asyncio
-async def test_routes_to_recruitment_stub():
-    """A recruitment question hits the recruitment stub node."""
+async def test_routes_to_recruitment_node():
+    """A recruitment question runs the deterministic recruitment node (no more stub)."""
     graph = build_supervisor_graph(
-        llm=FakeLLM("recruitment"), knowledge_service=FakeKnowledgeService(make_result())
+        llm=FakeLLM("recruitment"),
+        knowledge_service=FakeKnowledgeService(make_result()),
+        recruitment_service=_FakeRecruitmentService(),
     )
 
     state = await graph.ainvoke({"messages": [], "current_query": "how do I apply?"})
 
     assert state["agent"] == "recruitment"
-    assert "Recruitment" in state["answer"]
     assert "Careers" in state["answer"]
+    assert state["citations"] == []
+    assert state["knowledge_result"] is None
+    assert state["confidence"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -330,6 +334,69 @@ def _leave_actor() -> UserContext:
         display_name="Employee",
         coarse_role="EMPLOYEE",
     )
+
+
+class _FakeLeaveType:
+    def __init__(self, name: str) -> None:
+        self.leave_name = name
+
+
+class _FakeRecruitmentService:
+    """An empty RecruitmentService stub — enough for the apply deferral path."""
+
+    def list_vacancies(self, actor=None):
+        return []
+
+    def list_all_applications(self, actor):
+        return []
+
+    def list_vacancy_applications(self, actor, vacancy_id):
+        return []
+
+    def list_my_applications(self, actor):
+        return []
+
+
+class _FakeLeaveService:
+    """A LeaveService stub for the knowledge node's balance enrichment."""
+
+    def list_leave_types(self):
+        return [_FakeLeaveType("Sick Leave")]
+
+    def list_my_balance(self, actor, year=None):
+        return [
+            {
+                "leave_type": _FakeLeaveType("Sick Leave"),
+                "year": 2026,
+                "allocated_days": "10",
+                "used_days": "5.5",
+                "remaining_days": "4.5",
+            }
+        ]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_node_appends_balance_when_wired():
+    """When the chat layer wires knowledge_actor + knowledge_leave_service,
+    a balance-relevant employee question routes to knowledge AND gets the
+    employee's real balance appended to the policy answer."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("knowledge"),
+        knowledge_service=FakeKnowledgeService(make_result()),
+        knowledge_actor=_leave_actor(),
+        knowledge_leave_service=_FakeLeaveService(),
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "how many sick days do i get"}
+    )
+
+    assert state["agent"] == "knowledge"
+    assert state["answer"] == (
+        "A grounded answer. [1]\n\n"
+        "Your leave balance:\nSick Leave: 4.5 of 10 days remaining"
+    )
+    assert len(state["citations"]) == 1
 
 
 @pytest.mark.asyncio
