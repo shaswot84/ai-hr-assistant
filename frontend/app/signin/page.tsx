@@ -189,7 +189,7 @@ export default function SignInPage() {
           </p>
           <p className="mt-1.5 text-center text-[11px] text-zinc-400">
             First time applying?{" "}
-            <Link href="/candidate" className="link">
+            <Link href="/candidate" className="font-medium text-blue-600 transition-colors hover:text-blue-700">
               Browse open roles
             </Link>{" "}
             — no account needed until you apply.

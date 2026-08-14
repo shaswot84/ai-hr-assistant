@@ -202,9 +202,8 @@ function UserArea({ user }: { user: UserContext }) {
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-[13px] font-semibold text-white">
         {user.display_name.charAt(0).toUpperCase()}
       </div>
-      <div className="min-w-0 flex-1 leading-tight">
+      <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] font-medium text-zinc-800">{user.display_name}</p>
-        <p className="truncate text-[11px] text-zinc-400">{user.email}</p>
       </div>
       <button
         type="button"
