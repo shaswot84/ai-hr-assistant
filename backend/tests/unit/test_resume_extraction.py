@@ -1,13 +1,38 @@
 from __future__ import annotations
 
+import pymupdf
 import pytest
 
 from app.knowledge.resume_extraction import (
     assess_parsability,
     classify_resume,
+    extract_text,
     is_ats_friendly,
     looks_like_resume,
 )
+
+
+def _build_pdf_with_positioned_words(lines: list[list[str]]) -> bytes:
+    """Build a one-page PDF where each word is its own glyph run placed by
+    x/y position, with no literal space character anywhere in the content
+    stream — the same mechanism many LaTeX resume templates use to lay out
+    justified text. A naive extractor that only splits on space codepoints
+    reads this as one run-together blob per line; a correct one reconstructs
+    words from the gaps between glyph runs.
+    """
+    doc = pymupdf.open()
+    page = doc.new_page()
+    y = 72.0
+    for words in lines:
+        x = 72.0
+        for word in words:
+            page.insert_text((x, y), word, fontsize=11)
+            x += pymupdf.get_text_length(word, fontsize=11) + 3
+        y += 16
+    buf = doc.tobytes()
+    doc.close()
+    return buf
+
 
 REAL_RESUME_TEXT = """
 Jane Doe
@@ -217,5 +242,52 @@ def test_is_ats_friendly_fails_open_on_ambiguous_without_llm_configured():
     real candidate just because the tie-breaker was unavailable.
     """
     is_friendly, reason = is_ats_friendly(FLATTENED_PROSE_TEXT)
+    assert is_friendly is True
+    assert reason == ""
+
+
+def test_extract_text_from_normal_pdf_is_readable():
+    pdf_bytes = _build_pdf_with_positioned_words(
+        [["Jane", "Doe"], ["Backend", "Engineer", "with", "6", "years", "experience."]]
+    )
+    result = extract_text(pdf_bytes, "resume.pdf", "application/pdf")
+    assert result.warning is None
+    assert "Jane Doe" in result.text
+    assert "Backend Engineer" in result.text
+
+
+def test_extract_text_reconstructs_spaces_from_position_only_pdf():
+    """Regression case: many LaTeX resume templates (Overleaf's Awesome-CV,
+    Deedy-Resume, and similar) lay out justified text as individually
+    positioned glyph runs with no literal space character between words —
+    genuinely well-formatted resumes were extracting as unreadable
+    run-together text ("JaneDoeBackendEngineerwith6yearsexperience") and
+    failing the ATS-parsability gate through no fault of the candidate's.
+    PyMuPDF reconstructs word boundaries from the actual glyph gaps; the
+    previous pdfplumber-based extraction did not.
+    """
+    pdf_bytes = _build_pdf_with_positioned_words(
+        [
+            ["Jane", "Doe"],
+            ["EXPERIENCE"],
+            ["Backend", "Engineer", "with", "6", "years", "of", "experience."],
+            ["Led", "the", "migration", "of", "the", "monolith", "to", "microservices."],
+            ["EDUCATION"],
+            ["B.S.", "Computer", "Science,", "State", "University,", "2019"],
+            ["SKILLS"],
+            ["Python,", "FastAPI,", "PostgreSQL,", "Docker,", "Kubernetes"],
+        ]
+    )
+    result = extract_text(pdf_bytes, "resume.pdf", "application/pdf")
+    # every word landed as its own glyph run with no space glyph anywhere —
+    # a naive extractor would return "JaneDoe" / "BackendEngineerwith...".
+    assert "JaneDoe" not in result.text
+    assert "Backend Engineer with 6 years" in result.text
+
+    verdict, reason = assess_parsability(result.text)
+    assert verdict == "ok"
+    assert reason == ""
+
+    is_friendly, reason = is_ats_friendly(result.text)
     assert is_friendly is True
     assert reason == ""

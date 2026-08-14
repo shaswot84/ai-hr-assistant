@@ -18,7 +18,17 @@ def _quote(value: str) -> str:
     can't appear as literal newlines in a single KEY=VALUE line, so they're
     escaped and quoted; simple values are written bare to keep the file
     readable for anyone opening it by hand.
+
+    A literal `$` is always escaped to `$$` first. Docker Compose
+    interpolates `$VAR`/`${VAR}` references inside `.env` file values on its
+    own, independent of this app's own parsing below — a manager-editable
+    prompt containing a real template placeholder like `$resume_text`
+    (see evaluation/scoring.py's USER_PROMPT) would otherwise trip Compose's
+    "variable not set" warning on every command. This app is unaffected
+    either way, since it re-reads the raw file itself rather than the
+    process environment Compose populates, but escaping keeps `.env` quiet.
     """
+    value = value.replace("$", "$$")
     if value == "" or "\n" in value or '"' in value or value != value.strip():
         escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
         return f'"{escaped}"'
@@ -26,11 +36,13 @@ def _quote(value: str) -> str:
 
 
 def _unquote(raw: str) -> str:
-    """Reverse `_quote`: strip surrounding quotes and un-escape, or return as-is."""
+    """Reverse `_quote`: strip surrounding quotes, un-escape, and restore literal `$`."""
     if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
         inner = raw[1:-1]
-        return inner.replace('\\n', "\n").replace('\\"', '"').replace("\\\\", "\\")
-    return raw
+        value = inner.replace('\\n', "\n").replace('\\"', '"').replace("\\\\", "\\")
+    else:
+        value = raw
+    return value.replace("$$", "$")
 
 
 class EnvFileSettingRepo:
