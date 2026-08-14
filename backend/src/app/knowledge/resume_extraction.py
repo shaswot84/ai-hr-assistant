@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-import pdfplumber
+import pymupdf
 from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph
@@ -219,8 +219,7 @@ def extract_text(data: bytes, filename: str, content_type: str) -> ExtractResult
     lower = filename.lower()
     is_pdf = content_type == "application/pdf" or lower.endswith(".pdf")
     is_docx = (
-        content_type
-        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         or lower.endswith(".docx")
     )
 
@@ -233,10 +232,21 @@ def extract_text(data: bytes, filename: str, content_type: str) -> ExtractResult
 
 
 def _extract_from_pdf(data: bytes) -> ExtractResult:
-    """Extract and normalize text from a PDF, returning a warning on low yield."""
+    """Extract and normalize text from a PDF, returning a warning on low yield.
+
+    Uses PyMuPDF, not pdfplumber: pdfplumber's word-clustering heuristic
+    can't reconstruct spaces for PDFs that encode inter-word gaps as raw
+    glyph-positioning offsets instead of literal space characters — notably
+    many LaTeX resume templates (Overleaf's Awesome-CV/Deedy-Resume and
+    similar). Those are genuine, well-formatted resumes that were extracting
+    as unreadable run-together text ("AI/MLEngineerwith...") and failing the
+    parsability gate below through no fault of the candidate's. PyMuPDF
+    reconstructs word boundaries from actual glyph positions and handles
+    this correctly.
+    """
     try:
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
-            pages = [page.extract_text() or "" for page in pdf.pages]
+        with pymupdf.open(stream=data, filetype="pdf") as pdf:
+            pages = [page.get_text() for page in pdf]
         text = _normalize("\n".join(pages))
     except Exception as err:  # noqa: BLE001 - surface as graceful warning, not crash
         return ExtractResult(
