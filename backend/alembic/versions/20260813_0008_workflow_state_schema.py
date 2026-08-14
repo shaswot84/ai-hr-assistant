@@ -1,7 +1,7 @@
 """Durable agent workflow state (conversation_workflow_state)
 
-Revision ID: 20260813_0006
-Revises: 20260812_0005
+Revision ID: 20260813_0008
+Revises: 20260813_0007
 Create Date: 2026-08-13
 
 """
@@ -13,8 +13,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "20260813_0006"
-down_revision: str | None = "20260812_0005"
+revision: str = "20260813_0008"
+down_revision: str | None = "20260813_0007"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
