@@ -720,19 +720,42 @@ def _stage_reference_write(
     clock: Clock,
 ) -> AgentTurnResult:
     """Preflight + stage a reference-based write action deterministically."""
+    extra_details: dict[str, Any] = {}
     try:
         if tool_name == "cancel_leave_request":
             preflight_cancel(service, actor, args["request_number"])
         else:
-            preflight_hr_reference(service, actor, args["request_number"])
+            req = preflight_hr_reference(service, actor, args["request_number"])
+            if req:
+                emp_name = None
+                emp_code = None
+                try:
+                    from app.domain.people import Employee, Person
+                    emp = service._db.get(Employee, req.employee_id)
+                    if emp:
+                        emp_code = emp.employee_code
+                        p = service._db.get(Person, emp.person_id)
+                        if p:
+                            emp_name = f"{p.first_name} {p.last_name}".strip()
+                except Exception:
+                    pass
+                extra_details = {
+                    "employee_name": emp_name,
+                    "employee_code": emp_code,
+                    "start_date": req.start_date.isoformat(),
+                    "end_date": req.end_date.isoformat(),
+                    "total_days": str(req.total_days),
+                    "reason": req.reason,
+                }
     except ToolError as err:
         return _reply(state, str(err), clock=clock)
 
     summary = prompts.summarize_for_confirmation(tool_name, args)
     state.stage(tool_name, args, summary, clock=clock)
+    staged_args = {**args, **extra_details}
     return _reply(
         state, summary, clock=clock,
-        ui_widget=_staged_action_widget(tool_name, args, summary),
+        ui_widget=_staged_action_widget(tool_name, staged_args, summary),
     )
 
 
