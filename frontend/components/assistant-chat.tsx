@@ -981,66 +981,73 @@ export function AssistantChat() {
           )}
         </div>
 
-        <div
-          ref={scrollRef}
-          onScroll={handleScroll}
-          className="relative flex-1 space-y-4 overflow-y-auto p-4 sm:p-5"
-        >
-          {messages.length === 0 && !loadingHistory && (
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600 text-white">
-                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
-                  />
-                </svg>
+        {/* Scroll viewport wrapper: the scroll-to-bottom button anchors to
+            this NON-scrolling ancestor (absolute inside the scrolled
+            container would ride along with the content). */}
+        <div className="relative min-h-0 flex-1">
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="h-full space-y-4 overflow-y-auto p-4 sm:p-5"
+          >
+            {messages.length === 0 && !loadingHistory && (
+              <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600 text-white">
+                  <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+                    />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-zinc-800">How can I help?</h3>
+                  <p className="mx-auto mt-1 max-w-sm text-xs text-zinc-500">
+                    Ask about HR policy, benefits, leave, or open roles — answers are grounded in the
+                    company knowledge base and remember the conversation.
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-sm font-semibold text-zinc-800">How can I help?</h3>
-                <p className="mx-auto mt-1 max-w-sm text-xs text-zinc-500">
-                  Ask about HR policy, benefits, leave, or open roles — answers are grounded in the
-                  company knowledge base and remember the conversation.
-                </p>
+            )}
+
+            {loadingHistory && (
+              <div className="flex items-center justify-center py-10">
+                <span className="text-xs text-zinc-400">Loading conversation…</span>
               </div>
-            </div>
-          )}
+            )}
 
-          {loadingHistory && (
-            <div className="flex items-center justify-center py-10">
-              <span className="text-xs text-zinc-400">Loading conversation…</span>
-            </div>
-          )}
-
-          {messages.map((m, idx) => (
-            <MessageBubble
-              key={m.id}
-              message={m}
-              onAction={handleAction}
-              // Freeze widgets in PAST turns (any message that is not the
-              // last one): once the conversation has moved past a widget it
-              // must not be operated again. The current (last) widget stays
-              // interactive, and while an answer streams the whole thread is
-              // disabled via `streaming` as before.
-              disabled={streaming || idx < messages.length - 1}
-            />
-          ))}
+            {messages.map((m, idx) => (
+              <MessageBubble
+                key={m.id}
+                message={m}
+                onAction={handleAction}
+                // Freeze widgets in PAST turns (any message that is not the
+                // last one): once the conversation has moved past a widget it
+                // must not be operated again. The current (last) widget stays
+                // interactive, and while an answer streams the whole thread is
+                // disabled via `streaming` as before.
+                disabled={streaming || idx < messages.length - 1}
+              />
+            ))}
+          </div>
 
           {!atBottom && (
-            <button
-              type="button"
-              onClick={scrollToBottom}
-              className="animate-slide-up absolute bottom-4 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50 hover:text-zinc-900"
-              aria-label="Scroll to latest message"
-              title="Scroll to latest message"
-            >
-              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-              Scroll to latest
-            </button>
+            <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center">
+              <button
+                type="button"
+                onClick={scrollToBottom}
+                className="animate-slide-up pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50 hover:text-zinc-900"
+                aria-label="Scroll to latest message"
+                title="Scroll to latest message"
+              >
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+                Scroll to latest
+              </button>
+            </div>
           )}
         </div>
 
