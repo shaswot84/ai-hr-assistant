@@ -240,6 +240,7 @@ async def _prepare_turn(
 
     # Persist the user turn before the graph runs: durable even on crash.
     await repo.append_message(conversation_id=conversation_id, role="user", content=message)
+    await session.commit()
 
     # History = the bounded window before this turn (current_query is separate).
     transcript = await repo.recent_messages_within_tokens(conversation_id, _HISTORY_TOKEN_BUDGET)
