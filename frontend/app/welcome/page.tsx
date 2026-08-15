@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, publicChatStream } from "@/lib/api";
 import { getAuthToken } from "@/lib/auth";
 import type { ChatCitation } from "@/lib/types";
 import { ChatWidgetRenderer } from "@/components/chat-widgets";
@@ -152,24 +152,78 @@ export default function WelcomePage() {
       .map((m) => ({ role: m.role, content: m.text }));
 
     try {
-      const res = await api.publicChat({
+      let accumulatedText = "";
+      let citations: ChatCitation[] = [];
+      let uiWidget: any = undefined;
+
+      for await (const event of publicChatStream({
         message: trimmed,
         history: historyPayload,
-      });
-
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === pendingAssistantBubble.id
-            ? {
-                ...m,
-                text: res.message,
-                citations: res.citations,
-                ui_widget: res.ui_widget,
-                loading: false,
-              }
-            : m
-        )
-      );
+      })) {
+        if (event.type === "retrieval") {
+          citations = event.citations || [];
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingAssistantBubble.id
+                ? { ...m, citations }
+                : m
+            )
+          );
+        } else if (event.type === "token") {
+          accumulatedText += event.text;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingAssistantBubble.id
+                ? { ...m, text: accumulatedText, loading: false }
+                : m
+            )
+          );
+        } else if (event.type === "message") {
+          accumulatedText = event.text;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingAssistantBubble.id
+                ? { ...m, text: accumulatedText, loading: false }
+                : m
+            )
+          );
+        } else if (event.type === "ui_widget") {
+          uiWidget = event.widget;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingAssistantBubble.id
+                ? { ...m, ui_widget: uiWidget, loading: false }
+                : m
+            )
+          );
+        } else if (event.type === "done") {
+          if (event.message) accumulatedText = event.message;
+          if (event.citations?.length) citations = event.citations;
+          if (event.ui_widget) uiWidget = event.ui_widget;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingAssistantBubble.id
+                ? {
+                    ...m,
+                    text: accumulatedText,
+                    citations,
+                    ui_widget: uiWidget,
+                    loading: false,
+                  }
+                : m
+            )
+          );
+        } else if (event.type === "error") {
+          accumulatedText = event.detail;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingAssistantBubble.id
+                ? { ...m, text: accumulatedText, loading: false }
+                : m
+            )
+          );
+        }
+      }
     } catch (err) {
       const errMsg =
         err instanceof ApiError

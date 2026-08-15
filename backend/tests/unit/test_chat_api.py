@@ -664,3 +664,22 @@ async def test_public_chat_anonymous(chat_env, monkeypatch):
     assert "answer" in body["message"]
     assert body["agent"] == "knowledge"
 
+
+@pytest.mark.asyncio
+async def test_public_chat_stream_anonymous(chat_env, monkeypatch):
+    """Anonymous visitors can stream responses via POST /api/chat/public/stream without authentication."""
+    monkeypatch.setattr(chat_module, "build_chat_graph", fake_graph_builder)
+
+    async with chat_env.client.stream(
+        "POST",
+        "/api/chat/public/stream",
+        json={"message": "what jobs are open?", "history": []},
+    ) as resp:
+        events = await _sse_events(resp)
+
+    types = [e["type"] for e in events]
+    assert "turn_started" in types
+    assert "done" in types
+    assert events[-1]["conversation_id"] == "public"
+
+

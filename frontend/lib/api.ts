@@ -509,6 +509,50 @@ export async function* chatStream(
   }
 }
 
+/**
+ * Stream public chat over SSE for anonymous visitors (e.g. /welcome page):
+ * yields tokens incrementally, ui_widgets, citations, and done event.
+ */
+export async function* publicChatStream(
+  body: { message: string; history?: { role: string; content: string }[] },
+  signal?: AbortSignal
+): AsyncGenerator<ChatStreamEvent> {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/api/chat/public/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) await parseError(res);
+  if (!res.body) throw new Error("Streaming public chat returned no response body.");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === "[DONE]") return;
+        yield JSON.parse(payload) as ChatStreamEvent;
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
+
 /** Poll an ingestion job until it reaches a terminal state (INDEXED or FAILED). */
 export async function pollJob(
   jobId: string,

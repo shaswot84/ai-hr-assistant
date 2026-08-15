@@ -592,3 +592,96 @@ async def public_chat(
         ui_widget=ui_widget,
     )
 
+
+@router.post("/public/stream")
+async def public_chat_stream(
+    body: PublicChatRequest,
+    user: UserContext | None = Depends(get_optional_user),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """SSE variant of public chat for anonymous visitors (e.g. /welcome)."""
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="message must not be empty")
+
+    history_messages: list[BaseMessage] = []
+    for h in body.history:
+        if h.role == "user":
+            history_messages.append(HumanMessage(content=h.content))
+        elif h.role == "assistant":
+            history_messages.append(AIMessage(content=h.content))
+
+    graph = build_chat_graph(session, user)
+
+    def sse(event: dict) -> str:
+        return f"data: {json.dumps(event)}\n\n"
+
+    async def event_stream():
+        yield sse({"type": "turn_started", "conversation_id": "public"})
+        final: dict = {}
+        streamed_ui_widget: dict | None = None
+        try:
+            async for mode, chunk in graph.astream(
+                {
+                    "messages": history_messages,
+                    "current_query": message,
+                    "conversation_id": "public",
+                },
+                stream_mode=["custom", "updates"],
+            ):
+                if mode == "custom":
+                    if chunk["type"] == "retrieval":
+                        yield sse(_serialize_retrieval_event(chunk))
+                    else:
+                        if chunk.get("type") == "ui_widget":
+                            streamed_ui_widget = chunk.get("widget")
+                        yield sse(chunk)  # token / message / ui_widget
+                else:
+                    for node_name, update in chunk.items():
+                        if node_name == "route":
+                            yield sse({"type": "route", "route": update.get("route", "knowledge")})
+                        elif node_name in _TERMINAL_NODES:
+                            final = update
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("public chat stream failed: %s", exc)
+            yield sse({"type": "error", "detail": "The assistant failed to respond. Please try again."})
+            yield sse(
+                {
+                    "type": "done",
+                    "conversation_id": "public",
+                    "message": "",
+                    "citations": [],
+                    "confidence": 0.0,
+                    "low_confidence": False,
+                    "confidence_applicable": False,
+                    "agent": "unknown",
+                }
+            )
+            return
+
+        answer = final.get("answer", "")
+        citations = [_serialize_citation(c) for c in final.get("citations", [])]
+        agent = final.get("agent", "unknown")
+        confidence = final.get("confidence", 0.0)
+        knowledge_result = final.get("knowledge_result")
+        ui_widget = final.get("ui_widget") or streamed_ui_widget
+
+        yield sse(
+            {
+                "type": "done",
+                "conversation_id": "public",
+                "message": answer,
+                "citations": citations,
+                "confidence": confidence,
+                "low_confidence": bool(
+                    knowledge_result is not None and knowledge_result.low_confidence
+                ),
+                "confidence_applicable": knowledge_result is not None,
+                "agent": agent,
+                "ui_widget": ui_widget,
+            }
+        )
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
