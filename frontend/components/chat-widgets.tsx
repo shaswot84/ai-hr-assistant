@@ -2133,7 +2133,7 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 /**
  * 12. Applications List Widget
  */
-function ApplicationsListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+function ApplicationsListWidget({ widget }: ChatWidgetProps) {
   const applications = widget.applications || [];
   if (applications.length === 0) return null;
 
@@ -2177,15 +2177,6 @@ function ApplicationsListWidget({ widget, onAction, disabled }: ChatWidgetProps)
                   Applied: {app.applied_at ? new Date(app.applied_at).toLocaleDateString() : "Recently"}
                 </p>
               </div>
-
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => onAction?.(`What is the status of my ${app.vacancy_title} application?`)}
-                className="shrink-0 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors"
-              >
-                Status Details
-              </button>
             </div>
           );
         })}
