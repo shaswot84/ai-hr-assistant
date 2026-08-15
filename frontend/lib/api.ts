@@ -434,6 +434,7 @@ export type ChatStreamEvent =
     }
   | { type: "token"; text: string }
   | { type: "message"; text: string }
+  | { type: "ui_widget"; widget: any }
   | {
       type: "done";
       conversation_id: string;
@@ -443,6 +444,7 @@ export type ChatStreamEvent =
       low_confidence: boolean;
       confidence_applicable: boolean;
       agent: string;
+      ui_widget?: any;
     }
   | { type: "error"; detail: string };
 

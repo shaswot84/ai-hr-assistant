@@ -240,6 +240,7 @@ async def _prepare_turn(
 
     # Persist the user turn before the graph runs: durable even on crash.
     await repo.append_message(conversation_id=conversation_id, role="user", content=message)
+    await session.commit()
 
     # History = the bounded window before this turn (current_query is separate).
     transcript = await repo.recent_messages_within_tokens(conversation_id, _HISTORY_TOKEN_BUDGET)
@@ -257,20 +258,25 @@ async def _persist_reply(
     low_confidence: bool = False,
     safety: str = "PASS",
     confidence_applicable: bool = False,
+    ui_widget: dict | None = None,
 ) -> None:
     """Append the assistant reply and bump the conversation's activity time."""
+    meta = {
+        "agent": agent,
+        "confidence": confidence,
+        "low_confidence": low_confidence,
+        "safety": safety,
+        "confidence_applicable": confidence_applicable,
+    }
+    if ui_widget:
+        meta["ui_widget"] = ui_widget
+
     await repo.append_message(
         conversation_id=conversation_id,
         role="assistant",
         content=answer,
         citations=citations,
-        meta={
-            "agent": agent,
-            "confidence": confidence,
-            "low_confidence": low_confidence,
-            "safety": safety,
-            "confidence_applicable": confidence_applicable,
-        },
+        meta=meta,
     )
     await repo.touch(conversation_id)
 
@@ -300,6 +306,7 @@ async def chat(
     knowledge_result = result.get("knowledge_result")
     safety = result.get("safety", "PASS")
     confidence_applicable = knowledge_result is not None
+    ui_widget = result.get("ui_widget")
 
     await _persist_reply(
         repo,
@@ -311,8 +318,19 @@ async def chat(
         low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
         safety=safety,
         confidence_applicable=confidence_applicable,
+        ui_widget=ui_widget,
     )
     await session.commit()
+
+    meta = {
+        "agent": agent,
+        "confidence": confidence,
+        "low_confidence": bool(knowledge_result is not None and knowledge_result.low_confidence),
+        "safety": safety,
+        "confidence_applicable": confidence_applicable,
+    }
+    if ui_widget:
+        meta["ui_widget"] = ui_widget
 
     return ChatResponse(
         conversation_id=conversation_id,
@@ -322,6 +340,7 @@ async def chat(
         low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
         agent=agent,
         confidence_applicable=confidence_applicable,
+        meta=meta,
     )
 
 
@@ -363,6 +382,7 @@ async def chat_stream(
     async def event_stream():
         yield sse({"type": "turn_started", "conversation_id": str(conversation_id)})
         final: dict = {}
+        streamed_ui_widget: dict | None = None
         try:
             async for mode, chunk in graph.astream(
                 {
@@ -376,7 +396,9 @@ async def chat_stream(
                     if chunk["type"] == "retrieval":
                         yield sse(_serialize_retrieval_event(chunk))
                     else:
-                        yield sse(chunk)  # token / message
+                        if chunk.get("type") == "ui_widget":
+                            streamed_ui_widget = chunk.get("widget")
+                        yield sse(chunk)  # token / message / ui_widget
                 else:  # updates: route first, then the terminal agent
                     for node_name, update in chunk.items():
                         if node_name == "route":
@@ -407,6 +429,7 @@ async def chat_stream(
         knowledge_result = final.get("knowledge_result")
         safety = final.get("safety", "PASS")
         confidence_applicable = knowledge_result is not None
+        ui_widget = final.get("ui_widget") or streamed_ui_widget
 
         await _persist_reply(
             repo,
@@ -420,6 +443,7 @@ async def chat_stream(
             ),
             safety=safety,
             confidence_applicable=confidence_applicable,
+            ui_widget=ui_widget,
         )
         await session.commit()
 
@@ -435,6 +459,7 @@ async def chat_stream(
                 ),
                 "confidence_applicable": confidence_applicable,
                 "agent": agent,
+                "ui_widget": ui_widget,
             }
         )
 

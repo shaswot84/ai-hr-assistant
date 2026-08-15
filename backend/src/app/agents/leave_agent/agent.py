@@ -26,8 +26,10 @@ from app.agents.leave_agent.tools import (
     ToolError,
     canonical_args,
     format_tool_result,
+    get_employee_leave_balance,
     get_leave_balance,
     hr_pending_request_lines,
+    list_all_employee_balances,
     list_leave_requests,
     list_leave_types,
     list_my_leave_requests,
@@ -66,6 +68,97 @@ class AgentTurnResult:
     # model_version, prompt_version, latency_ms, token_usage). None only
     # when the provider call itself failed before returning anything.
     raw_model_action: dict[str, Any] | None = None
+    ui_widget: dict[str, Any] | None = None
+
+
+def _staged_action_widget(tool_name: str, args: dict, summary: str) -> dict[str, Any]:
+    if tool_name == "submit_leave_request":
+        return {
+            "type": "staged_action",
+            "action_type": "submit_leave",
+            "title": "Confirm Leave Request",
+            "tool": tool_name,
+            "args": args,
+            "summary": summary,
+            "confirm_text": "Confirm & Submit",
+            "cancel_text": "Cancel Draft",
+        }
+    elif tool_name == "cancel_leave_request":
+        return {
+            "type": "staged_action",
+            "action_type": "cancel_leave",
+            "title": "Confirm Leave Cancellation",
+            "tool": tool_name,
+            "args": args,
+            "summary": summary,
+            "confirm_text": f"Cancel {args.get('request_number', 'Request')}",
+            "cancel_text": "Keep Request",
+        }
+    elif tool_name == "decide_leave_request":
+        approve = args.get("approve", True)
+        verb = "Approve" if approve else "Reject"
+        return {
+            "type": "staged_action",
+            "action_type": "decide_leave",
+            "title": f"Confirm Decision ({verb})",
+            "tool": tool_name,
+            "args": args,
+            "summary": summary,
+            "confirm_text": f"{verb} {args.get('request_number', 'Request')}",
+            "cancel_text": "Dismiss",
+        }
+    return {
+        "type": "staged_action",
+        "action_type": "generic",
+        "title": "Confirm Action",
+        "tool": tool_name,
+        "args": args,
+        "summary": summary,
+        "confirm_text": "Confirm",
+        "cancel_text": "Cancel",
+    }
+
+
+def _action_result_widget(tool_name: str, result: Any) -> dict[str, Any]:
+    return {
+        "type": "action_result",
+        "tool": tool_name,
+        "result": result,
+    }
+
+
+def _leave_balance_widget(result: list[dict], year: int | None = None, employee_code: str | None = None) -> dict[str, Any]:
+    return {
+        "type": "leave_balance",
+        "balances": result,
+        "year": year,
+        "employee_code": employee_code,
+    }
+
+
+def _leave_requests_widget(result: list[dict], is_manager: bool = False) -> dict[str, Any]:
+    return {
+        "type": "leave_requests_list",
+        "requests": result,
+        "is_manager": is_manager,
+    }
+
+
+def _leave_types_widget(result: list[dict]) -> dict[str, Any]:
+    return {
+        "type": "leave_types_list",
+        "types": result,
+    }
+
+
+def _leave_date_picker_widget(draft: DraftRequest, today: date | None = None) -> dict[str, Any]:
+    return {
+        "type": "leave_date_picker",
+        "leave_type_name": draft.leave_type_name,
+        "start_date": draft.start_date.isoformat() if draft.start_date else None,
+        "end_date": draft.end_date.isoformat() if draft.end_date else None,
+        "min_date": today.isoformat() if today else None,
+    }
 
 
 async def handle_turn(
@@ -179,12 +272,19 @@ def _reply(
     tool_called: str | None = None,
     tool_result: dict[str, Any] | None = None,
     raw_model_action: dict[str, Any] | None = None,
+    ui_widget: dict[str, Any] | None = None,
 ) -> AgentTurnResult:
     """Record the agent's turn and build the result — the one place this
     "append history, then return" pairing happens, instead of repeated
     inline at every call site."""
     state.add_turn("agent", text, clock=clock)
-    return AgentTurnResult(reply=text, tool_called=tool_called, tool_result=tool_result, raw_model_action=raw_model_action)
+    return AgentTurnResult(
+        reply=text,
+        tool_called=tool_called,
+        tool_result=tool_result,
+        raw_model_action=raw_model_action,
+        ui_widget=ui_widget,
+    )
 
 
 # ---- deterministic list flows (requests / leave types) --------------------
@@ -203,18 +303,82 @@ _LIST_MY_REQUESTS_PHRASES = (
     "my pending",
     "my history",
 )
+_HR_LIST_REQUESTS_PHRASES = (
+    "all leave request",
+    "all leave requests",
+    "all request",
+    "all requests",
+    "leave request",
+    "leave requests",
+    "show all requests",
+    "list all requests",
+    "pending leave",
+    "pending requests",
+    "pipeline",
+)
 _TYPES_QUESTION_PHRASES = ("leave type", "types of leave", "which leaves", "what leaves")
 
 
 def _is_list_my_requests(user_message: str) -> bool:
-    """Is this employee message asking to SEE their own leave requests?
-
-    Self-scoped ("my requests") so an HR "show me all leave requests" keeps
-    the manager flow. Write intents (cancel / decide / approve) are excluded
-    — they belong to the reference-write interception.
-    """
+    """Is this employee message asking to SEE their own leave requests?"""
     lowered = user_message.lower()
     has_request_scope = any(phrase in lowered for phrase in _LIST_MY_REQUESTS_PHRASES)
+    has_write_intent = (
+        any(word in lowered for word in _CANCEL_INTENT_WORDS)
+        or any(word in lowered for word in _DECIDE_INTENT_WORDS)
+        or "approve" in lowered
+    )
+    return has_request_scope and not has_write_intent
+
+
+_ALL_BALANCES_PHRASES = (
+    "all employee",
+    "all employees",
+    "all the employee",
+    "all the employees",
+    "employees leave balance",
+    "employees leave balances",
+    "employees balance",
+    "employees balances",
+    "team balance",
+    "team balances",
+    "team leave balance",
+    "team leave balances",
+    "everyone's balance",
+    "everybody's balance",
+    "all balances",
+    "org chart",
+    "organization chart",
+    "hierarchy",
+    "org hierarchy",
+    "organization hierarchy",
+    "team hierarchy",
+    "employee hierarchy",
+    "reporting structure",
+)
+
+
+def _is_all_employees_balance_ask(user_message: str) -> bool:
+    """Is this manager message asking to see all employees' leave balances or org hierarchy?"""
+    lowered = user_message.lower()
+    if any(h in lowered for h in ("hierarchy", "org chart", "organization chart", "reporting structure")):
+        return True
+    if not any(word in lowered for word in ("balance", "balances", "quota", "quotas", "pto", "remaining")):
+        return False
+    if "request" in lowered:
+        return False
+    return any(phrase in lowered for phrase in _ALL_BALANCES_PHRASES) or ("all" in lowered and "employee" in lowered)
+
+
+def _is_list_hr_requests(user_message: str) -> bool:
+    """Is this manager message asking to SEE all leave requests in the pipeline?"""
+    lowered = user_message.lower()
+    if "pending" in lowered or "balance" in lowered:
+        return False
+    has_request_scope = (
+        any(phrase in lowered for phrase in _HR_LIST_REQUESTS_PHRASES)
+        or ("request" in lowered and ("show" in lowered or "list" in lowered or "all" in lowered))
+    )
     has_write_intent = (
         any(word in lowered for word in _CANCEL_INTENT_WORDS)
         or any(word in lowered for word in _DECIDE_INTENT_WORDS)
@@ -250,20 +414,47 @@ def _intercept_list_requests(
     *,
     clock: Clock,
 ) -> AgentTurnResult | None:
-    """Answer "show my leave requests" deterministically from the real data."""
-    if actor.coarse_role != "EMPLOYEE":
-        return None
-    if not _is_list_my_requests(user_message):
-        return None
-    try:
-        result = list_my_leave_requests(service, actor)
-    except ToolError as err:
-        return _reply(state, str(err), clock=clock)
-    text = format_tool_result("list_my_leave_requests", result)
-    return _reply(
-        state, text, clock=clock,
-        tool_called="list_my_leave_requests", tool_result=result,
-    )
+    """Answer "show leave requests" or all-employee balances deterministically from the real data."""
+    if actor.coarse_role == "HR_ADMIN":
+        if _is_all_employees_balance_ask(user_message):
+            try:
+                result = list_all_employee_balances(service, actor)
+            except ToolError as err:
+                return _reply(state, str(err), clock=clock)
+            text = format_tool_result("list_all_employee_balances", result)
+            return _reply(
+                state, text, clock=clock,
+                tool_called="list_all_employee_balances", tool_result=result,
+                ui_widget={"type": "all_employee_balances", "employees": result, "year": clock.today().year},
+            )
+
+        if not _is_list_hr_requests(user_message):
+            return None
+        try:
+            result = list_leave_requests(service, actor)
+        except ToolError as err:
+            return _reply(state, str(err), clock=clock)
+        text = format_tool_result("list_leave_requests", result)
+        return _reply(
+            state, text, clock=clock,
+            tool_called="list_leave_requests", tool_result=result,
+            ui_widget=_leave_requests_widget(result, is_manager=True),
+        )
+
+    if actor.coarse_role == "EMPLOYEE":
+        if not _is_list_my_requests(user_message):
+            return None
+        try:
+            result = list_my_leave_requests(service, actor)
+        except ToolError as err:
+            return _reply(state, str(err), clock=clock)
+        text = format_tool_result("list_my_leave_requests", result)
+        return _reply(
+            state, text, clock=clock,
+            tool_called="list_my_leave_requests", tool_result=result,
+            ui_widget=_leave_requests_widget(result, is_manager=False),
+        )
+    return None
 
 
 def _intercept_types_question(
@@ -287,6 +478,7 @@ def _intercept_types_question(
     return _reply(
         state, text, clock=clock,
         tool_called="list_leave_types", tool_result=result,
+        ui_widget=_leave_types_widget(result),
     )
 
 
@@ -403,7 +595,10 @@ def _stage_draft(
     summary = prompts.summarize_for_confirmation("submit_leave_request", canonical)
     state.stage("submit_leave_request", canonical, summary, clock=clock)
     state.clear_draft(clock=clock)
-    return _reply(state, summary, clock=clock)
+    return _reply(
+        state, summary, clock=clock,
+        ui_widget=_staged_action_widget("submit_leave_request", canonical, summary),
+    )
 
 
 _BALANCE_ASK_WORDS = ("balance", "remaining", "left", "how much", "do i have")
@@ -452,6 +647,30 @@ def _is_balance_ask(user_message: str) -> bool:
     return "get" in lowered and "my leave" in lowered
 
 
+_EMP_CODE_RE = re.compile(r"EMP-\d{3,}", re.IGNORECASE)
+
+
+def _extract_employee_lookup_target(user_message: str) -> str | None:
+    """Extract an employee code or name from a manager's balance inquiry."""
+    match = _EMP_CODE_RE.search(user_message)
+    if match:
+        return match.group(0).upper()
+    lowered = user_message.lower()
+    if " for " in lowered:
+        idx = lowered.find(" for ")
+        target = user_message[idx + 5:].strip().rstrip(".?!\"'")
+        if target.lower().startswith("employee "):
+            target = target[9:].strip()
+        if target:
+            return target
+    if "employee " in lowered:
+        idx = lowered.find("employee ")
+        target = user_message[idx + 9:].strip().rstrip(".?!\"'")
+        if target:
+            return target
+    return None
+
+
 def _intercept_draft_turn(
     state: LeaveAgentState,
     service: LeaveService,
@@ -491,6 +710,7 @@ def _intercept_draft_turn(
         # history + workflow state, never from the DB or the model.
         return _recap_reply(state, clock=clock)
 
+    today = clock.today()
     if actor.coarse_role == "EMPLOYEE" and _is_balance_ask(user_message):
         # "get me leave balance" / "get my leave" / "how much leave do i
         # have" — answered from the employee's REAL balance deterministically.
@@ -506,9 +726,9 @@ def _intercept_draft_turn(
         return _reply(
             state, text, clock=clock,
             tool_called="get_leave_balance", tool_result=result,
+            ui_widget=_leave_balance_widget(result, year=today.year),
         )
 
-    today = clock.today()
     start, end = extract_dates(user_message, today)
 
     draft = state.draft
@@ -569,13 +789,16 @@ def _intercept_draft_turn(
     parts: list[str] = []
     if draft.start_date is not None:
         parts.append(f"{label} would start on {format_short(draft.start_date)}.")
+    ui_widget: dict[str, Any] | None = None
     if draft.leave_type_name is None:
         parts.append("Which leave type would you like to take?")
     elif draft.start_date is None:
         parts.append("From which date would you like to start?")
+        ui_widget = _leave_date_picker_widget(draft, today=today)
     else:
         parts.append("To which date would you like to end?")
-    return _reply(state, " ".join(parts), clock=clock)
+        ui_widget = _leave_date_picker_widget(draft, today=today)
+    return _reply(state, " ".join(parts), clock=clock, ui_widget=ui_widget)
 
 
 # ---- deterministic cancel / decision flow ----------------------------------
@@ -613,17 +836,43 @@ def _stage_reference_write(
     clock: Clock,
 ) -> AgentTurnResult:
     """Preflight + stage a reference-based write action deterministically."""
+    extra_details: dict[str, Any] = {}
     try:
         if tool_name == "cancel_leave_request":
             preflight_cancel(service, actor, args["request_number"])
         else:
-            preflight_hr_reference(service, actor, args["request_number"])
+            req = preflight_hr_reference(service, actor, args["request_number"])
+            if req:
+                emp_name = None
+                emp_code = None
+                try:
+                    from app.domain.people import Employee, Person
+                    emp = service._db.get(Employee, req.employee_id)
+                    if emp:
+                        emp_code = emp.employee_code
+                        p = service._db.get(Person, emp.person_id)
+                        if p:
+                            emp_name = f"{p.first_name} {p.last_name}".strip()
+                except Exception:
+                    pass
+                extra_details = {
+                    "employee_name": emp_name,
+                    "employee_code": emp_code,
+                    "start_date": req.start_date.isoformat(),
+                    "end_date": req.end_date.isoformat(),
+                    "total_days": str(req.total_days),
+                    "reason": req.reason,
+                }
     except ToolError as err:
         return _reply(state, str(err), clock=clock)
 
     summary = prompts.summarize_for_confirmation(tool_name, args)
     state.stage(tool_name, args, summary, clock=clock)
-    return _reply(state, summary, clock=clock)
+    staged_args = {**args, **extra_details}
+    return _reply(
+        state, summary, clock=clock,
+        ui_widget=_staged_action_widget(tool_name, staged_args, summary),
+    )
 
 
 def _intercept_employee_cancel(
@@ -773,6 +1022,7 @@ def _intercept_hr_reference_write(
             return _reply(
                 state, text, clock=clock,
                 tool_called="list_leave_requests", tool_result=result,
+                ui_widget=_leave_requests_widget(result, is_manager=True),
             )
         try:
             lines = hr_pending_request_lines(service, actor)
@@ -782,6 +1032,11 @@ def _intercept_hr_reference_write(
             return _reply(
                 state, "There are no pending leave requests to act on.", clock=clock
             )
+        pending_result = []
+        try:
+            pending_result = [r for r in list_leave_requests(service, actor) if r.get("status") == "PENDING"]
+        except Exception:
+            pass
         return _reply(
             state,
             "Here are the pending leave requests:\n"
@@ -789,6 +1044,7 @@ def _intercept_hr_reference_write(
             + "\n\nReply with the request number (e.g., LR-2026-001) to "
             "approve or reject one.",
             clock=clock,
+            ui_widget=_leave_requests_widget(pending_result, is_manager=True) if pending_result else None,
         )
 
     tool_name, args = "decide_leave_request", {
@@ -870,7 +1126,10 @@ async def _handle_stage(
     # the model getting the wording right.
     summary = prompts.summarize_for_confirmation(tool_name, canonical)
     state.stage(tool_name, canonical, summary, clock=clock)
-    return _reply(state, summary, clock=clock, raw_model_action=raw_model_action)
+    return _reply(
+        state, summary, clock=clock, raw_model_action=raw_model_action,
+        ui_widget=_staged_action_widget(tool_name, canonical, summary),
+    )
 
 
 _HR_SELF_SERVICE_LIST_TOOLS = ("list_my_leave_requests", "list_leave_types")
@@ -919,6 +1178,7 @@ def _recover_hr_list_all(
         state, text, clock=clock,
         tool_called="list_leave_requests", tool_result=result,
         raw_model_action=raw_model_action,
+        ui_widget=_leave_requests_widget(result, is_manager=True),
     )
 
 
@@ -954,6 +1214,20 @@ async def _handle_read(
 
     logger.info("Leave Agent: executed read tool %s (args=%r)", tool_name, args)
 
+    ui_widget: dict[str, Any] | None = None
+    if tool_name in ("get_leave_balance", "get_employee_leave_balance"):
+        ui_widget = _leave_balance_widget(result, year=args.get("year"), employee_code=args.get("employee_code"))
+    elif tool_name == "list_leave_types":
+        ui_widget = _leave_types_widget(result)
+    elif tool_name == "list_my_leave_requests":
+        ui_widget = _leave_requests_widget(result, is_manager=False)
+    elif tool_name == "list_leave_requests":
+        ui_widget = _leave_requests_widget(result, is_manager=True)
+    elif tool_name == "list_all_employee_balances":
+        ui_widget = {"type": "all_employee_balances", "employees": result, "year": args.get("year", clock.today().year)}
+    elif tool_name == "get_leave_request":
+        ui_widget = {"type": "single_leave_request", "request": result}
+
     if tool_name == "list_leave_types":
         override = _list_types_reply_override(user_message)
         if override is not None:
@@ -967,6 +1241,7 @@ async def _handle_read(
                 tool_called=tool_name,
                 tool_result=result,
                 raw_model_action=raw_model_action,
+                ui_widget=ui_widget,
             )
 
     text = format_tool_result(tool_name, result)
@@ -994,11 +1269,14 @@ async def _handle_read(
         text = f"{text}\n\n{follow_up}" if text else follow_up
         candidates = _candidate_types(tool_name, result)
         if state.draft is None and candidates:
-            state.set_draft(
-                DraftRequest(leave_type_name=candidates[0] if len(candidates) == 1 else None),
-                clock=clock,
-            )
-    return _reply(state, text, clock=clock, tool_called=tool_name, tool_result=result, raw_model_action=raw_model_action)
+            draft = DraftRequest(leave_type_name=candidates[0] if len(candidates) == 1 else None)
+            state.set_draft(draft, clock=clock)
+            if draft.leave_type_name is not None:
+                ui_widget = _leave_date_picker_widget(draft, today=clock.today())
+    return _reply(
+        state, text, clock=clock, tool_called=tool_name, tool_result=result,
+        raw_model_action=raw_model_action, ui_widget=ui_widget,
+    )
 
 
 _REQUEST_INTENT_WORDS = (
@@ -1189,7 +1467,11 @@ async def _handle_confirmed_write(
 
         state.clear_pending(clock=clock)
         text = format_tool_result(tool_name, result)
-        return _reply(state, text, clock=clock, tool_called=tool_name, tool_result=result, raw_model_action=raw_model_action)
+        ui_widget = _action_result_widget(tool_name, result)
+        return _reply(
+            state, text, clock=clock, tool_called=tool_name, tool_result=result,
+            raw_model_action=raw_model_action, ui_widget=ui_widget,
+        )
     finally:
         state.end_execution(clock=clock)
 

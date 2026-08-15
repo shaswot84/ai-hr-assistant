@@ -46,3 +46,5 @@ class SupervisorState(TypedDict, total=False):
     # Output-safety verdict for the generated answer: PASS | REDACTED |
     # BLOCKED | FLAGGED_FOR_REVIEW (see safety/contracts.py).
     safety: str
+    # Structured UI widget descriptor (leave balance, date picker, requests list, staged action, etc.)
+    ui_widget: dict | None

@@ -166,6 +166,10 @@ class DecideLeaveRequestArgs(_StrictArgs):
     approve: bool
 
 
+class ListAllEmployeeBalancesArgs(_StrictArgs):
+    year: int | None = None
+
+
 _ARGS_MODELS: dict[str, type[_StrictArgs]] = {
     "get_leave_balance": GetLeaveBalanceArgs,
     "list_leave_types": ListLeaveTypesArgs,
@@ -175,6 +179,7 @@ _ARGS_MODELS: dict[str, type[_StrictArgs]] = {
     "submit_leave_request": SubmitLeaveRequestArgs,
     "cancel_leave_request": CancelLeaveRequestArgs,
     "get_employee_leave_balance": GetEmployeeLeaveBalanceArgs,
+    "list_all_employee_balances": ListAllEmployeeBalancesArgs,
     "decide_leave_request": DecideLeaveRequestArgs,
 }
 
@@ -277,9 +282,14 @@ def _resolve_leave_type(service: LeaveService, leave_type_name: str) -> LeaveTyp
 # ---- result serialization / deterministic formatting -----------------------
 
 
-def _serialize_request(request: LeaveRequest, leave_type_name: str) -> dict[str, Any]:
+def _serialize_request(
+    request: LeaveRequest,
+    leave_type_name: str,
+    service: LeaveService | None = None,
+    include_employee: bool = False,
+) -> dict[str, Any]:
     """Convert a LeaveRequest into a JSON-safe dict."""
-    return {
+    data: dict[str, Any] = {
         "leave_request_id": str(request.leave_request_id),
         "request_number": request.request_number,
         "leave_type_name": leave_type_name,
@@ -291,6 +301,19 @@ def _serialize_request(request: LeaveRequest, leave_type_name: str) -> dict[str,
         "submitted_at": request.submitted_at.isoformat(),
         "decided_at": request.decided_at.isoformat() if request.decided_at else None,
     }
+    if include_employee and service is not None:
+        try:
+            from app.domain.people import Employee, Person
+            employee = service._db.get(Employee, request.employee_id)
+            if employee is not None:
+                data["employee_code"] = employee.employee_code
+                person = service._db.get(Person, employee.person_id)
+                if person is not None:
+                    data["employee_name"] = f"{person.first_name} {person.last_name}".strip()
+                    data["employee_email"] = person.email
+        except Exception:
+            pass
+    return data
 
 
 def _leave_type_name(service: LeaveService, leave_type_id: uuid.UUID) -> str:
@@ -386,7 +409,7 @@ def preflight_cancel(service: LeaveService, actor: UserContext, request_number: 
         raise ToolError(f"Only pending requests can be cancelled (status={request.status}).")
 
 
-def preflight_hr_reference(service: LeaveService, actor: UserContext, request_number: str) -> None:
+def preflight_hr_reference(service: LeaveService, actor: UserContext, request_number: str) -> LeaveRequest:
     """Verify a manager's reference-based decision can succeed before staging."""
     _require_hr_access(actor)
     request = _call_service(service.get_request_by_number, actor, request_number)
@@ -394,6 +417,7 @@ def preflight_hr_reference(service: LeaveService, actor: UserContext, request_nu
         raise ToolError(
             f"Only pending requests can be decided (status={request.status})."
         )
+    return request
 
 
 def pending_request_lines(service: LeaveService, actor: UserContext) -> list[str]:
@@ -482,7 +506,7 @@ def list_my_leave_requests(service: LeaveService, actor: UserContext) -> list[di
     """List the employee's own leave requests, most recent first."""
     _require_employee_access(actor)
     requests = _call_service(service.list_my_requests, actor)
-    return [_serialize_request(r, _leave_type_name(service, r.leave_type_id)) for r in requests]
+    return [_serialize_request(r, _leave_type_name(service, r.leave_type_id), service=service) for r in requests]
 
 
 def list_leave_requests(service: LeaveService, actor: UserContext) -> list[dict]:
@@ -490,7 +514,7 @@ def list_leave_requests(service: LeaveService, actor: UserContext) -> list[dict]
     only) — the manager view of what is in the pipeline."""
     _require_hr_access(actor)
     requests = _call_service(service.list_all_requests, actor)
-    return [_serialize_request(r, _leave_type_name(service, r.leave_type_id)) for r in requests]
+    return [_serialize_request(r, _leave_type_name(service, r.leave_type_id), service=service, include_employee=True) for r in requests]
 
 
 def get_leave_request(service: LeaveService, actor: UserContext, *, leave_request_id: uuid.UUID) -> dict:
@@ -499,7 +523,7 @@ def get_leave_request(service: LeaveService, actor: UserContext, *, leave_reques
     request = _call_service(service.get_my_request, actor, leave_request_id)
     if request is None:
         raise ToolError("I couldn't find a leave request with that id.")
-    return _serialize_request(request, _leave_type_name(service, request.leave_type_id))
+    return _serialize_request(request, _leave_type_name(service, request.leave_type_id), service=service)
 
 
 # ---- write tools (confirmation required by agent.py before calling) -------
@@ -526,7 +550,7 @@ def submit_leave_request(
         end_date=end_date,
         reason=reason,
     )
-    return _serialize_request(request, leave_type.leave_name)
+    return _serialize_request(request, leave_type.leave_name, service=service)
 
 
 def cancel_leave_request(
@@ -537,7 +561,7 @@ def cancel_leave_request(
     confirmed this with the user."""
     _require_employee_access(actor)
     request = _call_service(service.cancel_request_by_reference, actor, request_number)
-    return _serialize_request(request, _leave_type_name(service, request.leave_type_id))
+    return _serialize_request(request, _leave_type_name(service, request.leave_type_id), service=service)
 
 
 def get_employee_leave_balance(
@@ -563,6 +587,17 @@ def get_employee_leave_balance(
     ]
 
 
+def list_all_employee_balances(
+    service: LeaveService,
+    actor: UserContext,
+    *,
+    year: int | None = None,
+) -> list[dict]:
+    """Return ALL employees' leave balances across all leave types (HR administrators only)."""
+    _require_hr_access(actor)
+    return _call_service(service.list_all_employee_balances, actor, year)
+
+
 def decide_leave_request(
     service: LeaveService,
     actor: UserContext,
@@ -577,7 +612,7 @@ def decide_leave_request(
     request = _call_service(
         service.decide_request_by_reference, actor, request_number, approve=approve
     )
-    return _serialize_request(request, _leave_type_name(service, request.leave_type_id))
+    return _serialize_request(request, _leave_type_name(service, request.leave_type_id), service=service, include_employee=True)
 
 
 # ---- deterministic reply formatting ----------------------------------------
@@ -594,6 +629,15 @@ def format_tool_result(tool_name: str, result: Any) -> str:
             return "You have no leave balance records for this year."
         lines = [f"{r['leave_type_name']}: {r['remaining_days']} of {r['allocated_days']} days remaining" for r in result]
         return "Your leave balance:\n" + "\n".join(lines)
+
+    if tool_name == "list_all_employee_balances":
+        if not result:
+            return "There are no employee leave balance records found."
+        lines = []
+        for emp in result:
+            b_str = ", ".join(f"{b['leave_type_name']}: {b['remaining_days']}/{b['allocated_days']} left" for b in emp.get("balances", []))
+            lines.append(f"- {emp['employee_name']} ({emp['employee_code']}): {b_str}")
+        return "Employee leave balances:\n" + "\n".join(lines)
 
     if tool_name == "list_leave_types":
         if not result:
@@ -720,6 +764,15 @@ TOOLS: dict[str, ToolSpec] = {
             "year": "integer, optional — defaults to the current year",
         },
         handler=get_employee_leave_balance,
+        requires_confirmation=False,
+    ),
+    "list_all_employee_balances": ToolSpec(
+        name="list_all_employee_balances",
+        description="List all active employees' leave balances across all leave types (HR administrators only).",
+        parameters={
+            "year": "integer, optional — defaults to the current year",
+        },
+        handler=list_all_employee_balances,
         requires_confirmation=False,
     ),
     "decide_leave_request": ToolSpec(

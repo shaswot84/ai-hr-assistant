@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.contracts.auth import UserContext
-from app.domain.identity import ApplicationUser, Employee, Person
+from app.domain.identity import ApplicationUser, Department, Designation, Employee, Person
 from app.domain.leave import LeaveBalance, LeaveRequest, LeaveType
 from app.repositories.audit import AuditRepo
 from app.repositories.leave import LeaveBalanceRepo, LeaveRequestRepo, LeaveTypeRepo
@@ -109,17 +109,79 @@ class LeaveService:
     ) -> list[dict]:
         """Return ANOTHER employee's balance grid (manager-only).
 
-        ``employee_code`` is the human-readable employee identifier the
-        manager sees in the portal — never an internal UUID, mirroring the
-        request-reference rule the agent tools use.
+        ``employee_code`` is the human-readable employee identifier (or name/email) the
+        manager sees in the portal — never an internal UUID.
         """
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can view employee leave balances.")
-        stmt = select(Employee).where(Employee.employee_code == employee_code.strip())
+        target = employee_code.strip()
+        stmt = select(Employee).where(Employee.employee_code.ilike(target))
         employee = self._db.scalar(stmt)
         if employee is None:
-            raise ValueError("Employee not found.")
+            words = target.split()
+            if len(words) >= 2:
+                p_stmt = select(Person).where(
+                    Person.first_name.ilike(f"%{words[0]}%"),
+                    Person.last_name.ilike(f"%{words[-1]}%"),
+                )
+            else:
+                p_stmt = select(Person).where(
+                    (Person.first_name.ilike(f"%{target}%"))
+                    | (Person.last_name.ilike(f"%{target}%"))
+                    | (Person.email.ilike(f"%{target}%"))
+                )
+            person = self._db.scalar(p_stmt)
+            if person is not None:
+                employee = self._db.scalar(select(Employee).where(Employee.person_id == person.person_id))
+        if employee is None:
+            raise ValueError(f"Employee '{employee_code}' not found.")
         return self._balance_rows(employee, year or self._clock.today().year)
+
+    def list_all_employee_balances(
+        self, actor: UserContext, year: int | None = None
+    ) -> list[dict]:
+        """Return all active employees' leave balances with reporting hierarchy (manager-only)."""
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can view all employee leave balances.")
+
+        target_year = year or self._clock.today().year
+        stmt = (
+            select(Employee, Person, Department, Designation)
+            .join(Person, Employee.person_id == Person.person_id)
+            .outerjoin(Department, Employee.department_id == Department.department_id)
+            .outerjoin(Designation, Employee.designation_id == Designation.designation_id)
+            .where(Employee.employment_status == "ACTIVE")
+            .order_by(Employee.employee_code)
+        )
+        records = self._db.execute(stmt).all()
+
+        results = []
+        for emp, person, dept, desig in records:
+            raw_rows = self._balance_rows(emp, target_year)
+            balances = [
+                {
+                    "leave_type_name": row["leave_type"].leave_name,
+                    "year": row["year"],
+                    "allocated_days": str(row["allocated_days"]),
+                    "used_days": str(row["used_days"]),
+                    "remaining_days": str(row["remaining_days"]),
+                }
+                for row in raw_rows
+            ]
+            results.append(
+                {
+                    "employee_id": str(emp.employee_id),
+                    "employee_code": emp.employee_code,
+                    "employee_name": f"{person.first_name} {person.last_name}".strip(),
+                    "employee_email": person.email,
+                    "manager_employee_id": str(emp.manager_employee_id) if emp.manager_employee_id else None,
+                    "department_name": dept.name if dept else None,
+                    "designation_title": desig.title if desig else None,
+                    "year": target_year,
+                    "balances": balances,
+                }
+            )
+        return results
 
     def _balance_rows(self, employee: Employee, target_year: int) -> list[dict]:
         """The allocated/used/remaining grid for one employee in one year —

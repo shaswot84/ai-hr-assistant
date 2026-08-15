@@ -704,6 +704,30 @@ async def test_hr_employee_balance_tool(db, manager_context, employee_context):
 
 
 @pytest.mark.asyncio
+async def test_hr_list_all_employee_balances_deterministic(db, manager_context, employee_context):
+    """HR can list all employees' leave balances deterministically."""
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context)
+    state = _state(manager_context)
+    provider = FakeChatProvider({})
+
+    result = await handle_turn(
+        actor=manager_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="check leave balance for all the employees",
+    )
+
+    assert provider.calls == 0
+    assert result.tool_called == "list_all_employee_balances"
+    assert result.ui_widget is not None
+    assert result.ui_widget["type"] == "all_employee_balances"
+    assert len(result.ui_widget["employees"]) >= 1
+    assert "Employee leave balances" in result.reply
+
+
+@pytest.mark.asyncio
 async def test_hr_cannot_apply_for_leave(db, manager_context, employee_context):
     """An HR administrator is refused deterministically — no draft, no model,
     no leave_request row — when they try to start an application."""

@@ -235,6 +235,8 @@ async def _handle(
         user_message=state["current_query"],
     )
     writer({"type": "message", "text": result.reply})
+    if result.ui_widget:
+        writer({"type": "ui_widget", "widget": result.ui_widget})
     return {
         "messages": [AIMessage(content=result.reply)],
         "knowledge_result": None,
@@ -243,4 +245,5 @@ async def _handle(
         "confidence": 0.0,
         "agent": "leave",
         "safety": "PASS",
+        "ui_widget": result.ui_widget,
     }
