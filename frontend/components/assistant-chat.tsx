@@ -461,7 +461,11 @@ export function AssistantChat() {
   }
 
   return (
-    <div className="card flex h-[calc(100vh-16rem)] min-h-[420px] overflow-hidden">
+    <div
+      className={`card flex min-h-[420px] overflow-hidden ${
+        collapsed ? "h-full" : "h-[calc(100vh-16rem)]"
+      }`}
+    >
       {/* Conversation list (desktop) — collapses with the portal sidebar so
           the chat thread takes the full width; stays mounted so the width
           change animates. */}

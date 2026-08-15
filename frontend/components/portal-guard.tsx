@@ -98,6 +98,11 @@ function PortalShell({
   const pathname = usePathname();
   const { collapsed } = useSidebar();
 
+  // With the sidebar collapsed the chatbot page goes full-bleed (ChatGPT-style
+  // full-screen chat): no padding, full width and height.
+  const chatbotFullBleed =
+    collapsed && (pathname === "/manager/chatbot" || pathname === "/employee/chatbot");
+
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-50">
       <Sidebar
@@ -111,8 +116,10 @@ function PortalShell({
         <main className="flex-1 overflow-y-auto">
           <div
             key={pathname}
-            className={`animate-fade-in mx-auto w-full px-4 py-6 sm:px-6 lg:px-8 lg:py-8 ${
-              collapsed ? "max-w-none" : "max-w-[1600px]"
+            className={`animate-fade-in mx-auto w-full ${
+              chatbotFullBleed
+                ? "h-full p-0"
+                : `px-4 py-6 sm:px-6 lg:px-8 lg:py-8 ${collapsed ? "max-w-none" : "max-w-[1600px]"}`
             }`}
           >
             {children}
