@@ -255,7 +255,16 @@ const MessageBubble = memo(function MessageBubble({
   );
 });
 
-function conversationDate(iso: string) {
+/** ChatGPT-style relative label for a conversation's last activity. */
+function conversationTime(iso: string) {
+  const then = new Date(iso).getTime();
+  const diffMs = Date.now() - then;
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "Just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  if (hours < 48) return "Yesterday";
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
@@ -308,7 +317,15 @@ export function AssistantChat() {
   const refreshConversations = useCallback(async () => {
     try {
       const list = await api.listConversations();
-      setConversations(list);
+      // The API already orders by last activity, but sort here too so the
+      // rail is always most-recent-first regardless of backend behavior.
+      setConversations(
+        [...list].sort(
+          (a, b) =>
+            new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime() ||
+            b.conversation_id.localeCompare(a.conversation_id)
+        )
+      );
     } catch {
       // offline / not authed; keep current
     }
@@ -664,7 +681,7 @@ export function AssistantChat() {
                             isActive ? "text-blue-100" : "text-zinc-400"
                           }`}
                         >
-                          {conversationDate(c.updated_at)}
+                          {conversationTime(c.updated_at)}
                         </span>
                       </button>
                       <button
@@ -803,15 +820,15 @@ export function AssistantChat() {
                                   isActive ? "text-blue-100" : "text-zinc-400"
                                 }`}
                               >
-                                {conversationDate(c.updated_at)}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                handleDeleteConversation(c.conversation_id, e);
-                                setHistoryOpen(false);
-                              }}
+                              {conversationTime(c.updated_at)}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              handleDeleteConversation(c.conversation_id, e);
+                              setHistoryOpen(false);
+                            }}
                               title="Delete conversation"
                               aria-label="Delete conversation"
                               className={`absolute right-1 top-1/2 -translate-y-1/2 rounded p-1 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 ${
