@@ -468,6 +468,11 @@ class SessionStore:
         """Release the execution claim for this session."""
         self._executing_claims.discard(session_id)
 
+    def delete(self, session_id: str) -> None:
+        """Drop the cached session and any active execution claim."""
+        self._sessions.pop(session_id, None)
+        self._executing_claims.discard(session_id)
+
 
 class RedisSessionStore(SessionStore):
     """Redis-backed working store for LeaveAgentState (cross-process safe).
@@ -603,3 +608,11 @@ class RedisSessionStore(SessionStore):
                 pipe.execute()
         except Exception:  # noqa: BLE001 - a stale claim is cleared by its TTL
             return
+
+    def delete(self, session_id: str) -> None:
+        """Drop the working slice from Redis and release any active claim."""
+        try:
+            self._client.delete(self._session_key(session_id), self._claim_key(session_id))
+        except Exception:  # noqa: BLE001 - ignore Redis errors on best-effort cleanup
+            pass
+        self._held_tokens.pop(session_id, None)
