@@ -181,6 +181,7 @@ def build_supervisor_graph(
     knowledge_leave_service: LeaveService | None = None,
     recruitment_actor: UserContext | None = None,
     recruitment_service: RecruitmentService | None = None,
+    recruitment_chat_provider: ChatProvider | None = None,
 ) -> CompiledStateGraph:
     """Assemble the supervisor graph with the given LLM, knowledge service,
     and safety guard.
@@ -191,9 +192,8 @@ def build_supervisor_graph(
     optional test injection point. ``knowledge_actor`` (+ optional
     ``knowledge_leave_service``) enable the knowledge node's balance
     reconciliation for employees. ``recruitment_actor`` (+ optional
-    ``recruitment_service``) wire the deterministic recruitment node
-    (read paths + honest deferrals); without an actor the node still answers
-    vacancy questions from the real service.
+    ``recruitment_service`` / ``recruitment_chat_provider``) wire the recruitment
+    node for open vacancies, in-chat applying, and status checks.
     """
     builder = StateGraph(SupervisorState)
     builder.add_node("route", make_route_node(llm))
@@ -217,7 +217,11 @@ def build_supervisor_graph(
         builder.add_node("leave", _leave_stub_node())
     builder.add_node(
         "recruitment",
-        make_recruitment_node(actor=recruitment_actor, service=recruitment_service),
+        make_recruitment_node(
+            actor=recruitment_actor,
+            service=recruitment_service,
+            chat_provider=recruitment_chat_provider,
+        ),
     )
     builder.add_node("clarify", make_clarify_node())
     builder.add_node("recap", make_recap_node(llm))

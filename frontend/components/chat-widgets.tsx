@@ -1,6 +1,9 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
+import Link from "next/link";
+import { api, ApiError } from "@/lib/api";
+import { getAuthToken, setAuthToken } from "@/lib/auth";
 
 // Inline SVG Icons
 function CalendarIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
@@ -223,6 +226,14 @@ export function ChatWidgetRenderer({ widget, onAction, disabled = false }: ChatW
       return <ActionResultWidget widget={widget} />;
     case "single_leave_request":
       return <SingleLeaveRequestWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "vacancies_list":
+      return <VacanciesListWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "vacancy_detail":
+      return <VacancyDetailWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "apply_vacancy":
+      return <ApplyVacancyWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "applications_list":
+      return <ApplicationsListWidget widget={widget} onAction={onAction} disabled={disabled} />;
     default:
       return null;
   }
@@ -1683,6 +1694,492 @@ function SingleLeaveRequestWidget({ widget }: ChatWidgetProps) {
           Duration: {req.start_date} to {req.end_date} ({req.total_days} days)
         </div>
         {req.reason && <div>Reason: "{req.reason}"</div>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 9. Vacancies List Widget
+ */
+function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const vacancies = widget.vacancies || [];
+  if (vacancies.length === 0) return null;
+
+  return (
+    <div className="mt-3 w-full max-w-2xl space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">
+          Available Positions ({vacancies.length})
+        </span>
+      </div>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+        {vacancies.map((v: any) => (
+          <div
+            key={v.vacancy_id}
+            className="flex flex-col justify-between rounded-xl border border-zinc-200 bg-white p-3.5 shadow-sm transition-all hover:border-blue-300 hover:shadow"
+          >
+            <div>
+              <div className="flex items-start justify-between gap-1.5">
+                <h4 className="text-sm font-semibold text-zinc-900 leading-tight">
+                  {v.title}
+                </h4>
+                <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">
+                  {(v.employment_type || "").replaceAll("_", " ")}
+                </span>
+              </div>
+              {v.department_name && (
+                <p className="mt-1 text-xs text-zinc-500 font-medium">
+                  {v.department_name}
+                </p>
+              )}
+              {v.description && (
+                <p className="mt-2 line-clamp-2 text-xs text-zinc-600 leading-relaxed">
+                  {v.description}
+                </p>
+              )}
+              {v.closing_date && (
+                <p className="mt-2 text-[11px] text-zinc-400">
+                  Closes: {v.closing_date}
+                </p>
+              )}
+            </div>
+            <div className="mt-3 flex items-center gap-2 border-t border-zinc-100 pt-2.5">
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onAction?.(`Tell me about the ${v.title} vacancy`)}
+                className="flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors"
+              >
+                Details
+              </button>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onAction?.(`I want to apply for ${v.title}`)}
+                className="flex-1 rounded-lg bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
+              >
+                Apply in Chat
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 10. Vacancy Detail Widget
+ */
+function VacancyDetailWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const vacancy = widget.vacancy;
+  if (!vacancy) return null;
+
+  return (
+    <div className="mt-3 w-full max-w-xl rounded-xl border border-zinc-200 bg-white p-4 shadow-sm space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h3 className="text-base font-semibold text-zinc-900 leading-tight">
+            {vacancy.title}
+          </h3>
+          <p className="text-xs text-zinc-500 font-medium mt-0.5">
+            {vacancy.department_name ? `${vacancy.department_name} · ` : ""}
+            {(vacancy.employment_type || "").replaceAll("_", " ")}
+          </p>
+        </div>
+        <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 border border-emerald-200">
+          {vacancy.status || "OPEN"}
+        </span>
+      </div>
+
+      {vacancy.description && (
+        <p className="text-xs text-zinc-600 whitespace-pre-wrap leading-relaxed border-t border-zinc-100 pt-2.5">
+          {vacancy.description}
+        </p>
+      )}
+
+      {vacancy.closing_date && (
+        <p className="text-xs text-zinc-500">
+          <strong>Closing Date:</strong> {vacancy.closing_date}
+        </p>
+      )}
+
+      <div className="pt-2 flex justify-end">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onAction?.(`I want to apply for ${vacancy.title}`)}
+          className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
+        >
+          Apply for this Role
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 11. Apply Vacancy Widget (In-Chat Resume Upload & Candidate Setup)
+ */
+function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const vacancyId = widget.vacancy_id;
+  const vacancyTitle = widget.vacancy_title || "Position";
+
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => !!getAuthToken());
+  const [form, setForm] = useState({
+    first_name: "",
+    last_name: "",
+    email: "",
+    phone: "",
+    password: "",
+  });
+  const [file, setFile] = useState<File | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [appId, setAppId] = useState<string | null>(null);
+
+  const allowedExts = [".pdf", ".docx"];
+  const maxBytes = 10 * 1024 * 1024;
+
+  function setField(field: string, value: string) {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    setError(null);
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const lower = f.name.toLowerCase();
+    if (!allowedExts.some((ext) => lower.endsWith(ext))) {
+      setError("Only PDF or DOCX resume files are accepted.");
+      return;
+    }
+    if (f.size > maxBytes) {
+      setError("Resume file exceeds 10MB limit.");
+      return;
+    }
+    setFile(f);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!file || !vacancyId) {
+      setError("Please select a resume file.");
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      if (isLoggedIn) {
+        // Authenticated candidate flow
+        const res = await api.apply(vacancyId, file);
+        setSubmitted(true);
+        setAppId(res.application_id);
+        onAction?.(`I applied for ${vacancyTitle} with my resume (${file.name})`);
+      } else {
+        // Visitor setup -> evolve to registered candidate flow
+        if (form.password.length < 8) {
+          setError("Password must be at least 8 characters.");
+          setSubmitting(false);
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("first_name", form.first_name.trim());
+        formData.append("last_name", form.last_name.trim());
+        formData.append("email", form.email.trim());
+        if (form.phone.trim()) {
+          formData.append("phone", form.phone.trim());
+        }
+        formData.append("password", form.password);
+
+        const res = await api.applyAsNewCandidate(vacancyId, formData);
+
+        // Auto sign-in with newly created credentials
+        try {
+          const loginRes = await api.login(form.email.trim(), form.password);
+          setAuthToken(loginRes.access_token);
+          setIsLoggedIn(true);
+        } catch {
+          // Token setup fallback
+        }
+
+        setSubmitted(true);
+        setAppId(res.application_id);
+        onAction?.(
+          `I registered as ${form.first_name} ${form.last_name} and applied for ${vacancyTitle} with my resume (${file.name})`
+        );
+      }
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.detail);
+      } else {
+        setError("Failed to submit application. Please try again.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (submitted) {
+    return (
+      <div className="mt-3 w-full max-w-xl rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm space-y-3">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white shadow-xs">
+            <CheckIcon className="h-4 w-4" />
+          </div>
+          <div>
+            <h4 className="text-sm font-bold text-emerald-900">
+              Application Submitted & Candidate Account Active!
+            </h4>
+            <p className="text-xs text-emerald-700">
+              Role: <strong>{vacancyTitle}</strong>
+              {appId ? ` · Ref: ${appId.slice(0, 8)}` : ""}
+            </p>
+          </div>
+        </div>
+
+        <p className="text-xs text-emerald-800 leading-relaxed">
+          Your credentials have been set up and your resume is now queued for AI screening.
+          You can track your progress right here in chat or visit your candidate portal anytime.
+        </p>
+
+        <div className="pt-1 flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onAction?.("What is the status of my applications?")}
+            className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 shadow-xs transition-colors"
+          >
+            Check Application Status in Chat
+          </button>
+          <Link
+            href="/candidate/applications"
+            className="rounded-lg border border-emerald-300 bg-white px-3.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 transition-colors"
+          >
+            Open Candidate Dashboard
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 w-full max-w-xl rounded-xl border border-zinc-200 bg-white p-4 sm:p-5 shadow-sm space-y-4">
+      <div className="flex items-start justify-between gap-2 border-b border-zinc-100 pb-3">
+        <div>
+          <span className="text-[11px] font-bold text-blue-600 uppercase tracking-wider">
+            {isLoggedIn ? "Apply via Chat" : "Apply & Create Candidate Account"}
+          </span>
+          <h3 className="text-base font-bold text-zinc-900">
+            {vacancyTitle}
+          </h3>
+          {widget.department_name && (
+            <p className="text-xs text-zinc-500 font-medium">
+              {widget.department_name}
+            </p>
+          )}
+        </div>
+        <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-blue-700 border border-blue-100">
+          Open Role
+        </span>
+      </div>
+
+      <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-2.5 text-xs text-blue-900 space-y-1">
+        <div className="flex items-center gap-1.5 font-semibold text-blue-800">
+          <SparklesIcon className="h-3.5 w-3.5 text-blue-600" />
+          ATS-Friendly Resume Screening
+        </div>
+        <p className="text-[11px] text-blue-700 leading-normal">
+          Upload a single-column, text-based PDF or DOCX resume for optimal screening analysis.
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-3.5">
+        {/* Candidate credentials setup for non-logged-in visitors */}
+        {!isLoggedIn && (
+          <div className="space-y-3 rounded-lg border border-zinc-100 bg-zinc-50/60 p-3.5">
+            <div className="text-xs font-semibold text-zinc-700">
+              Candidate Profile & Login Credentials
+            </div>
+
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
+                  First Name *
+                </label>
+                <input
+                  required
+                  type="text"
+                  placeholder="Jane"
+                  value={form.first_name}
+                  onChange={(e) => setField("first_name", e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
+                  Last Name *
+                </label>
+                <input
+                  required
+                  type="text"
+                  placeholder="Doe"
+                  value={form.last_name}
+                  onChange={(e) => setField("last_name", e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
+                  Email Address *
+                </label>
+                <input
+                  required
+                  type="email"
+                  placeholder="jane.doe@example.com"
+                  value={form.email}
+                  onChange={(e) => setField("email", e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
+                  Phone Number
+                </label>
+                <input
+                  type="tel"
+                  placeholder="+1 555 0199"
+                  value={form.phone}
+                  onChange={(e) => setField("phone", e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-zinc-600 mb-1">
+                Password * (min 8 chars — used to track your applications)
+              </label>
+              <input
+                required
+                type="password"
+                minLength={8}
+                placeholder="Choose a secure password"
+                value={form.password}
+                onChange={(e) => setField("password", e.target.value)}
+                className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Resume Dropzone */}
+        <div>
+          <label className="block text-[11px] font-medium text-zinc-700 mb-1">
+            Resume / CV *
+          </label>
+          <label className="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-zinc-300 bg-zinc-50/50 p-4 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/30">
+            <FileTextIcon className="h-6 w-6 text-blue-500" />
+            <span className="text-xs font-medium text-zinc-800">
+              {file ? file.name : "Click to select your resume (PDF or DOCX)"}
+            </span>
+            <span className="text-[10px] text-zinc-400">PDF or DOCX, max 10MB</span>
+            <input
+              type="file"
+              accept=".pdf,.docx"
+              disabled={disabled || submitting}
+              onChange={handleFile}
+              className="hidden"
+            />
+          </label>
+        </div>
+
+        {error && (
+          <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-xs font-medium text-rose-700">
+            {error}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-2 pt-1 border-t border-zinc-100">
+          <p className="text-[11px] text-zinc-400">
+            {isLoggedIn ? "Applied with your candidate account" : "Creates your login & submits application"}
+          </p>
+          <button
+            type="submit"
+            disabled={!file || submitting || disabled}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 transition-colors shrink-0"
+          >
+            {submitting
+              ? "Submitting Application…"
+              : isLoggedIn
+              ? "Submit Application"
+              : "Register & Submit Application"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/**
+ * 12. Applications List Widget
+ */
+function ApplicationsListWidget({ widget }: ChatWidgetProps) {
+  const applications = widget.applications || [];
+  if (applications.length === 0) return null;
+
+  return (
+    <div className="mt-3 w-full max-w-xl space-y-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">
+          Your Applications ({applications.length})
+        </span>
+      </div>
+      <div className="space-y-2">
+        {applications.map((app: any) => {
+          const status = app.application_status || "APPLIED";
+          const isShortlisted = status === "SHORTLISTED";
+          const isRejected = status === "REJECTED";
+
+          return (
+            <div
+              key={app.application_id}
+              className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white p-3.5 shadow-sm transition-all hover:border-zinc-300"
+            >
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <h4 className="text-sm font-semibold text-zinc-900">
+                    {app.vacancy_title}
+                  </h4>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold border ${
+                      isShortlisted
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : isRejected
+                        ? "bg-rose-50 text-rose-700 border-rose-200"
+                        : "bg-blue-50 text-blue-700 border-blue-200"
+                    }`}
+                  >
+                    {status}
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-500">
+                  {app.department_name ? `${app.department_name} · ` : ""}
+                  Applied: {app.applied_at ? new Date(app.applied_at).toLocaleDateString() : "Recently"}
+                </p>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

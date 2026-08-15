@@ -205,6 +205,7 @@ export function AssistantChat() {
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const skipHistoryFetchRef = useRef<string | null>(null);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -222,6 +223,10 @@ export function AssistantChat() {
   useEffect(() => {
     if (!activeId) {
       setMessages([]);
+      return;
+    }
+    if (skipHistoryFetchRef.current === activeId) {
+      skipHistoryFetchRef.current = null;
       return;
     }
     let cancelled = false;
@@ -326,6 +331,7 @@ export function AssistantChat() {
       )) {
         if (event.type === "turn_started") {
           sawTurnStarted = true;
+          skipHistoryFetchRef.current = event.conversation_id;
           setActiveId(event.conversation_id);
         } else if (event.type === "route") {
           agent = event.route;
@@ -355,7 +361,10 @@ export function AssistantChat() {
           confidenceApplicable = event.confidence_applicable;
           uiWidget = event.ui_widget || uiWidget;
           textSoFar = event.message || textSoFar;
-          if (sawTurnStarted) setActiveId(event.conversation_id);
+          if (sawTurnStarted) {
+            skipHistoryFetchRef.current = event.conversation_id;
+            setActiveId(event.conversation_id);
+          }
           patchAssistant({
             content: textSoFar,
             citations,
