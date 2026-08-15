@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
+import { api, ApiError } from "@/lib/api";
 
 // Inline SVG Icons
 function CalendarIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
@@ -223,6 +224,14 @@ export function ChatWidgetRenderer({ widget, onAction, disabled = false }: ChatW
       return <ActionResultWidget widget={widget} />;
     case "single_leave_request":
       return <SingleLeaveRequestWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "vacancies_list":
+      return <VacanciesListWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "vacancy_detail":
+      return <VacancyDetailWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "apply_vacancy":
+      return <ApplyVacancyWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "applications_list":
+      return <ApplicationsListWidget widget={widget} onAction={onAction} disabled={disabled} />;
     default:
       return null;
   }
@@ -1683,6 +1692,346 @@ function SingleLeaveRequestWidget({ widget }: ChatWidgetProps) {
           Duration: {req.start_date} to {req.end_date} ({req.total_days} days)
         </div>
         {req.reason && <div>Reason: "{req.reason}"</div>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 9. Vacancies List Widget
+ */
+function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const vacancies = widget.vacancies || [];
+  if (vacancies.length === 0) return null;
+
+  return (
+    <div className="mt-3 w-full max-w-2xl space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">
+          Available Positions ({vacancies.length})
+        </span>
+      </div>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+        {vacancies.map((v: any) => (
+          <div
+            key={v.vacancy_id}
+            className="flex flex-col justify-between rounded-xl border border-zinc-200 bg-white p-3.5 shadow-sm transition-all hover:border-blue-300 hover:shadow"
+          >
+            <div>
+              <div className="flex items-start justify-between gap-1.5">
+                <h4 className="text-sm font-semibold text-zinc-900 leading-tight">
+                  {v.title}
+                </h4>
+                <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">
+                  {(v.employment_type || "").replaceAll("_", " ")}
+                </span>
+              </div>
+              {v.department_name && (
+                <p className="mt-1 text-xs text-zinc-500 font-medium">
+                  {v.department_name}
+                </p>
+              )}
+              {v.description && (
+                <p className="mt-2 line-clamp-2 text-xs text-zinc-600 leading-relaxed">
+                  {v.description}
+                </p>
+              )}
+              {v.closing_date && (
+                <p className="mt-2 text-[11px] text-zinc-400">
+                  Closes: {v.closing_date}
+                </p>
+              )}
+            </div>
+            <div className="mt-3 flex items-center gap-2 border-t border-zinc-100 pt-2.5">
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onAction?.(`Tell me about the ${v.title} vacancy`)}
+                className="flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors"
+              >
+                Details
+              </button>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onAction?.(`I want to apply for ${v.title}`)}
+                className="flex-1 rounded-lg bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
+              >
+                Apply in Chat
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 10. Vacancy Detail Widget
+ */
+function VacancyDetailWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const vacancy = widget.vacancy;
+  if (!vacancy) return null;
+
+  return (
+    <div className="mt-3 w-full max-w-xl rounded-xl border border-zinc-200 bg-white p-4 shadow-sm space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h3 className="text-base font-semibold text-zinc-900 leading-tight">
+            {vacancy.title}
+          </h3>
+          <p className="text-xs text-zinc-500 font-medium mt-0.5">
+            {vacancy.department_name ? `${vacancy.department_name} · ` : ""}
+            {(vacancy.employment_type || "").replaceAll("_", " ")}
+          </p>
+        </div>
+        <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 border border-emerald-200">
+          {vacancy.status || "OPEN"}
+        </span>
+      </div>
+
+      {vacancy.description && (
+        <p className="text-xs text-zinc-600 whitespace-pre-wrap leading-relaxed border-t border-zinc-100 pt-2.5">
+          {vacancy.description}
+        </p>
+      )}
+
+      {vacancy.closing_date && (
+        <p className="text-xs text-zinc-500">
+          <strong>Closing Date:</strong> {vacancy.closing_date}
+        </p>
+      )}
+
+      <div className="pt-2 flex justify-end">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onAction?.(`I want to apply for ${vacancy.title}`)}
+          className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
+        >
+          Apply for this Role
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 11. Apply Vacancy Widget (In-Chat Resume Upload)
+ */
+function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const vacancyId = widget.vacancy_id;
+  const vacancyTitle = widget.vacancy_title || "Position";
+
+  const [file, setFile] = useState<File | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [appId, setAppId] = useState<string | null>(null);
+
+  const allowedExts = [".pdf", ".docx"];
+  const maxBytes = 10 * 1024 * 1024;
+
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    setError(null);
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const lower = f.name.toLowerCase();
+    if (!allowedExts.some((ext) => lower.endsWith(ext))) {
+      setError("Only PDF or DOCX resume files are accepted.");
+      return;
+    }
+    if (f.size > maxBytes) {
+      setError("Resume file exceeds 10MB limit.");
+      return;
+    }
+    setFile(f);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!file || !vacancyId) return;
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      const res = await api.apply(vacancyId, file);
+      setSubmitted(true);
+      setAppId(res.application_id);
+      onAction?.(`I applied for ${vacancyTitle} with my resume (${file.name})`);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.detail);
+      } else {
+        setError("Failed to submit application. Please try again.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (submitted) {
+    return (
+      <div className="mt-3 w-full max-w-xl rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm space-y-2.5">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-600 text-white">
+            <CheckIcon className="h-4 w-4" />
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold text-emerald-900">
+              Application Submitted Successfully!
+            </h4>
+            <p className="text-xs text-emerald-700">
+              Role: <strong>{vacancyTitle}</strong>
+              {appId ? ` · Ref: ${appId.slice(0, 8)}` : ""}
+            </p>
+          </div>
+        </div>
+        <p className="text-xs text-emerald-800 leading-relaxed">
+          Your resume has been uploaded and queued for AI screening. You will be notified of any updates.
+        </p>
+        <div className="pt-1 flex gap-2">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onAction?.("What is the status of my applications?")}
+            className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700 transition-colors"
+          >
+            Check Application Status
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 w-full max-w-xl rounded-xl border border-zinc-200 bg-white p-4 shadow-sm space-y-3">
+      <div className="flex items-start justify-between gap-2 border-b border-zinc-100 pb-2.5">
+        <div>
+          <span className="text-[11px] font-bold text-blue-600 uppercase tracking-wider">
+            Apply via Chat
+          </span>
+          <h3 className="text-sm font-bold text-zinc-900">
+            {vacancyTitle}
+          </h3>
+          {widget.department_name && (
+            <p className="text-xs text-zinc-500 font-medium">
+              {widget.department_name}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-2.5 text-xs text-blue-900 space-y-1">
+        <div className="flex items-center gap-1.5 font-semibold text-blue-800">
+          <SparklesIcon className="h-3.5 w-3.5 text-blue-600" />
+          ATS-Friendly Resume Tip
+        </div>
+        <p className="text-[11px] text-blue-700 leading-normal">
+          Upload a single-column, text-based PDF or DOCX for optimal screening score.
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <label className="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-zinc-300 bg-zinc-50/50 p-4 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/30">
+          <FileTextIcon className="h-6 w-6 text-blue-500" />
+          <span className="text-xs font-medium text-zinc-700">
+            {file ? file.name : "Click to select your resume (PDF or DOCX)"}
+          </span>
+          <span className="text-[10px] text-zinc-400">Max size 10MB</span>
+          <input
+            type="file"
+            accept=".pdf,.docx"
+            disabled={disabled || submitting}
+            onChange={handleFile}
+            className="hidden"
+          />
+        </label>
+
+        {error && (
+          <p className="text-xs font-medium text-rose-600">
+            {error}
+          </p>
+        )}
+
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <span className="text-[11px] text-zinc-400">
+            Directly screened upon upload
+          </span>
+          <button
+            type="submit"
+            disabled={!file || submitting || disabled}
+            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            {submitting ? "Uploading & Applying…" : "Submit Application"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/**
+ * 12. Applications List Widget
+ */
+function ApplicationsListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const applications = widget.applications || [];
+  if (applications.length === 0) return null;
+
+  return (
+    <div className="mt-3 w-full max-w-xl space-y-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-zinc-700 uppercase tracking-wider">
+          Your Applications ({applications.length})
+        </span>
+      </div>
+      <div className="space-y-2">
+        {applications.map((app: any) => {
+          const status = app.application_status || "APPLIED";
+          const isShortlisted = status === "SHORTLISTED";
+          const isRejected = status === "REJECTED";
+
+          return (
+            <div
+              key={app.application_id}
+              className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white p-3.5 shadow-sm transition-all hover:border-zinc-300"
+            >
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <h4 className="text-sm font-semibold text-zinc-900">
+                    {app.vacancy_title}
+                  </h4>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold border ${
+                      isShortlisted
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : isRejected
+                        ? "bg-rose-50 text-rose-700 border-rose-200"
+                        : "bg-blue-50 text-blue-700 border-blue-200"
+                    }`}
+                  >
+                    {status}
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-500">
+                  {app.department_name ? `${app.department_name} · ` : ""}
+                  Applied: {app.applied_at ? new Date(app.applied_at).toLocaleDateString() : "Recently"}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onAction?.(`What is the status of my ${app.vacancy_title} application?`)}
+                className="shrink-0 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors"
+              >
+                Status Details
+              </button>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
