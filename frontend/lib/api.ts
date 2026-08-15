@@ -76,6 +76,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE_URL}${path}`, { headers, ...init });
   if (!res.ok) await parseError(res);
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as unknown as T;
+  }
   return (await res.json()) as T;
 }
 
