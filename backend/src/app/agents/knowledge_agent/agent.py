@@ -17,6 +17,10 @@ answer generation). Its added value here:
   coverage, PII, sensitive topics, optional judge) runs on the completed
   answer; blocks become honest refusals, and a flagged answer gets one
   repair pass with a strict citation prompt.
+- *Balance reconciliation*: for balance-relevant employee questions, the
+  real leave balance is fetched from the leave system and appended to the
+  policy answer deterministically (see ``_employee_balance_block``) — the
+  policy number and the employee's actual remaining days travel together.
 
 No ReAct tool loop for v1: the node calls the service directly. Tools stay
 available for future multi-hop search needs, but they would add latency and
@@ -33,6 +37,14 @@ from langchain_core.messages import AIMessage, BaseMessage
 
 from app.agents.context import history_text
 from app.agents.knowledge_agent.prompts import REPAIR_SYSTEM, REWRITE_SYSTEM
+from app.agents.leave_agent.tools import (
+    ToolError,
+    format_tool_result,
+    get_leave_balance,
+    mentioned_leave_type,
+)
+from app.capabilities.leave import LeaveService
+from app.contracts.auth import UserContext
 from app.knowledge.contracts import Citation, KnowledgeResult
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.interfaces import LLM
@@ -50,6 +62,95 @@ _REFUSAL_PHRASES = (
     "not enough information",
     "insufficient information",
 )
+
+# ---- current-balance enrichment (policy + real balance reconciliation) ----
+#
+# "how many sick days do I get" is answered from the policy docs (entitlement
+# numbers), but the employee's ACTUAL remaining balance lives in the leave
+# system. On a balance-relevant employee question the real balance is fetched
+# from the leave service and both (a) injected into the generation context
+# and (b) appended to the final answer deterministically — formatted exactly
+# like the leave agent's own balance reply, so the two agents never disagree
+# about numbers.
+
+_BALANCE_LEAVE_WORDS = (
+    "leave",
+    "balance",
+    "time off",
+    "days off",
+    "vacation",
+    "holiday",
+    "holidays",
+    "pto",
+    "absence",
+    "absences",
+    "sick days",
+)
+_BALANCE_ASK_PHRASES = (
+    "how many",
+    "how much",
+    "balance",
+    "remaining",
+    "left",
+    "entitled",
+    "entitlement",
+    "available",
+    "do i have",
+    "do i get",
+    "days do i",
+    "get",
+)
+
+# Label used when the balance is injected into the generation context: it is
+# authoritative for numbers but NOT part of the citation set — the LLM must
+# never attach [N] markers to balance numbers (they are not retrieved
+# evidence), or the claim-tracking pass would flag them.
+_BALANCE_PROMPT_LABEL = (
+    "CURRENT LEAVE BALANCE (authoritative, from the leave system — NOT part "
+    "of the citation set; never attach [N] markers to balance numbers):"
+)
+
+
+def balance_relevant(query: str) -> bool:
+    """Is this query about leave amounts the employee actually has?
+
+    Balance/entitlement phrasing ("how many", "how much", "balance",
+    "remaining", "entitled", ...) combined with leave vocabulary marks a
+    question where the employee's real balance is a useful, authoritative
+    addition to the policy answer. Purely definitional or procedural
+    questions ("what is the carryover policy?", "when can I take leave?") do
+    not qualify.
+    """
+    lowered = query.lower()
+    if not any(word in lowered for word in _BALANCE_LEAVE_WORDS):
+        return False
+    return any(phrase in lowered for phrase in _BALANCE_ASK_PHRASES)
+
+
+def _employee_balance_block(
+    actor: UserContext | None,
+    leave_service: LeaveService | None,
+    query: str,
+) -> str | None:
+    """The employee's real leave balance as a plain-text block, or None.
+
+    Only for EMPLOYEE actors on balance-relevant queries; any failure (no
+    balance rows, role gate, service error) yields None — the policy answer
+    is never held hostage to the balance lookup.
+    """
+    if actor is None or leave_service is None or actor.coarse_role != "EMPLOYEE":
+        return None
+    if not balance_relevant(query):
+        return None
+    try:
+        mentioned = mentioned_leave_type(leave_service, query)
+        result = get_leave_balance(leave_service, actor, leave_type_name=mentioned)
+    except ToolError:
+        return None
+    if not result:
+        return None
+    return format_tool_result("get_leave_balance", result)
+
 
 # The honest refusal used whenever the assistant must not answer: low
 # confidence, empty evidence, or a BLOCK verdict from the safety pipeline.
@@ -205,6 +306,8 @@ async def stream_knowledge_turn(
     writer: Callable[[dict], None],
     guard: ResponseGuard | None = None,
     history_max_tokens: int = 800,
+    actor: UserContext | None = None,
+    leave_service: LeaveService | None = None,
 ) -> dict:
     """Run one knowledge turn, streaming events through ``writer``.
 
@@ -217,13 +320,27 @@ async def stream_knowledge_turn(
     Returns the state update for the supervisor graph: the final answer, the
     VERIFIED citations (only those the answer actually cited), confidence,
     agent, the safety verdict, and the final AIMessage.
+
+    ``actor`` + ``leave_service`` enable balance reconciliation: on a
+    balance-relevant employee question the real balance is appended to the
+    policy answer deterministically (and injected into the generation
+    context) — see ``_employee_balance_block``.
     """
     rewritten = await rewrite_query(llm, query, history)
     result = await service.retrieve(rewritten)
     writer({"type": "retrieval", "rewritten_query": rewritten, "result": result})
 
+    history_block = history_text(history, max_tokens=history_max_tokens)
+    balance_block = _employee_balance_block(actor, leave_service, query)
+    if balance_block:
+        history_block = f"{history_block}\n\n{_BALANCE_PROMPT_LABEL}\n{balance_block}"
+
     if result.low_confidence or not result.citations:
         message = fallback_message(KnowledgeTurn(query, rewritten, result, None))
+        if balance_block:
+            # No policy evidence, but the real balance is still a true answer
+            # to the balance half of the question — append it to the refusal.
+            message = f"{message}\n\n{balance_block}"
         writer({"type": "message", "text": message})
         return {
             "messages": [AIMessage(content=message)],
@@ -235,7 +352,6 @@ async def stream_knowledge_turn(
             "safety": GuardVerdict.PASS.value,
         }
 
-    history_block = history_text(history, max_tokens=history_max_tokens)
     draft = ""
     async for token in service.stream_answer(rewritten, result, history=history_block):
         draft += token
@@ -248,6 +364,10 @@ async def stream_knowledge_turn(
     message, citations, safety = await _track_and_guard(
         llm, rewritten, result, history_block, draft, guard
     )
+    if balance_block:
+        # Deterministic reconciliation: the policy answer above, the real
+        # balance below — formatted exactly like the leave agent's reply.
+        message = f"{message}\n\n{balance_block}"
 
     return {
         "messages": [AIMessage(content=message)],

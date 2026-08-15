@@ -200,6 +200,20 @@ class CorsSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CORS_")
 
 
+class RedisSettings(BaseSettings):
+    """Optional Redis connection for the chat session store.
+
+    When ``url`` is set, the leave agent's session store is Redis-backed so
+    staged confirmations and the execution claim are shared across worker
+    processes (the atomic claim becomes a real cross-process lock). Unset
+    keeps the in-memory per-process store (single-worker deployments).
+    """
+
+    url: str | None = None  # e.g. redis://localhost:6379/0
+
+    model_config = SettingsConfigDict(env_prefix="REDIS_", extra="ignore")
+
+
 class AppSettings(BaseSettings):
     """Top-level settings: aggregates all groups and global flags."""
 
@@ -217,6 +231,7 @@ class AppSettings(BaseSettings):
     minio: MinioSettings = MinioSettings()
     smtp: SmtpSettings = SmtpSettings()
     chat: ChatSettings = ChatSettings()
+    redis: RedisSettings = RedisSettings()
     ingestion: IngestionSettings = IngestionSettings()
     output_safety: OutputSafetySettings = OutputSafetySettings()
     cors: CorsSettings = CorsSettings()

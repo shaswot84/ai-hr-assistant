@@ -29,6 +29,8 @@ from app.agents.leave_agent.tools import (
     get_leave_balance,
     hr_pending_request_lines,
     list_leave_requests,
+    list_leave_types,
+    list_my_leave_requests,
     mentioned_leave_type,
     pending_request_lines,
     preflight_cancel,
@@ -86,6 +88,16 @@ async def handle_turn(
     understand "tomorrow".
     """
     clock = clock or get_clock()
+
+    intercepted = _intercept_list_requests(state, service, actor, user_message, clock=clock)
+    if intercepted is not None:
+        state.add_turn("employee", user_message, clock=clock)
+        return intercepted
+
+    intercepted = _intercept_types_question(state, service, actor, user_message, clock=clock)
+    if intercepted is not None:
+        state.add_turn("employee", user_message, clock=clock)
+        return intercepted
 
     intercepted = _intercept_draft_turn(state, service, actor, user_message, clock=clock)
     if intercepted is not None:
@@ -175,6 +187,109 @@ def _reply(
     return AgentTurnResult(reply=text, tool_called=tool_called, tool_result=tool_result, raw_model_action=raw_model_action)
 
 
+# ---- deterministic list flows (requests / leave types) --------------------
+#
+# "show my leave requests" and "which leave types can I request" are answered
+# from the REAL data without the model: the near-identical list tools
+# (list_my_leave_requests vs list_leave_requests) and the type list are never
+# left to the model to pick between, and these flows keep working even when
+# the chat model is unreachable.
+
+_LIST_MY_REQUESTS_PHRASES = (
+    "my request",
+    "my requests",
+    "my leave request",
+    "my leave requests",
+    "my pending",
+    "my history",
+)
+_TYPES_QUESTION_PHRASES = ("leave type", "types of leave", "which leaves", "what leaves")
+
+
+def _is_list_my_requests(user_message: str) -> bool:
+    """Is this employee message asking to SEE their own leave requests?
+
+    Self-scoped ("my requests") so an HR "show me all leave requests" keeps
+    the manager flow. Write intents (cancel / decide / approve) are excluded
+    — they belong to the reference-write interception.
+    """
+    lowered = user_message.lower()
+    has_request_scope = any(phrase in lowered for phrase in _LIST_MY_REQUESTS_PHRASES)
+    has_write_intent = (
+        any(word in lowered for word in _CANCEL_INTENT_WORDS)
+        or any(word in lowered for word in _DECIDE_INTENT_WORDS)
+        or "approve" in lowered
+    )
+    return has_request_scope and not has_write_intent
+
+
+def _is_types_question(user_message: str) -> bool:
+    """Is this a direct question about which leave types EXIST?
+
+    A listing ask ("which leave types can I request?") — not a request start
+    ("i want to apply for annual leave") and not a definition question
+    ("what is annual leave?"). The "leave type(s)" wording is specific
+    enough that a bare request start never matches.
+    """
+    lowered = user_message.lower()
+    mentions_types = any(phrase in lowered for phrase in _TYPES_QUESTION_PHRASES)
+    # A request start naming a specific type is not a types question; only
+    # an explicitly ask-for-the-list framing counts ("which/what/list/
+    # available/are").
+    request_start_without_listing = _is_request_intent(lowered) and not any(
+        word in lowered for word in ("which", "what", "list", "available", "are")
+    )
+    return mentions_types and not request_start_without_listing
+
+
+def _intercept_list_requests(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    user_message: str,
+    *,
+    clock: Clock,
+) -> AgentTurnResult | None:
+    """Answer "show my leave requests" deterministically from the real data."""
+    if actor.coarse_role != "EMPLOYEE":
+        return None
+    if not _is_list_my_requests(user_message):
+        return None
+    try:
+        result = list_my_leave_requests(service, actor)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock)
+    text = format_tool_result("list_my_leave_requests", result)
+    return _reply(
+        state, text, clock=clock,
+        tool_called="list_my_leave_requests", tool_result=result,
+    )
+
+
+def _intercept_types_question(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    user_message: str,
+    *,
+    clock: Clock,
+) -> AgentTurnResult | None:
+    """Answer "which leave types can I request?" deterministically."""
+    if actor.coarse_role != "EMPLOYEE":
+        return None
+    if not _is_types_question(user_message):
+        return None
+    try:
+        result = list_leave_types(service, actor)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock)
+    text = format_tool_result("list_leave_types", result)
+    return _reply(
+        state, text, clock=clock,
+        tool_called="list_leave_types", tool_result=result,
+    )
+
+
 # ---- deterministic request-draft flow -------------------------------------
 #
 # The model is not trusted with dates. These functions resolve relative
@@ -191,6 +306,10 @@ _DRAFT_CANCEL_WORDS = (
     "scratch that",
     "cancel that",
     "drop it",
+    "on second thought",
+    "scratch it",
+    "forget about it",
+    "never mind that",
 )
 
 
@@ -289,15 +408,31 @@ def _stage_draft(
 
 _BALANCE_ASK_WORDS = ("balance", "remaining", "left", "how much", "do i have")
 
+# Possessive leave-noun phrases that read as balance asks when no request
+# wording is present: "show my pto" / "my time off" are balance asks, while
+# "can I book my time off" / "I want to use my annual leave" stay requests.
+_BALANCE_POSSESSIVE_PHRASES = (
+    "my leave",
+    "my pto",
+    "my time off",
+    "my vacation",
+    "my holiday",
+    "my annual leave",
+    "my sick leave",
+    "my casual leave",
+    "my unpaid leave",
+)
+
 
 def _is_balance_ask(user_message: str) -> bool:
     """Is this employee message asking for their OWN leave balance?
 
     Balance words ("balance", "remaining", "left", "how much", "do i have")
-    count at face value unless the message is about requests; the bare
-    "get my leave" (no "request") is a balance ask too, never a request
-    start. Never true for request/listing asks ("show my leave requests",
-    "can i get leave?").
+    count at face value unless the message is about requests; possessive
+    leave phrasing ("my pto", "my time off") is a balance ask too unless
+    the message also starts a request ("can I book my time off") — except
+    "get my leave", the existing bare balance ask. Never true for
+    request/listing asks ("show my leave requests", "can i get leave?").
     """
     lowered = user_message.lower()
     if "request" in lowered:
@@ -309,6 +444,11 @@ def _is_balance_ask(user_message: str) -> bool:
         return False
     if any(word in lowered for word in _BALANCE_ASK_WORDS):
         return True
+    if any(phrase in lowered for phrase in _BALANCE_POSSESSIVE_PHRASES):
+        request_wording = any(
+            word in lowered for word in _REQUEST_INTENT_WORDS if word != "get"
+        )
+        return not request_wording
     return "get" in lowered and "my leave" in lowered
 
 
@@ -872,6 +1012,11 @@ _REQUEST_INTENT_WORDS = (
     "get",
     "take",
     "avail",
+    "i'd like",
+    "id like",
+    "can i have",
+    "go on leave",
+    "going on leave",
 )
 
 

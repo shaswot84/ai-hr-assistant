@@ -433,6 +433,7 @@ export type ChatStreamEvent =
       citations: ChatCitation[];
       confidence: number;
       low_confidence: boolean;
+      confidence_applicable: boolean;
       agent: string;
     }
   | { type: "error"; detail: string };

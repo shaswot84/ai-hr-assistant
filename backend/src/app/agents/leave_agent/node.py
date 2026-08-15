@@ -73,9 +73,23 @@ def make_leave_node(
         if leave_state is None:
             leave_state = _restore_or_create(actor, store, conversation_id)
 
+        # Bind the store-backed execution claim for this turn: a confirmed
+        # write is claimed atomically per session (in-memory set, or a Redis
+        # SET NX EX lock when REDIS_URL is configured) so two workers can
+        # never both execute the same confirmation.
+        leave_state.bind_claim(
+            lambda: store.begin_execution(conversation_id),
+            lambda: store.end_execution(conversation_id),
+        )
+
         result = await _run_turn(actor, chat_provider, leave_state, state, writer, leave_service)
 
         _persist_workflow(actor, conversation_id, leave_state)
+        # The working slice (history included) goes back to the store: for
+        # Redis this is what lets a turn landing on another worker see the
+        # same conversation memory; for the in-memory store it is a no-op
+        # re-put of the same shared object.
+        store.put(leave_state)
         return result
 
     return leave_node

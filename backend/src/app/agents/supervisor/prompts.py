@@ -8,9 +8,15 @@ Reply with ONLY one of these words, nothing else:
 
 - knowledge — questions about HR policy, procedures, guidelines, benefits,
   insurance, onboarding, payroll, company documents, or anything answerable
-  from the company knowledge base.
-- leave — anything about leave: requesting leave, leave balances, annual,
-  sick, or casual leave, leave approvals, holidays, time off, absences.
+  from the company knowledge base. This includes LEAVE POLICY and
+  DEFINITION questions: "what is the annual leave policy?", "how does sick
+  leave accrual work?", "am I entitled to casual leave?" — knowledge
+  questions even though they mention leave, and so is a bare definition
+  like "what is annual leave?".
+- leave — anything about the caller's own leave ACTIONS: requesting leave,
+  leave balances, applying, cancelling, leave approvals, holidays, time off,
+  absences. "what is my annual leave balance?" is leave, not a definition
+  question.
 - recruitment — anything about jobs: vacancies, applying, hiring, interviews,
   resumes, applications, career questions.
 - clarify — the message is too ambiguous to route confidently, is a greeting

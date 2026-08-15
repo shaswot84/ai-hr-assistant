@@ -25,20 +25,28 @@ class OllamaChatProvider(ChatProvider):
         api_base: str | None = None,
         model: str | None = None,
         api_key: str | None = None,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
         """Load endpoint, model, key, and timeout, preferring any given overrides.
 
-        `None` means "no override was given" (fall back to the .env-configured
-        default); an empty string is a real, explicit override (a manager
+        `None` means "no override was given" (fall back to chat settings, or LLM
+        settings); an empty string is a real, explicit override (a manager
         cleared the field in Settings) and must be honored as blank rather
-        than silently falling back — `or` can't tell those two cases apart
-        since `""` and `None` are both falsy.
+        than silently falling back. ``client`` is a test injection point
+        (defaults to a per-call AsyncClient).
         """
         self._settings = get_settings()
-        self._base = (self._settings.chat.api_base if api_base is None else api_base).removesuffix("/")
-        self._model = self._settings.chat.model if model is None else model
-        self._api_key = self._settings.chat.api_key if api_key is None else api_key
-        self._timeout = self._settings.chat.request_timeout
+        chat = self._settings.chat
+        llm = self._settings.llm
+        default_base = chat.api_base or llm.url
+        default_model = chat.model or llm.model
+        default_key = chat.api_key or llm.api_key
+
+        self._base = (default_base if api_base is None else api_base).removesuffix("/")
+        self._model = default_model if model is None else model
+        self._api_key = default_key if api_key is None else api_key
+        self._timeout = chat.request_timeout
+        self._client = client
 
     def is_configured(self) -> bool:
         """Return True if a real (non-placeholder) Ollama API key is present."""
@@ -72,7 +80,7 @@ class OllamaChatProvider(ChatProvider):
         }
         headers = {"Authorization": f"Bearer {self._api_key}"}
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with self._client or httpx.AsyncClient(timeout=self._timeout) as client:
                 res = await client.post(url, json=payload, headers=headers)
         except httpx.TimeoutException as err:
             raise ChatProviderError("The AI scoring request timed out.") from err

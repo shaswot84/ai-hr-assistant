@@ -22,7 +22,10 @@ turns — durability lives in the conversation tables.
 - The leave node is the real Leave Agent dispatch loop when the chat layer
   wires its deps (actor, session store, chat provider); otherwise an honest
   stub until that wiring lands (tests / pre-wiring callers).
-- Recruitment and clarify remain placeholders.
+- The recruitment node answers the read paths (vacancies, applications)
+  deterministically from the real service; write paths needing resume
+  upload / UUID references defer honestly to the portal.
+- Clarify remains a placeholder.
 """
 
 from __future__ import annotations
@@ -34,16 +37,18 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import StreamWriter
 
-from app.agents.knowledge_agent.agent import stream_knowledge_turn
+from app.agents.knowledge_agent.agent import balance_relevant, stream_knowledge_turn
 from app.agents.leave_agent.node import make_leave_node
 from app.agents.leave_agent.state import SessionStore
-from app.agents.recruitment_agent.agent import make_recruitment_node
+from app.agents.recruitment_agent.node import make_recruitment_node
 from app.agents.supervisor.clarify import make_clarify_node
 from app.agents.supervisor.recap import make_recap_node, route_history_question
 from app.agents.supervisor.route_intent import route_intent
 from app.agents.supervisor.state import SupervisorState
 from app.capabilities.leave import LeaveService
+from app.capabilities.recruitment import RecruitmentService
 from app.contracts.auth import UserContext
+from app.db.sync_session import SessionLocal
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.interfaces import LLM
 from app.model_gateway.provider import ChatProvider
@@ -84,16 +89,48 @@ def make_route_node(llm: LLM | None):
     return route_node
 
 
-def make_knowledge_node(llm: LLM | None, service: KnowledgeService, guard: ResponseGuard | None = None):
+def make_knowledge_node(
+    llm: LLM | None,
+    service: KnowledgeService,
+    guard: ResponseGuard | None = None,
+    *,
+    actor: UserContext | None = None,
+    leave_service: LeaveService | None = None,
+):
     """Answer the current question from the knowledge base (rewrite + RAG).
 
     Streams retrieval/token events through LangGraph's ``writer`` so the chat
     endpoint can forward them as SSE while the node still returns the full
     state update for persistence. ``guard`` is the output-safety pipeline
     applied to the completed answer (claim tracking + evidence gating).
+
+    ``actor`` (+ optional ``leave_service``) enable balance reconciliation:
+    on a balance-relevant employee question the REAL leave balance is fetched
+    (a request-scoped ``LeaveService`` on the sync session when none is
+    injected, mirroring the leave node) and appended to the policy answer —
+    see ``knowledge_agent.agent._employee_balance_block``.
     """
 
     async def knowledge_node(state: SupervisorState, writer: StreamWriter) -> dict:
+        balance_service = leave_service
+        if (
+            balance_service is None
+            and actor is not None
+            and actor.coarse_role == "EMPLOYEE"
+            and balance_relevant(state["current_query"])
+        ):
+            with SessionLocal() as db:
+                balance_service = LeaveService(db)
+                return await stream_knowledge_turn(
+                    service=service,
+                    llm=llm,
+                    query=state["current_query"],
+                    history=state.get("messages", []),
+                    writer=writer,
+                    guard=guard,
+                    actor=actor,
+                    leave_service=balance_service,
+                )
         return await stream_knowledge_turn(
             service=service,
             llm=llm,
@@ -101,6 +138,8 @@ def make_knowledge_node(llm: LLM | None, service: KnowledgeService, guard: Respo
             history=state.get("messages", []),
             writer=writer,
             guard=guard,
+            actor=actor,
+            leave_service=balance_service,
         )
 
     return knowledge_node
@@ -138,6 +177,10 @@ def build_supervisor_graph(
     leave_store: SessionStore | None = None,
     leave_chat_provider: ChatProvider | None = None,
     leave_service: LeaveService | None = None,
+    knowledge_actor: UserContext | None = None,
+    knowledge_leave_service: LeaveService | None = None,
+    recruitment_actor: UserContext | None = None,
+    recruitment_service: RecruitmentService | None = None,
 ) -> CompiledStateGraph:
     """Assemble the supervisor graph with the given LLM, knowledge service,
     and safety guard.
@@ -145,11 +188,21 @@ def build_supervisor_graph(
     The leave agent is the real dispatch loop when the chat layer wires
     ``leave_actor``/``leave_store``/``leave_chat_provider`` (all three);
     otherwise the leave node is an honest stub. ``leave_service`` is an
-    optional test injection point.
+    optional test injection point. ``knowledge_actor`` (+ optional
+    ``knowledge_leave_service``) enable the knowledge node's balance
+    reconciliation for employees. ``recruitment_actor`` (+ optional
+    ``recruitment_service``) wire the deterministic recruitment node
+    (read paths + honest deferrals); without an actor the node still answers
+    vacancy questions from the real service.
     """
     builder = StateGraph(SupervisorState)
     builder.add_node("route", make_route_node(llm))
-    builder.add_node("knowledge", make_knowledge_node(llm, knowledge_service, guard))
+    builder.add_node(
+        "knowledge",
+        make_knowledge_node(
+            llm, knowledge_service, guard, actor=knowledge_actor, leave_service=knowledge_leave_service
+        ),
+    )
     if leave_actor is not None and leave_store is not None and leave_chat_provider is not None:
         builder.add_node(
             "leave",
@@ -162,7 +215,10 @@ def build_supervisor_graph(
         )
     else:
         builder.add_node("leave", _leave_stub_node())
-    builder.add_node("recruitment", make_recruitment_node())
+    builder.add_node(
+        "recruitment",
+        make_recruitment_node(actor=recruitment_actor, service=recruitment_service),
+    )
     builder.add_node("clarify", make_clarify_node())
     builder.add_node("recap", make_recap_node(llm))
     builder.add_edge(START, "route")

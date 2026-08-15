@@ -323,6 +323,7 @@ export interface ChatResponse {
   confidence: number;
   low_confidence: boolean;
   agent: string; // knowledge | leave | recruitment | clarify
+  confidence_applicable: boolean; // false for non-retrieval agents
 }
 
 export interface ChatConversation {
@@ -341,6 +342,7 @@ export interface ChatMessage {
     agent?: string;
     confidence?: number;
     low_confidence?: boolean;
+    confidence_applicable?: boolean;
     safety?: "PASS" | "REDACTED" | "BLOCKED" | "FLAGGED_FOR_REVIEW";
   } | null;
   created_at: string;

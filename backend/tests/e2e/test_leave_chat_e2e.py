@@ -413,7 +413,8 @@ async def test_ambiguous_message_does_not_dump_type_list(db, manager_context, em
 @pytest.mark.asyncio
 async def test_types_question_list_is_the_answer(db, manager_context, employee_context):
     """A direct question about types is answered by the list itself — no
-    'which type' follow-up, no draft."""
+    'which type' follow-up, no draft, and NO model (the list is
+    deterministic now)."""
     svc = LeaveService(db)
     _create_leave_type(svc, manager_context, name="Annual Leave")
     _create_leave_type(svc, manager_context, name="Sick Leave")
@@ -421,7 +422,7 @@ async def test_types_question_list_is_the_answer(db, manager_context, employee_c
 
     state = await harness.turn("which leave types are there")
 
-    assert harness.provider.calls == 1
+    assert harness.provider.calls == 0
     assert "Available leave types:" in state["answer"]
     assert "Which leave type would you like to take?" not in state["answer"]
     assert _workflow_row(db, harness.conversation_id, employee_context) is None
@@ -763,7 +764,12 @@ async def test_ambiguous_message_routes_to_clarify():
 @pytest.mark.asyncio
 async def test_no_llm_heuristic_routing():
     graph = build_supervisor_graph(llm=None, knowledge_service=FakeKnowledgeService(make_result()))
+    # Definition/policy questions about leave go to the knowledge agent even
+    # with no LLM — the KB answers them, the transactional leave agent can't.
     state = await graph.ainvoke({"messages": [], "current_query": "what is annual leave"})
+    assert state["agent"] == "knowledge"
+    # Transactional leave asks still route to the leave agent.
+    state = await graph.ainvoke({"messages": [], "current_query": "my annual leave balance"})
     assert state["agent"] == "leave"
     state = await graph.ainvoke({"messages": [], "current_query": "what is the dress code"})
     assert state["agent"] == "knowledge"
