@@ -608,6 +608,48 @@ async def test_chat_stream_claim_tracking_repairs_uncited_answer(chat_env, monke
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_recap_persists_answer(chat_env):
+    """A thread-recap turn ("summarize this chat:") is a terminal route whose
+    answer must be captured and persisted — not an empty reply.
+
+    Regression: "recap" was missing from the chat layer's terminal-node list,
+    so the stream never captured the recap node's state update; an empty
+    assistant message was persisted and streamed, which after a page refresh
+    rendered as a stuck "generating" indicator forever.
+    """
+    first = await chat_env.client.post(
+        "/api/chat", json={"message": "What is the annual leave policy?"}
+    )
+    conversation_id = first.json()["conversation_id"]
+
+    async with chat_env.client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={"conversation_id": conversation_id, "message": "summarize this chat:"},
+    ) as resp:
+        events = await _sse_events(resp)
+
+    types = [e["type"] for e in events]
+    assert types == ["turn_started", "route", "message", "done"]
+    assert events[1]["route"] == "recap"
+
+    streamed = events[2]["text"]
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["message"] == streamed
+    assert done["message"], "the recap answer must not be empty"
+    assert done["agent"] == "recap"
+
+    # The streamed answer is persisted, not an empty placeholder.
+    async with chat_env.factory() as session:
+        messages = await ConversationRepo(session).list_messages(uuid.UUID(conversation_id))
+        assert [m.role for m in messages] == ["user", "assistant", "user", "assistant"]
+        assert messages[-1].content == streamed
+        assert messages[-1].content, "the persisted recap must not be empty"
+        assert messages[-1].meta["agent"] == "recap"
+
+
+@pytest.mark.asyncio
 async def test_chat_requires_auth(monkeypatch):
     """Without a token the route rejects the request before any work happens."""
     engine = create_async_engine(

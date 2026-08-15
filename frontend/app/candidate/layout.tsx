@@ -8,10 +8,61 @@ import { getAuthToken } from "@/lib/auth";
 import type { UserContext } from "@/lib/types";
 import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
+import { SidebarProvider, useSidebar } from "@/components/sidebar-provider";
 import { Spinner } from "@/components/loading";
 
 function isPublicPath(pathname: string): boolean {
   return pathname === "/candidate" || pathname.startsWith("/candidate/vacancies/");
+}
+
+/**
+ * The signed-in candidate shell (sidebar + top bar + scrollable main). A
+ * child of SidebarProvider so the nav rail can be collapsed and the content
+ * then takes the full width (ChatGPT-style).
+ */
+function CandidateShell({
+  user,
+  mobileNavOpen,
+  setMobileNavOpen,
+  children,
+}: {
+  user: UserContext;
+  mobileNavOpen: boolean;
+  setMobileNavOpen: (open: boolean) => void;
+  children: React.ReactNode;
+}) {
+  const pathname = usePathname();
+  const { collapsed } = useSidebar();
+
+  // With the sidebar collapsed the chatbot page goes full-bleed (ChatGPT-style
+  // full-screen chat): no padding, full width and height.
+  const chatbotFullBleed = collapsed && pathname === "/candidate/chatbot";
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-zinc-50">
+      <Sidebar
+        role="CANDIDATE"
+        user={user}
+        mobileOpen={mobileNavOpen}
+        onCloseMobile={() => setMobileNavOpen(false)}
+      />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Header user={user} onMenuClick={() => setMobileNavOpen(true)} />
+        <main className="flex-1 overflow-y-auto">
+          <div
+            key={pathname}
+            className={`animate-fade-in mx-auto w-full ${
+              chatbotFullBleed
+                ? "h-full p-0"
+                : `px-4 py-6 sm:px-6 lg:px-8 lg:py-8 ${collapsed ? "max-w-none" : "max-w-[1600px]"}`
+            }`}
+          >
+            {children}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -85,25 +136,15 @@ export default function CandidateLayout({ children }: { children: React.ReactNod
 
   if (user) {
     return (
-      <div className="flex h-screen overflow-hidden bg-zinc-50">
-        <Sidebar
-          role="CANDIDATE"
+      <SidebarProvider>
+        <CandidateShell
           user={user}
-          mobileOpen={mobileNavOpen}
-          onCloseMobile={() => setMobileNavOpen(false)}
-        />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <Header user={user} onMenuClick={() => setMobileNavOpen(true)} />
-          <main className="flex-1 overflow-y-auto">
-            <div
-              key={pathname}
-              className="animate-fade-in mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8"
-            >
-              {children}
-            </div>
-          </main>
-        </div>
-      </div>
+          mobileNavOpen={mobileNavOpen}
+          setMobileNavOpen={setMobileNavOpen}
+        >
+          {children}
+        </CandidateShell>
+      </SidebarProvider>
     );
   }
 

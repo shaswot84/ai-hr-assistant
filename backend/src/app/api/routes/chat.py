@@ -67,8 +67,10 @@ ALL_ROLES = ("HR_ADMIN", "EMPLOYEE", "CANDIDATE")
 _TITLE_MAX = 80
 
 # Terminal nodes in the supervisor graph — their state update is the final
-# answer the chat layer persists.
-_TERMINAL_NODES = ("knowledge", "leave", "recruitment", "clarify")
+# answer the chat layer persists. Must mirror the graph's END edges exactly
+# (see build_supervisor_graph): missing one means its answer is never
+# captured, so an empty reply gets persisted and streamed.
+_TERMINAL_NODES = ("knowledge", "leave", "recruitment", "clarify", "recap")
 
 # Bounded history window fed to the graph per turn, measured in tokens
 # (deterministic 4-characters-per-token estimate), not message count — the

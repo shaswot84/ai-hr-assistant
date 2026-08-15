@@ -1,14 +1,10 @@
-import { PageHeader } from "@/components/page-header";
-import { AssistantChat } from "@/components/assistant-chat";
+import { ChatbotPage } from "@/components/chatbot-page";
 
 export default function CandidateChatbotPage() {
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Assistant Chatbot"
-        description="Ask about your application, the hiring process, or company policies."
-      />
-      <AssistantChat />
-    </div>
+    <ChatbotPage
+      title="Assistant Chatbot"
+      description="Ask about your application, the hiring process, or company policies."
+    />
   );
 }
