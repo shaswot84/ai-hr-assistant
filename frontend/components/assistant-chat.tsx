@@ -204,10 +204,12 @@ export function AssistantChat() {
   const [streaming, setStreaming] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const skipHistoryFetchRef = useRef<string | null>(null);
+  const historyRef = useRef<HTMLDivElement | null>(null);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -221,6 +223,25 @@ export function AssistantChat() {
   useEffect(() => {
     refreshConversations();
   }, [refreshConversations]);
+
+  // Close the collapsed-toolbar history dropdown on outside click / Escape.
+  useEffect(() => {
+    if (!historyOpen) return;
+    function onPointerDown(e: MouseEvent | TouchEvent) {
+      if (historyRef.current && !historyRef.current.contains(e.target as Node)) {
+        setHistoryOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setHistoryOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [historyOpen]);
 
   useEffect(() => {
     if (!activeId) {
@@ -495,13 +516,16 @@ export function AssistantChat() {
 
       {/* Chat thread */}
       <section className="flex min-w-0 flex-1 flex-col">
-        {/* Desktop: keep "New chat" reachable when the conversation rail is
+        {/* Desktop: keep chat actions reachable when the conversation rail is
             collapsed (portal sidebar closed). */}
         {collapsed && (
-          <div className="hidden items-center gap-2 border-b border-zinc-200 px-3 py-2 lg:flex">
+          <div ref={historyRef} className="relative hidden items-center gap-2 border-b border-zinc-200 px-3 py-2 lg:flex">
             <button
               type="button"
-              onClick={newChat}
+              onClick={() => {
+                setHistoryOpen(false);
+                newChat();
+              }}
               disabled={streaming}
               className="btn-primary"
             >
@@ -510,28 +534,126 @@ export function AssistantChat() {
               </svg>
               New chat
             </button>
+
+            <button
+              type="button"
+              onClick={() => setHistoryOpen((o) => !o)}
+              disabled={streaming}
+              aria-haspopup="listbox"
+              aria-expanded={historyOpen}
+              title="Conversation history"
+              className="ml-auto inline-flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <svg className="h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <span className="truncate">
+                {activeId
+                  ? (conversations.find((c) => c.conversation_id === activeId)?.title ?? "Untitled chat")
+                  : "Conversation history"}
+              </span>
+              <svg className="h-3.5 w-3.5 shrink-0 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
             {activeId && (
-              <>
-                <span className="ml-auto truncate text-xs text-zinc-400">
-                  {conversations.find((c) => c.conversation_id === activeId)?.title ?? "Untitled chat"}
-                </span>
-                <button
-                  type="button"
-                  onClick={(e) => handleDeleteConversation(activeId, e)}
-                  title="Delete conversation"
-                  aria-label="Delete conversation"
-                  className="rounded p-2 text-zinc-500 hover:bg-zinc-100 hover:text-red-600"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                    />
-                  </svg>
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={(e) => {
+                  handleDeleteConversation(activeId, e);
+                  setHistoryOpen(false);
+                }}
+                title="Delete conversation"
+                aria-label="Delete conversation"
+                className="rounded p-2 text-zinc-500 hover:bg-zinc-100 hover:text-red-600"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                  />
+                </svg>
+              </button>
+            )}
+
+            {historyOpen && (
+              <div
+                role="listbox"
+                aria-label="Conversation history"
+                className="absolute left-0 top-full z-20 mt-1 w-80 overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-lg"
+              >
+                <div className="max-h-72 overflow-y-auto p-1.5">
+                  {conversations.length === 0 ? (
+                    <p className="px-3 py-6 text-center text-xs text-zinc-400">
+                      No conversations yet — ask your first question.
+                    </p>
+                  ) : (
+                    <ul className="space-y-0.5">
+                      {conversations.map((c) => {
+                        const isActive = c.conversation_id === activeId;
+                        return (
+                          <li key={c.conversation_id} className="group relative">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                selectConversation(c.conversation_id);
+                                setHistoryOpen(false);
+                              }}
+                              className={`w-full rounded-md px-2.5 py-2 pr-8 text-left transition-colors ${
+                                isActive
+                                  ? "bg-blue-600 text-white"
+                                  : "text-zinc-700 hover:bg-zinc-100"
+                              }`}
+                            >
+                              <span className="block truncate text-[13px] font-medium">
+                                {c.title ?? "Untitled chat"}
+                              </span>
+                              <span
+                                className={`block text-[11px] ${
+                                  isActive ? "text-blue-100" : "text-zinc-400"
+                                }`}
+                              >
+                                {conversationDate(c.updated_at)}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                handleDeleteConversation(c.conversation_id, e);
+                                setHistoryOpen(false);
+                              }}
+                              title="Delete conversation"
+                              aria-label="Delete conversation"
+                              className={`absolute right-1 top-1/2 -translate-y-1/2 rounded p-1 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 ${
+                                isActive
+                                  ? "text-blue-200 hover:bg-blue-700 hover:text-white"
+                                  : "text-zinc-400 hover:bg-zinc-200 hover:text-red-600"
+                              }`}
+                            >
+                              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                />
+                              </svg>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </div>
             )}
           </div>
         )}
