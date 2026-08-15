@@ -141,12 +141,24 @@ function MessageBubble({
         {message.content ? (
           <Markdown>{message.content}</Markdown>
         ) : (
-          !message.meta?.ui_widget && <span className="text-zinc-400">Thinking…</span>
+          !message.meta?.ui_widget && (
+            <span className="flex items-center gap-1 py-1" aria-label="Generating response">
+              <span className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400" />
+              <span
+                className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400"
+                style={{ animationDelay: "150ms" }}
+              />
+              <span
+                className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400"
+                style={{ animationDelay: "300ms" }}
+              />
+            </span>
+          )
         )}
         {message.streaming && message.content && (
           <span
             aria-hidden="true"
-            className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-[2px] bg-blue-500 align-text-bottom"
+            className="ml-0.5 inline-block h-3.5 w-[2px] animate-blink rounded-[1px] bg-blue-500 align-text-bottom"
           />
         )}
 
@@ -206,7 +218,7 @@ export function AssistantChat() {
   const [error, setError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
 
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const skipHistoryFetchRef = useRef<string | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
@@ -281,9 +293,29 @@ export function AssistantChat() {
     };
   }, [activeId]);
 
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight });
+  }, []);
+
+  const isNearBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
+
+  // Keep the newest content in view while tokens stream in (and settle at the
+  // bottom after history loads) — but never fight the user who scrolled up to
+  // re-read an earlier message.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streaming]);
+    if (isNearBottom()) scrollToBottom();
+  }, [messages, streaming, scrollToBottom, isNearBottom]);
+
+  // When a new answer starts generating, snap straight to it even if the user
+  // was reading at the top or middle of the thread (ChatGPT-style follow).
+  useEffect(() => {
+    if (streaming) scrollToBottom();
+  }, [streaming, scrollToBottom]);
 
   function selectConversation(id: string) {
     if (streaming) return;
@@ -693,7 +725,7 @@ export function AssistantChat() {
           )}
         </div>
 
-        <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
+        <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
           {messages.length === 0 && !loadingHistory && (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600 text-white">
@@ -730,7 +762,6 @@ export function AssistantChat() {
               disabled={streaming}
             />
           ))}
-          <div ref={bottomRef} />
         </div>
 
         {error && (
