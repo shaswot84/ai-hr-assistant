@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
+import Link from "next/link";
 import { api, ApiError } from "@/lib/api";
+import { getAuthToken, setAuthToken } from "@/lib/auth";
 
 // Inline SVG Icons
 function CalendarIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
@@ -1818,12 +1820,20 @@ function VacancyDetailWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 }
 
 /**
- * 11. Apply Vacancy Widget (In-Chat Resume Upload)
+ * 11. Apply Vacancy Widget (In-Chat Resume Upload & Candidate Setup)
  */
 function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const vacancyId = widget.vacancy_id;
   const vacancyTitle = widget.vacancy_title || "Position";
 
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => !!getAuthToken());
+  const [form, setForm] = useState({
+    first_name: "",
+    last_name: "",
+    email: "",
+    phone: "",
+    password: "",
+  });
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -1832,6 +1842,10 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 
   const allowedExts = [".pdf", ".docx"];
   const maxBytes = 10 * 1024 * 1024;
+
+  function setField(field: string, value: string) {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     setError(null);
@@ -1851,16 +1865,56 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file || !vacancyId) return;
+    if (!file || !vacancyId) {
+      setError("Please select a resume file.");
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
 
     try {
-      const res = await api.apply(vacancyId, file);
-      setSubmitted(true);
-      setAppId(res.application_id);
-      onAction?.(`I applied for ${vacancyTitle} with my resume (${file.name})`);
+      if (isLoggedIn) {
+        // Authenticated candidate flow
+        const res = await api.apply(vacancyId, file);
+        setSubmitted(true);
+        setAppId(res.application_id);
+        onAction?.(`I applied for ${vacancyTitle} with my resume (${file.name})`);
+      } else {
+        // Visitor setup -> evolve to registered candidate flow
+        if (form.password.length < 8) {
+          setError("Password must be at least 8 characters.");
+          setSubmitting(false);
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("first_name", form.first_name.trim());
+        formData.append("last_name", form.last_name.trim());
+        formData.append("email", form.email.trim());
+        if (form.phone.trim()) {
+          formData.append("phone", form.phone.trim());
+        }
+        formData.append("password", form.password);
+
+        const res = await api.applyAsNewCandidate(vacancyId, formData);
+
+        // Auto sign-in with newly created credentials
+        try {
+          const loginRes = await api.login(form.email.trim(), form.password);
+          setAuthToken(loginRes.access_token);
+          setIsLoggedIn(true);
+        } catch {
+          // Token setup fallback
+        }
+
+        setSubmitted(true);
+        setAppId(res.application_id);
+        onAction?.(
+          `I registered as ${form.first_name} ${form.last_name} and applied for ${vacancyTitle} with my resume (${file.name})`
+        );
+      }
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.detail);
@@ -1874,14 +1928,14 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 
   if (submitted) {
     return (
-      <div className="mt-3 w-full max-w-xl rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm space-y-2.5">
-        <div className="flex items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-600 text-white">
+      <div className="mt-3 w-full max-w-xl rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm space-y-3">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white shadow-xs">
             <CheckIcon className="h-4 w-4" />
           </div>
           <div>
-            <h4 className="text-sm font-semibold text-emerald-900">
-              Application Submitted Successfully!
+            <h4 className="text-sm font-bold text-emerald-900">
+              Application Submitted & Candidate Account Active!
             </h4>
             <p className="text-xs text-emerald-700">
               Role: <strong>{vacancyTitle}</strong>
@@ -1889,31 +1943,40 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
             </p>
           </div>
         </div>
+
         <p className="text-xs text-emerald-800 leading-relaxed">
-          Your resume has been uploaded and queued for AI screening. You will be notified of any updates.
+          Your credentials have been set up and your resume is now queued for AI screening.
+          You can track your progress right here in chat or visit your candidate portal anytime.
         </p>
-        <div className="pt-1 flex gap-2">
+
+        <div className="pt-1 flex flex-wrap gap-2">
           <button
             type="button"
             disabled={disabled}
             onClick={() => onAction?.("What is the status of my applications?")}
-            className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700 transition-colors"
+            className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 shadow-xs transition-colors"
           >
-            Check Application Status
+            Check Application Status in Chat
           </button>
+          <Link
+            href="/candidate/applications"
+            className="rounded-lg border border-emerald-300 bg-white px-3.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 transition-colors"
+          >
+            Open Candidate Dashboard
+          </Link>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="mt-3 w-full max-w-xl rounded-xl border border-zinc-200 bg-white p-4 shadow-sm space-y-3">
-      <div className="flex items-start justify-between gap-2 border-b border-zinc-100 pb-2.5">
+    <div className="mt-3 w-full max-w-xl rounded-xl border border-zinc-200 bg-white p-4 sm:p-5 shadow-sm space-y-4">
+      <div className="flex items-start justify-between gap-2 border-b border-zinc-100 pb-3">
         <div>
           <span className="text-[11px] font-bold text-blue-600 uppercase tracking-wider">
-            Apply via Chat
+            {isLoggedIn ? "Apply via Chat" : "Apply & Create Candidate Account"}
           </span>
-          <h3 className="text-sm font-bold text-zinc-900">
+          <h3 className="text-base font-bold text-zinc-900">
             {vacancyTitle}
           </h3>
           {widget.department_name && (
@@ -1922,50 +1985,144 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
             </p>
           )}
         </div>
+        <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-blue-700 border border-blue-100">
+          Open Role
+        </span>
       </div>
 
       <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-2.5 text-xs text-blue-900 space-y-1">
         <div className="flex items-center gap-1.5 font-semibold text-blue-800">
           <SparklesIcon className="h-3.5 w-3.5 text-blue-600" />
-          ATS-Friendly Resume Tip
+          ATS-Friendly Resume Screening
         </div>
         <p className="text-[11px] text-blue-700 leading-normal">
-          Upload a single-column, text-based PDF or DOCX for optimal screening score.
+          Upload a single-column, text-based PDF or DOCX resume for optimal screening analysis.
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-3">
-        <label className="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-zinc-300 bg-zinc-50/50 p-4 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/30">
-          <FileTextIcon className="h-6 w-6 text-blue-500" />
-          <span className="text-xs font-medium text-zinc-700">
-            {file ? file.name : "Click to select your resume (PDF or DOCX)"}
-          </span>
-          <span className="text-[10px] text-zinc-400">Max size 10MB</span>
-          <input
-            type="file"
-            accept=".pdf,.docx"
-            disabled={disabled || submitting}
-            onChange={handleFile}
-            className="hidden"
-          />
-        </label>
+      <form onSubmit={handleSubmit} className="space-y-3.5">
+        {/* Candidate credentials setup for non-logged-in visitors */}
+        {!isLoggedIn && (
+          <div className="space-y-3 rounded-lg border border-zinc-100 bg-zinc-50/60 p-3.5">
+            <div className="text-xs font-semibold text-zinc-700">
+              Candidate Profile & Login Credentials
+            </div>
 
-        {error && (
-          <p className="text-xs font-medium text-rose-600">
-            {error}
-          </p>
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
+                  First Name *
+                </label>
+                <input
+                  required
+                  type="text"
+                  placeholder="Jane"
+                  value={form.first_name}
+                  onChange={(e) => setField("first_name", e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
+                  Last Name *
+                </label>
+                <input
+                  required
+                  type="text"
+                  placeholder="Doe"
+                  value={form.last_name}
+                  onChange={(e) => setField("last_name", e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
+                  Email Address *
+                </label>
+                <input
+                  required
+                  type="email"
+                  placeholder="jane.doe@example.com"
+                  value={form.email}
+                  onChange={(e) => setField("email", e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
+                  Phone Number
+                </label>
+                <input
+                  type="tel"
+                  placeholder="+1 555 0199"
+                  value={form.phone}
+                  onChange={(e) => setField("phone", e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-zinc-600 mb-1">
+                Password * (min 8 chars — used to track your applications)
+              </label>
+              <input
+                required
+                type="password"
+                minLength={8}
+                placeholder="Choose a secure password"
+                value={form.password}
+                onChange={(e) => setField("password", e.target.value)}
+                className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs text-zinc-800 focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+          </div>
         )}
 
-        <div className="flex items-center justify-between gap-2 pt-1">
-          <span className="text-[11px] text-zinc-400">
-            Directly screened upon upload
-          </span>
+        {/* Resume Dropzone */}
+        <div>
+          <label className="block text-[11px] font-medium text-zinc-700 mb-1">
+            Resume / CV *
+          </label>
+          <label className="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-zinc-300 bg-zinc-50/50 p-4 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/30">
+            <FileTextIcon className="h-6 w-6 text-blue-500" />
+            <span className="text-xs font-medium text-zinc-800">
+              {file ? file.name : "Click to select your resume (PDF or DOCX)"}
+            </span>
+            <span className="text-[10px] text-zinc-400">PDF or DOCX, max 10MB</span>
+            <input
+              type="file"
+              accept=".pdf,.docx"
+              disabled={disabled || submitting}
+              onChange={handleFile}
+              className="hidden"
+            />
+          </label>
+        </div>
+
+        {error && (
+          <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-xs font-medium text-rose-700">
+            {error}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-2 pt-1 border-t border-zinc-100">
+          <p className="text-[11px] text-zinc-400">
+            {isLoggedIn ? "Applied with your candidate account" : "Creates your login & submits application"}
+          </p>
           <button
             type="submit"
             disabled={!file || submitting || disabled}
-            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 transition-colors shrink-0"
           >
-            {submitting ? "Uploading & Applying…" : "Submit Application"}
+            {submitting
+              ? "Submitting Application…"
+              : isLoggedIn
+              ? "Submit Application"
+              : "Register & Submit Application"}
           </button>
         </div>
       </form>
