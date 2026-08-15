@@ -29,6 +29,7 @@ const AGENT_LABELS: Record<string, string> = {
   leave: "Leave",
   recruitment: "Recruitment",
   clarify: "Clarify",
+  recap: "Summary",
 };
 
 /** Markdown renderer shared by assistant bubbles (same styles as knowledge-chat). */
@@ -189,7 +190,10 @@ const MessageBubble = memo(function MessageBubble({
             <Markdown>{message.content}</Markdown>
           )
         ) : (
-          !message.meta?.ui_widget && (
+          /* The bouncing-dots indicator is for LIVE generation only — a
+             restored empty message (e.g. a turn that never completed) must
+             not look like it is still thinking forever. */
+          message.streaming && !message.meta?.ui_widget && (
             <span className="flex items-center gap-1 py-1" aria-label="Generating response">
               <span className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400" />
               <span
