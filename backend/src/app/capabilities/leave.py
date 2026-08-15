@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.contracts.auth import UserContext
-from app.domain.identity import ApplicationUser, Employee, Person
+from app.domain.identity import ApplicationUser, Department, Designation, Employee, Person
 from app.domain.leave import LeaveBalance, LeaveRequest, LeaveType
 from app.repositories.audit import AuditRepo
 from app.repositories.leave import LeaveBalanceRepo, LeaveRequestRepo, LeaveTypeRepo
@@ -140,21 +140,23 @@ class LeaveService:
     def list_all_employee_balances(
         self, actor: UserContext, year: int | None = None
     ) -> list[dict]:
-        """Return all active employees' leave balances (manager-only)."""
+        """Return all active employees' leave balances with reporting hierarchy (manager-only)."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can view all employee leave balances.")
 
         target_year = year or self._clock.today().year
         stmt = (
-            select(Employee, Person)
+            select(Employee, Person, Department, Designation)
             .join(Person, Employee.person_id == Person.person_id)
+            .outerjoin(Department, Employee.department_id == Department.department_id)
+            .outerjoin(Designation, Employee.designation_id == Designation.designation_id)
             .where(Employee.employment_status == "ACTIVE")
             .order_by(Employee.employee_code)
         )
-        pairs = self._db.execute(stmt).all()
+        records = self._db.execute(stmt).all()
 
         results = []
-        for emp, person in pairs:
+        for emp, person, dept, desig in records:
             raw_rows = self._balance_rows(emp, target_year)
             balances = [
                 {
@@ -172,6 +174,9 @@ class LeaveService:
                     "employee_code": emp.employee_code,
                     "employee_name": f"{person.first_name} {person.last_name}".strip(),
                     "employee_email": person.email,
+                    "manager_employee_id": str(emp.manager_employee_id) if emp.manager_employee_id else None,
+                    "department_name": dept.name if dept else None,
+                    "designation_title": desig.title if desig else None,
                     "year": target_year,
                     "balances": balances,
                 }

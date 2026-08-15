@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 
 // Inline SVG Icons
 function CalendarIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
@@ -121,6 +121,14 @@ function ChevronRightIcon({ className = "w-3.5 h-3.5" }: { className?: string })
   );
 }
 
+function ChevronDownIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+    </svg>
+  );
+}
+
 function UserIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -142,6 +150,32 @@ function UsersIcon({ className = "w-4 h-4" }: { className?: string }) {
         strokeLinejoin="round"
         strokeWidth={2}
         d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
+      />
+    </svg>
+  );
+}
+
+function HierarchyIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11"
+      />
+    </svg>
+  );
+}
+
+function BuildingOfficeIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"
       />
     </svg>
   );
@@ -624,36 +658,116 @@ function LeaveBalanceWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 }
 
 /**
- * 3. All Employees Leave Balances (Manager Organization Overview)
+ * 3. All Employees Organization Hierarchy & Balances Widget
  */
+interface HierarchyNode {
+  employee: any;
+  children: HierarchyNode[];
+}
+
 function AllEmployeeBalancesWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const employees: any[] = widget.employees || [];
   const year = widget.year || new Date().getFullYear();
+  const [viewMode, setViewMode] = useState<"hierarchy" | "department" | "list">("hierarchy");
   const [searchQuery, setSearchQuery] = useState("");
+  const [collapsedNodes, setCollapsedNodes] = useState<Record<string, boolean>>({});
 
   if (employees.length === 0) return null;
 
+  const toggleCollapse = (id: string) => {
+    setCollapsedNodes((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  // Build hierarchy tree
+  const { rootNodes, departmentGroups } = useMemo(() => {
+    const idMap: Record<string, HierarchyNode> = {};
+    employees.forEach((emp) => {
+      idMap[emp.employee_id] = { employee: emp, children: [] };
+    });
+
+    const roots: HierarchyNode[] = [];
+    employees.forEach((emp) => {
+      const node = idMap[emp.employee_id];
+      if (emp.manager_employee_id && idMap[emp.manager_employee_id]) {
+        idMap[emp.manager_employee_id].children.push(node);
+      } else {
+        roots.push(node);
+      }
+    });
+
+    // Group by department
+    const deptMap: Record<string, any[]> = {};
+    employees.forEach((emp) => {
+      const deptName = emp.department_name || "General & Operations";
+      if (!deptMap[deptName]) deptMap[deptName] = [];
+      deptMap[deptName].push(emp);
+    });
+
+    return { rootNodes: roots, departmentGroups: deptMap };
+  }, [employees]);
+
+  // Filtered employees for list / search
   const filtered = employees.filter((emp) => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     const nameMatch = (emp.employee_name || "").toLowerCase().includes(q);
     const codeMatch = (emp.employee_code || "").toLowerCase().includes(q);
     const emailMatch = (emp.employee_email || "").toLowerCase().includes(q);
-    return nameMatch || codeMatch || emailMatch;
+    const deptMatch = (emp.department_name || "").toLowerCase().includes(q);
+    const desigMatch = (emp.designation_title || "").toLowerCase().includes(q);
+    return nameMatch || codeMatch || emailMatch || deptMatch || desigMatch;
   });
 
   return (
     <div className="mt-3.5 space-y-3 w-full max-w-xl">
-      <div className="flex items-center justify-between px-1">
+      {/* Header & View Switcher */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
         <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-800">
           <UsersIcon className="w-4 h-4 text-blue-600" />
-          <span>Organization Leave Balances ({year})</span>
+          <span>Organization Leave & Team Overview ({year})</span>
         </div>
-        <span className="text-[11px] text-zinc-400 font-medium">
-          {employees.length} employee{employees.length > 1 ? "s" : ""}
-        </span>
+
+        <div className="flex items-center gap-1 bg-zinc-100 p-0.5 rounded-lg text-xs self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => setViewMode("hierarchy")}
+            className={`px-2 py-1 rounded-md font-medium transition-all inline-flex items-center gap-1 cursor-pointer ${
+              viewMode === "hierarchy"
+                ? "bg-white text-blue-700 shadow-xs font-semibold"
+                : "text-zinc-600 hover:text-zinc-900"
+            }`}
+          >
+            <HierarchyIcon className="w-3 h-3" />
+            <span>Org Tree</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("department")}
+            className={`px-2 py-1 rounded-md font-medium transition-all inline-flex items-center gap-1 cursor-pointer ${
+              viewMode === "department"
+                ? "bg-white text-blue-700 shadow-xs font-semibold"
+                : "text-zinc-600 hover:text-zinc-900"
+            }`}
+          >
+            <BuildingOfficeIcon className="w-3 h-3" />
+            <span>Departments</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("list")}
+            className={`px-2 py-1 rounded-md font-medium transition-all inline-flex items-center gap-1 cursor-pointer ${
+              viewMode === "list"
+                ? "bg-white text-blue-700 shadow-xs font-semibold"
+                : "text-zinc-600 hover:text-zinc-900"
+            }`}
+          >
+            <FileTextIcon className="w-3 h-3" />
+            <span>List</span>
+          </button>
+        </div>
       </div>
 
+      {/* Search Filter */}
       {employees.length > 2 && (
         <div className="relative">
           <SearchIcon className="w-3.5 h-3.5 absolute left-3 top-2.5 text-zinc-400" />
@@ -661,49 +775,127 @@ function AllEmployeeBalancesWidget({ widget, onAction, disabled }: ChatWidgetPro
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by employee name, code (e.g. EMP-001), or email..."
-            className="w-full text-xs pl-8 pr-3 py-1.5 rounded-lg border border-zinc-200 bg-white placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            placeholder="Search by employee, code, role, or department..."
+            className="w-full text-xs pl-8 pr-3 py-1.5 rounded-lg border border-zinc-200 bg-white placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-blue-500 shadow-xs"
           />
         </div>
       )}
 
-      <div className="space-y-2.5">
-        {filtered.length === 0 ? (
-          <div className="p-4 text-center text-xs text-zinc-400 bg-zinc-50 rounded-xl border border-zinc-200/60">
-            No employees matching "{searchQuery}".
+      {/* 1. HIERARCHY / ORG CHART VIEW */}
+      {viewMode === "hierarchy" && (
+        <div className="p-3 bg-zinc-50/70 border border-zinc-200/90 rounded-xl space-y-2.5">
+          <div className="flex items-center justify-between text-[11px] text-zinc-500 font-medium pb-1 border-b border-zinc-200/60">
+            <span>Reporting Hierarchy ({rootNodes.length} top-level nodes)</span>
+            <span className="text-[10px] text-zinc-400">Click arrow to toggle direct reports</span>
           </div>
-        ) : (
-          filtered.map((emp) => {
-            const initials = emp.employee_name
-              ? emp.employee_name
-                  .split(" ")
-                  .map((n: string) => n[0])
-                  .join("")
-                  .slice(0, 2)
-                  .toUpperCase()
-              : "EM";
 
-            const balances = emp.balances || [];
+          <div className="space-y-2">
+            {rootNodes.map((node) => (
+              <OrgTreeNode
+                key={node.employee.employee_id}
+                node={node}
+                level={0}
+                collapsedNodes={collapsedNodes}
+                toggleCollapse={toggleCollapse}
+                onAction={onAction}
+                disabled={disabled}
+                searchQuery={searchQuery}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 2. DEPARTMENT GROUPED VIEW */}
+      {viewMode === "department" && (
+        <div className="space-y-3">
+          {Object.entries(departmentGroups).map(([deptName, deptEmployees]) => {
+            const deptFiltered = deptEmployees.filter((emp) => {
+              if (!searchQuery.trim()) return true;
+              const q = searchQuery.toLowerCase();
+              return (
+                (emp.employee_name || "").toLowerCase().includes(q) ||
+                (emp.employee_code || "").toLowerCase().includes(q) ||
+                (emp.designation_title || "").toLowerCase().includes(q)
+              );
+            });
+
+            if (deptFiltered.length === 0) return null;
 
             return (
+              <div
+                key={deptName}
+                className="p-3.5 rounded-xl bg-white border border-zinc-200/90 shadow-sm space-y-2.5"
+              >
+                <div className="flex items-center justify-between pb-2 border-b border-zinc-100">
+                  <div className="flex items-center gap-1.5 font-bold text-xs text-zinc-900">
+                    <BuildingOfficeIcon className="w-3.5 h-3.5 text-blue-600" />
+                    <span>{deptName}</span>
+                  </div>
+                  <span className="text-[10px] font-semibold px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full">
+                    {deptFiltered.length} member{deptFiltered.length > 1 ? "s" : ""}
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  {deptFiltered.map((emp) => (
+                    <EmployeeMiniCard
+                      key={emp.employee_id}
+                      emp={emp}
+                      onAction={onAction}
+                      disabled={disabled}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 3. DIRECTORY LIST VIEW */}
+      {viewMode === "list" && (
+        <div className="space-y-2.5">
+          {filtered.length === 0 ? (
+            <div className="p-4 text-center text-xs text-zinc-400 bg-zinc-50 rounded-xl border border-zinc-200/60">
+              No employees matching "{searchQuery}".
+            </div>
+          ) : (
+            filtered.map((emp) => (
               <div
                 key={emp.employee_id || emp.employee_code}
                 className="p-3.5 rounded-xl bg-white border border-zinc-200/90 shadow-sm space-y-3"
               >
-                {/* Employee Header */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs">
-                      {initials}
+                      {emp.employee_name
+                        ? emp.employee_name
+                            .split(" ")
+                            .map((n: string) => n[0])
+                            .join("")
+                            .slice(0, 2)
+                            .toUpperCase()
+                        : "EM"}
                     </div>
                     <div>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-bold text-xs text-zinc-900">
                           {emp.employee_name}
                         </span>
                         <span className="font-mono text-[10px] font-semibold bg-zinc-100 text-zinc-600 px-1.5 py-0.5 rounded">
                           {emp.employee_code}
                         </span>
+                        {emp.designation_title && (
+                          <span className="text-[10px] text-zinc-500 font-medium">
+                            • {emp.designation_title}
+                          </span>
+                        )}
+                        {emp.department_name && (
+                          <span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.2 rounded font-medium">
+                            {emp.department_name}
+                          </span>
+                        )}
                       </div>
                       {emp.employee_email && (
                         <span className="text-[11px] text-zinc-400 block truncate max-w-[200px]">
@@ -727,7 +919,7 @@ function AllEmployeeBalancesWidget({ widget, onAction, disabled }: ChatWidgetPro
 
                 {/* Balances List */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1 border-t border-zinc-100">
-                  {balances.map((b: any) => {
+                  {(emp.balances || []).map((b: any) => {
                     const allocated = parseFloat(b.allocated_days) || 0;
                     const remaining = parseFloat(b.remaining_days) || 0;
                     const pct = allocated > 0 ? Math.min(100, Math.max(0, (remaining / allocated) * 100)) : 0;
@@ -763,8 +955,209 @@ function AllEmployeeBalancesWidget({ widget, onAction, disabled }: ChatWidgetPro
                   })}
                 </div>
               </div>
-            );
-          })
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Org Tree Node Recursive Component
+ */
+function OrgTreeNode({
+  node,
+  level,
+  collapsedNodes,
+  toggleCollapse,
+  onAction,
+  disabled,
+  searchQuery,
+}: {
+  node: HierarchyNode;
+  level: number;
+  collapsedNodes: Record<string, boolean>;
+  toggleCollapse: (id: string) => void;
+  onAction?: (actionText: string) => void;
+  disabled?: boolean;
+  searchQuery: string;
+}) {
+  const emp = node.employee;
+  const hasChildren = node.children.length > 0;
+  const isCollapsed = Boolean(collapsedNodes[emp.employee_id]);
+
+  const initials = emp.employee_name
+    ? emp.employee_name
+        .split(" ")
+        .map((n: string) => n[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase()
+    : "EM";
+
+  const totalRemaining = (emp.balances || []).reduce(
+    (acc: number, b: any) => acc + (parseFloat(b.remaining_days) || 0),
+    0
+  );
+
+  return (
+    <div className="space-y-1.5">
+      <div
+        className={`p-2.5 rounded-xl bg-white border shadow-xs flex items-center justify-between gap-2 transition-all ${
+          level === 0
+            ? "border-blue-300 ring-1 ring-blue-400/20"
+            : "border-zinc-200/90"
+        }`}
+        style={{ marginLeft: `${level * 16}px` }}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          {hasChildren && (
+            <button
+              type="button"
+              onClick={() => toggleCollapse(emp.employee_id)}
+              className="p-1 text-zinc-500 hover:bg-zinc-100 rounded-md transition-colors cursor-pointer shrink-0"
+              aria-label={isCollapsed ? "Expand node" : "Collapse node"}
+            >
+              {isCollapsed ? (
+                <ChevronRightIcon className="w-3.5 h-3.5 text-blue-600" />
+              ) : (
+                <ChevronDownIcon className="w-3.5 h-3.5 text-blue-600" />
+              )}
+            </button>
+          )}
+
+          <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-[10px] shrink-0">
+            {initials}
+          </div>
+
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="font-bold text-xs text-zinc-900 truncate">
+                {emp.employee_name}
+              </span>
+              <span className="font-mono text-[10px] font-semibold bg-zinc-100 text-zinc-600 px-1 py-0.2 rounded">
+                {emp.employee_code}
+              </span>
+              {hasChildren && (
+                <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200/60 px-1.5 py-0.2 rounded-full font-medium">
+                  {node.children.length} direct report{node.children.length > 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+            <div className="text-[10px] text-zinc-500 flex items-center gap-1 truncate">
+              <span>{emp.designation_title || "Team Member"}</span>
+              {emp.department_name && (
+                <>
+                  <span>•</span>
+                  <span className="text-blue-600 font-medium">{emp.department_name}</span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="text-right hidden sm:block">
+            <span className="text-[10px] text-zinc-400 block">Total Left</span>
+            <span className="text-xs font-bold text-zinc-900">{totalRemaining}d</span>
+          </div>
+
+          {onAction && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onAction(`Show leave requests for ${emp.employee_code}`)}
+              className="px-2 py-1 text-[10px] font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md transition-colors cursor-pointer"
+            >
+              Requests
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Render children if not collapsed */}
+      {hasChildren && !isCollapsed && (
+        <div className="space-y-1.5 pl-2 border-l-2 border-blue-100 ml-4">
+          {node.children.map((child) => (
+            <OrgTreeNode
+              key={child.employee.employee_id}
+              node={child}
+              level={level + 1}
+              collapsedNodes={collapsedNodes}
+              toggleCollapse={toggleCollapse}
+              onAction={onAction}
+              disabled={disabled}
+              searchQuery={searchQuery}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Department Mini Card for Department View
+ */
+function EmployeeMiniCard({
+  emp,
+  onAction,
+  disabled,
+}: {
+  emp: any;
+  onAction?: (actionText: string) => void;
+  disabled?: boolean;
+}) {
+  const initials = emp.employee_name
+    ? emp.employee_name
+        .split(" ")
+        .map((n: string) => n[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase()
+    : "EM";
+
+  return (
+    <div className="p-2.5 rounded-lg bg-zinc-50 border border-zinc-100 flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-[10px] shrink-0">
+          {initials}
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 truncate">
+            <span className="font-bold text-xs text-zinc-900">{emp.employee_name}</span>
+            <span className="font-mono text-[10px] text-zinc-500 font-medium">
+              ({emp.employee_code})
+            </span>
+          </div>
+          <div className="text-[10px] text-zinc-400 truncate">
+            {emp.designation_title || "Member"} • {emp.employee_email}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1 text-[10px]">
+          {(emp.balances || []).slice(0, 2).map((b: any) => (
+            <span
+              key={b.leave_type_name}
+              className="bg-white border border-zinc-200 px-1.5 py-0.5 rounded font-medium text-zinc-700"
+            >
+              {b.leave_type_name.split(" ")[0]}: {b.remaining_days}d
+            </span>
+          ))}
+        </div>
+
+        {onAction && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onAction(`Show leave requests for ${emp.employee_code}`)}
+            className="px-2 py-0.5 text-[10px] font-medium text-blue-700 bg-white hover:bg-blue-50 border border-blue-200 rounded transition-colors cursor-pointer"
+          >
+            Requests
+          </button>
         )}
       </div>
     </div>

@@ -347,12 +347,22 @@ _ALL_BALANCES_PHRASES = (
     "everyone's balance",
     "everybody's balance",
     "all balances",
+    "org chart",
+    "organization chart",
+    "hierarchy",
+    "org hierarchy",
+    "organization hierarchy",
+    "team hierarchy",
+    "employee hierarchy",
+    "reporting structure",
 )
 
 
 def _is_all_employees_balance_ask(user_message: str) -> bool:
-    """Is this manager message asking to see all employees' leave balances?"""
+    """Is this manager message asking to see all employees' leave balances or org hierarchy?"""
     lowered = user_message.lower()
+    if any(h in lowered for h in ("hierarchy", "org chart", "organization chart", "reporting structure")):
+        return True
     if not any(word in lowered for word in ("balance", "balances", "quota", "quotas", "pto", "remaining")):
         return False
     if "request" in lowered:
