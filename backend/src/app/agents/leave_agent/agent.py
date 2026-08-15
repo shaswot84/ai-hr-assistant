@@ -149,6 +149,16 @@ def _leave_types_widget(result: list[dict]) -> dict[str, Any]:
     }
 
 
+def _leave_date_picker_widget(draft: DraftRequest, today: date | None = None) -> dict[str, Any]:
+    return {
+        "type": "leave_date_picker",
+        "leave_type_name": draft.leave_type_name,
+        "start_date": draft.start_date.isoformat() if draft.start_date else None,
+        "end_date": draft.end_date.isoformat() if draft.end_date else None,
+        "min_date": today.isoformat() if today else None,
+    }
+
+
 async def handle_turn(
     *,
     actor: UserContext,
@@ -663,13 +673,16 @@ def _intercept_draft_turn(
     parts: list[str] = []
     if draft.start_date is not None:
         parts.append(f"{label} would start on {format_short(draft.start_date)}.")
+    ui_widget: dict[str, Any] | None = None
     if draft.leave_type_name is None:
         parts.append("Which leave type would you like to take?")
     elif draft.start_date is None:
         parts.append("From which date would you like to start?")
+        ui_widget = _leave_date_picker_widget(draft, today=today)
     else:
         parts.append("To which date would you like to end?")
-    return _reply(state, " ".join(parts), clock=clock)
+        ui_widget = _leave_date_picker_widget(draft, today=today)
+    return _reply(state, " ".join(parts), clock=clock, ui_widget=ui_widget)
 
 
 # ---- deterministic cancel / decision flow ----------------------------------
@@ -1108,10 +1121,10 @@ async def _handle_read(
         text = f"{text}\n\n{follow_up}" if text else follow_up
         candidates = _candidate_types(tool_name, result)
         if state.draft is None and candidates:
-            state.set_draft(
-                DraftRequest(leave_type_name=candidates[0] if len(candidates) == 1 else None),
-                clock=clock,
-            )
+            draft = DraftRequest(leave_type_name=candidates[0] if len(candidates) == 1 else None)
+            state.set_draft(draft, clock=clock)
+            if draft.leave_type_name is not None:
+                ui_widget = _leave_date_picker_widget(draft, today=clock.today())
     return _reply(
         state, text, clock=clock, tool_called=tool_name, tool_result=result,
         raw_model_action=raw_model_action, ui_widget=ui_widget,

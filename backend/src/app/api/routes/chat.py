@@ -382,6 +382,7 @@ async def chat_stream(
     async def event_stream():
         yield sse({"type": "turn_started", "conversation_id": str(conversation_id)})
         final: dict = {}
+        streamed_ui_widget: dict | None = None
         try:
             async for mode, chunk in graph.astream(
                 {
@@ -395,6 +396,8 @@ async def chat_stream(
                     if chunk["type"] == "retrieval":
                         yield sse(_serialize_retrieval_event(chunk))
                     else:
+                        if chunk.get("type") == "ui_widget":
+                            streamed_ui_widget = chunk.get("widget")
                         yield sse(chunk)  # token / message / ui_widget
                 else:  # updates: route first, then the terminal agent
                     for node_name, update in chunk.items():
@@ -426,7 +429,7 @@ async def chat_stream(
         knowledge_result = final.get("knowledge_result")
         safety = final.get("safety", "PASS")
         confidence_applicable = knowledge_result is not None
-        ui_widget = final.get("ui_widget")
+        ui_widget = final.get("ui_widget") or streamed_ui_widget
 
         await _persist_reply(
             repo,
