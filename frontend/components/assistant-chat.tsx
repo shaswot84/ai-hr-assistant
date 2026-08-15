@@ -22,6 +22,9 @@ interface ViewMessage {
     ui_widget?: any;
   } | null;
   streaming?: boolean;
+  /** Live status of an in-flight answer (transient — never persisted): the
+   * RAG retrieval phase, then LLM generation. Absent = thinking/routing. */
+  phase?: "searching" | "generating";
 }
 
 const AGENT_LABELS: Record<string, string> = {
@@ -190,21 +193,51 @@ const MessageBubble = memo(function MessageBubble({
             <Markdown>{message.content}</Markdown>
           )
         ) : (
-          /* The bouncing-dots indicator is for LIVE generation only — a
-             restored empty message (e.g. a turn that never completed) must
-             not look like it is still thinking forever. */
+          /* Staged live status — only while the answer is actually streaming
+             (a restored empty message must never look like it is thinking
+             forever). Absent phase = thinking/routing. */
           message.streaming && !message.meta?.ui_widget && (
-            <span className="flex items-center gap-1 py-1" aria-label="Generating response">
-              <span className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400" />
+            message.phase === "searching" ? (
               <span
-                className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400"
-                style={{ animationDelay: "150ms" }}
-              />
+                className="flex items-center gap-2 py-1 text-sm text-zinc-500"
+                aria-label="Searching the knowledge base"
+              >
+                <svg
+                  className="h-3.5 w-3.5 animate-spin text-blue-500"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Searching the knowledge base…
+              </span>
+            ) : message.phase === "generating" ? (
               <span
-                className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400"
-                style={{ animationDelay: "300ms" }}
-              />
-            </span>
+                className="flex items-center gap-1.5 py-1 text-sm text-zinc-500"
+                aria-label="Generating response"
+              >
+                Generating…
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-3.5 w-[2px] animate-blink rounded-[1px] bg-blue-500"
+                />
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 py-1 text-sm text-zinc-500" aria-label="Thinking">
+                <span className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400" />
+                <span
+                  className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400"
+                  style={{ animationDelay: "150ms" }}
+                />
+                <span
+                  className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400"
+                  style={{ animationDelay: "300ms" }}
+                />
+                Thinking…
+              </span>
+            )
           )
         )}
         {message.streaming && message.content && (
@@ -528,10 +561,15 @@ export function AssistantChat() {
           setActiveId(event.conversation_id);
         } else if (event.type === "route") {
           agent = event.route;
+          // Non-retrieval routes (recap/clarify/leave/recruitment) generate
+          // the answer directly after routing — mark that stage. Knowledge
+          // goes through retrieval first (handled below), then tokens.
+          if (event.route !== "knowledge") patchAssistant({ phase: "generating" });
         } else if (event.type === "retrieval") {
           citations = event.citations;
           confidence = event.confidence;
           lowConfidence = event.low_confidence;
+          patchAssistant({ phase: "searching" });
         } else if (event.type === "ui_widget") {
           uiWidget = event.widget;
           patchAssistant({
@@ -545,7 +583,7 @@ export function AssistantChat() {
           });
         } else if (event.type === "token" || event.type === "message") {
           textSoFar += event.text;
-          patchAssistant({ content: textSoFar });
+          patchAssistant({ content: textSoFar, phase: "generating" });
         } else if (event.type === "done") {
           agent = event.agent;
           citations = event.citations;
@@ -575,7 +613,12 @@ export function AssistantChat() {
         }
       }
     } catch (err) {
-      if (!(err instanceof Error && err.name === "AbortError")) {
+      if (err instanceof Error && err.name === "AbortError") {
+        // User stopped the turn (Stop button, or leaving the page) — keep the
+        // text streamed so far as the final message and drop the live
+        // cursor/dots, otherwise the bubble stays "streaming" forever.
+        patchAssistant({ streaming: false });
+      } else {
         const detail =
           err instanceof ApiError ? err.detail : "Chat failed. Is the backend running?";
         setError(detail);
@@ -593,6 +636,12 @@ export function AssistantChat() {
   useEffect(() => {
     sendMessageRef.current = sendMessage;
   });
+
+  // Abort any in-flight stream when the chat unmounts (navigating away), so
+  // the backend stops generating an answer nobody will read.
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
 
   // Auto-recover conversations whose LAST assistant reply was persisted empty
   // (the pre-fix recap bug): re-ask the last user question so the answer
@@ -925,12 +974,17 @@ export function AssistantChat() {
             </div>
           )}
 
-          {messages.map((m) => (
+          {messages.map((m, idx) => (
             <MessageBubble
               key={m.id}
               message={m}
               onAction={handleAction}
-              disabled={streaming}
+              // Freeze widgets in PAST turns (any message that is not the
+              // last one): once the conversation has moved past a widget it
+              // must not be operated again. The current (last) widget stays
+              // interactive, and while an answer streams the whole thread is
+              // disabled via `streaming` as before.
+              disabled={streaming || idx < messages.length - 1}
             />
           ))}
 
