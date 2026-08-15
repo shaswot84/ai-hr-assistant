@@ -988,7 +988,7 @@ export function AssistantChat() {
             />
           ))}
 
-          {streaming && !atBottom && (
+          {!atBottom && (
             <button
               type="button"
               onClick={scrollToBottom}
