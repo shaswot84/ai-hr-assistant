@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 
 const STORAGE_KEY = "aha.sidebar.collapsed";
 
@@ -37,7 +37,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     queueMicrotask(() => setCollapsed(value));
   }, []);
 
-  const toggle = () => {
+  const toggle = useCallback(() => {
     setCollapsed((prev) => {
       const next = !prev;
       try {
@@ -47,7 +47,19 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       }
       return next;
     });
-  };
+  }, []);
+
+  // Cmd/Ctrl+\ toggles the sidebar, ChatGPT-style.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+        e.preventDefault();
+        toggle();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [toggle]);
 
   return <SidebarContext.Provider value={{ collapsed, toggle }}>{children}</SidebarContext.Provider>;
 }

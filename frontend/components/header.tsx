@@ -37,7 +37,7 @@ export function Header({
         onClick={toggle}
         className="hidden rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 md:inline-flex"
         aria-label={collapsed ? "Open sidebar" : "Close sidebar"}
-        title={collapsed ? "Open sidebar" : "Close sidebar"}
+        title={collapsed ? "Open sidebar (Ctrl+\\)" : "Close sidebar (Ctrl+\\)"}
       >
         <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           {collapsed ? (

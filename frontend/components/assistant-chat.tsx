@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ApiError, api, chatStream } from "@/lib/api";
@@ -107,7 +107,7 @@ function CitationChips({ citations }: { citations: ChatCitation[] }) {
   );
 }
 
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
   onAction,
   disabled,
@@ -116,6 +116,18 @@ function MessageBubble({
   onAction?: (actionText: string) => void;
   disabled?: boolean;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard unavailable (non-secure context); ignore
+    }
+  }
+
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -136,10 +148,46 @@ function MessageBubble({
     message.meta?.safety === "FLAGGED_FOR_REVIEW" ||
     agentLabel !== undefined;
   return (
-    <div className="flex justify-start">
+    <div className="group relative flex justify-start">
       <div className="max-w-[85%] rounded-2xl rounded-bl-sm border border-zinc-200 bg-white px-4 py-3 shadow-sm">
+        {message.content && !message.streaming && (
+          <button
+            type="button"
+            onClick={handleCopy}
+            className={`absolute right-2 top-2 rounded-md p-1.5 transition-opacity ${
+              copied
+                ? "text-green-600 opacity-100"
+                : "text-zinc-400 opacity-0 hover:bg-zinc-100 hover:text-zinc-700 group-hover:opacity-100 focus:opacity-100"
+            }`}
+            aria-label={copied ? "Copied" : "Copy message"}
+            title={copied ? "Copied" : "Copy message"}
+          >
+            {copied ? (
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                />
+              </svg>
+            )}
+          </button>
+        )}
         {message.content ? (
-          <Markdown>{message.content}</Markdown>
+          /* While streaming, render plain text so markdown isn't re-parsed on
+             every token; switch to the full renderer once the turn finishes. */
+          message.streaming ? (
+            <div className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-700">
+              {message.content}
+            </div>
+          ) : (
+            <Markdown>{message.content}</Markdown>
+          )
         ) : (
           !message.meta?.ui_widget && (
             <span className="flex items-center gap-1 py-1" aria-label="Generating response">
@@ -201,10 +249,35 @@ function MessageBubble({
       </div>
     </div>
   );
-}
+});
 
 function conversationDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/** Draft persistence — typed input survives refresh/navigation. Drafts are
+ * keyed per conversation (plus "new" for a fresh chat), and the last open
+ * conversation is remembered so it can be restored together with its draft. */
+const DRAFT_STORAGE_KEY = "aha.chat.drafts";
+const LAST_ACTIVE_KEY = "aha.chat.lastActive";
+
+function readDrafts(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(DRAFT_STORAGE_KEY) ?? "{}") as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function writeDraft(key: string, value: string) {
+  try {
+    const drafts = readDrafts();
+    if (value) drafts[key] = value;
+    else delete drafts[key];
+    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(drafts));
+  } catch {
+    // localStorage unavailable — persistence is best-effort
+  }
 }
 
 export function AssistantChat() {
@@ -217,11 +290,13 @@ export function AssistantChat() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [atBottom, setAtBottom] = useState(true);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const skipHistoryFetchRef = useRef<string | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
+  const sendMessageRef = useRef<typeof sendMessage>(sendMessage);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -293,6 +368,36 @@ export function AssistantChat() {
     };
   }, [activeId]);
 
+  // Draft persistence: reopen the last conversation and restore its typed
+  // input, so a refresh/navigation doesn't wipe a half-typed question.
+  const draftKey = activeId ?? "new";
+
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem(LAST_ACTIVE_KEY);
+    } catch {
+      // ignore
+    }
+    if (saved) queueMicrotask(() => setActiveId(saved));
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (activeId) localStorage.setItem(LAST_ACTIVE_KEY, activeId);
+      else localStorage.removeItem(LAST_ACTIVE_KEY);
+    } catch {
+      // ignore
+    }
+  }, [activeId]);
+
+  // Restore the draft whenever the active conversation changes (the initial
+  // mount restores the "new chat" draft).
+  useEffect(() => {
+    const draft = readDrafts()[draftKey] ?? "";
+    queueMicrotask(() => setInput(draft));
+  }, [draftKey]);
+
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight });
@@ -317,6 +422,13 @@ export function AssistantChat() {
     if (streaming) scrollToBottom();
   }, [streaming, scrollToBottom]);
 
+  // Track whether the user is at the bottom of the thread. Content growth is
+  // covered by the follow effect above (its scroll fires this handler), so the
+  // chip only appears when the user actually scrolled up mid-stream.
+  const handleScroll = useCallback(() => {
+    setAtBottom(isNearBottom());
+  }, [isNearBottom]);
+
   function selectConversation(id: string) {
     if (streaming) return;
     setActiveId(id);
@@ -326,8 +438,8 @@ export function AssistantChat() {
     if (streaming) abortRef.current?.abort();
     setActiveId(null);
     setMessages([]);
-    setInput("");
     setError(null);
+    // The "new chat" draft is restored by the draft effect on activeId change.
   }
 
   async function handleDeleteConversation(id: string, e: React.MouseEvent) {
@@ -335,6 +447,7 @@ export function AssistantChat() {
     if (streaming) return;
     try {
       await api.deleteConversation(id);
+      writeDraft(id, "");
       setConversations((prev) => prev.filter((c) => c.conversation_id !== id));
       if (activeId === id) {
         newChat();
@@ -347,6 +460,7 @@ export function AssistantChat() {
   async function sendMessage(textToSend: string) {
     if (!textToSend.trim() || streaming) return;
     setInput("");
+    writeDraft(activeId ?? "new", "");
     setError(null);
 
     const userMessage: ViewMessage = {
@@ -449,16 +563,23 @@ export function AssistantChat() {
       refreshConversations();
     }
   }
+  // Keep the ref pointed at the latest sendMessage closure (written in an
+  // effect so handleAction can stay referentially stable for the memoized
+  // bubbles).
+  useEffect(() => {
+    sendMessageRef.current = sendMessage;
+  });
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
     await sendMessage(input);
   }
 
-  function handleAction(actionText: string) {
-    if (streaming) return;
-    sendMessage(actionText);
-  }
+  // Stable identity so memoized bubbles don't re-render on unrelated updates;
+  // the ref always points at the latest sendMessage (which guards streaming).
+  const handleAction = useCallback((actionText: string) => {
+    sendMessageRef.current(actionText);
+  }, []);
 
   return (
     <div
@@ -729,7 +850,11 @@ export function AssistantChat() {
           )}
         </div>
 
-        <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="relative flex-1 space-y-4 overflow-y-auto p-4 sm:p-5"
+        >
           {messages.length === 0 && !loadingHistory && (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600 text-white">
@@ -766,6 +891,21 @@ export function AssistantChat() {
               disabled={streaming}
             />
           ))}
+
+          {streaming && !atBottom && (
+            <button
+              type="button"
+              onClick={scrollToBottom}
+              className="animate-slide-up absolute bottom-4 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50 hover:text-zinc-900"
+              aria-label="Scroll to latest message"
+              title="Scroll to latest message"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+              Scroll to latest
+            </button>
+          )}
         </div>
 
         {error && (
@@ -776,7 +916,10 @@ export function AssistantChat() {
           <div className="flex items-end gap-2">
             <textarea
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                writeDraft(activeId ?? "new", e.target.value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
