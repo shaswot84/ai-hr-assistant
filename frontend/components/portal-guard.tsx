@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import type { CoarseRole, UserContext } from "@/lib/types";
 import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
+import { SidebarProvider, useSidebar } from "@/components/sidebar-provider";
 import { Spinner } from "@/components/loading";
 
 /**
@@ -22,7 +23,6 @@ export function PortalGuard({
   children: React.ReactNode;
 }) {
   const router = useRouter();
-  const pathname = usePathname();
   const [user, setUser] = useState<UserContext | null>(null);
   const [checking, setChecking] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -67,6 +67,38 @@ export function PortalGuard({
   }
 
   return (
+    <SidebarProvider>
+      <PortalShell
+        user={user}
+        mobileNavOpen={mobileNavOpen}
+        setMobileNavOpen={setMobileNavOpen}
+      >
+        {children}
+      </PortalShell>
+    </SidebarProvider>
+  );
+}
+
+/**
+ * The signed-in shell (sidebar + top bar + scrollable main). Rendered as a
+ * child of SidebarProvider so it can react to the sidebar being collapsed:
+ * the nav rail disappears and the content takes the full width.
+ */
+function PortalShell({
+  user,
+  mobileNavOpen,
+  setMobileNavOpen,
+  children,
+}: {
+  user: UserContext;
+  mobileNavOpen: boolean;
+  setMobileNavOpen: (open: boolean) => void;
+  children: React.ReactNode;
+}) {
+  const pathname = usePathname();
+  const { collapsed } = useSidebar();
+
+  return (
     <div className="flex h-screen overflow-hidden bg-zinc-50">
       <Sidebar
         role={user.coarse_role}
@@ -79,7 +111,9 @@ export function PortalGuard({
         <main className="flex-1 overflow-y-auto">
           <div
             key={pathname}
-            className="animate-fade-in mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8"
+            className={`animate-fade-in mx-auto w-full px-4 py-6 sm:px-6 lg:px-8 lg:py-8 ${
+              collapsed ? "max-w-none" : "max-w-[1600px]"
+            }`}
           >
             {children}
           </div>

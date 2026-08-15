@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { clearAuthToken } from "@/lib/auth";
 import type { CoarseRole, UserContext } from "@/lib/types";
+import { useSidebar } from "./sidebar-provider";
 
 interface NavItem {
   label: string;
@@ -303,10 +304,22 @@ export function Sidebar({
   mobileOpen: boolean;
   onCloseMobile: () => void;
 }) {
+  const { collapsed } = useSidebar();
+
   return (
     <>
-      <aside className="hidden h-full w-60 shrink-0 flex-col border-r border-zinc-200 bg-white md:flex">
-        <SidebarContent role={role} user={user} />
+      {/* Desktop rail stays mounted so collapse/expand can animate its width
+          (ChatGPT-style); at w-0 the fixed-width content is clipped away. */}
+      <aside
+        aria-hidden={collapsed}
+        inert={collapsed ? true : undefined}
+        className={`hidden h-full shrink-0 flex-col overflow-hidden border-r border-zinc-200 bg-white transition-[width] duration-200 ease-out motion-reduce:transition-none md:flex ${
+          collapsed ? "w-0 border-r-0" : "w-60"
+        }`}
+      >
+        <div className="h-full w-60">
+          <SidebarContent role={role} user={user} />
+        </div>
       </aside>
 
       {mobileOpen && (

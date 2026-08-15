@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import { ApiError, api, chatStream } from "@/lib/api";
 import type { ChatCitation, ChatConversation } from "@/lib/types";
 import { ChatWidgetRenderer } from "./chat-widgets";
+import { useSidebar } from "./sidebar-provider";
 
 interface ViewMessage {
   id: string;
@@ -195,6 +196,7 @@ function conversationDate(iso: string) {
 }
 
 export function AssistantChat() {
+  const { collapsed } = useSidebar();
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ViewMessage[]>([]);
@@ -407,82 +409,133 @@ export function AssistantChat() {
 
   return (
     <div className="card flex h-[calc(100vh-16rem)] min-h-[420px] overflow-hidden">
-      {/* Conversation list (desktop) */}
-      <aside className="hidden w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50/60 lg:flex">
-        <div className="border-b border-zinc-200 p-3">
-          <button
-            type="button"
-            onClick={newChat}
-            disabled={streaming}
-            className="btn-primary w-full"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            New chat
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2">
-          {conversations.length === 0 ? (
-            <p className="px-3 py-6 text-center text-xs text-zinc-400">
-              No conversations yet — ask your first question.
-            </p>
-          ) : (
-            <ul className="space-y-1">
-              {conversations.map((c) => {
-                const isActive = c.conversation_id === activeId;
-                return (
-                  <li key={c.conversation_id} className="group relative">
-                    <button
-                      type="button"
-                      onClick={() => selectConversation(c.conversation_id)}
-                      className={`w-full rounded-lg px-3 py-2 pr-8 text-left transition-colors ${
-                        isActive
-                          ? "bg-blue-600 text-white"
-                          : "text-zinc-700 hover:bg-zinc-100"
-                      }`}
-                    >
-                      <span className="block truncate text-[13px] font-medium">
-                        {c.title ?? "Untitled chat"}
-                      </span>
-                      <span
-                        className={`block text-[11px] ${
-                          isActive ? "text-blue-100" : "text-zinc-400"
+      {/* Conversation list (desktop) — collapses with the portal sidebar so
+          the chat thread takes the full width; stays mounted so the width
+          change animates. */}
+      <aside
+        aria-hidden={collapsed}
+        inert={collapsed ? true : undefined}
+        className={`hidden h-full shrink-0 flex-col overflow-hidden border-r border-zinc-200 bg-zinc-50/60 transition-[width] duration-200 ease-out motion-reduce:transition-none lg:flex ${
+          collapsed ? "w-0 border-r-0" : "w-72"
+        }`}
+      >
+        <div className="flex h-full w-72 flex-col">
+          <div className="border-b border-zinc-200 p-3">
+            <button
+              type="button"
+              onClick={newChat}
+              disabled={streaming}
+              className="btn-primary w-full"
+            >
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New chat
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2">
+            {conversations.length === 0 ? (
+              <p className="px-3 py-6 text-center text-xs text-zinc-400">
+                No conversations yet — ask your first question.
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {conversations.map((c) => {
+                  const isActive = c.conversation_id === activeId;
+                  return (
+                    <li key={c.conversation_id} className="group relative">
+                      <button
+                        type="button"
+                        onClick={() => selectConversation(c.conversation_id)}
+                        className={`w-full rounded-lg px-3 py-2 pr-8 text-left transition-colors ${
+                          isActive
+                            ? "bg-blue-600 text-white"
+                            : "text-zinc-700 hover:bg-zinc-100"
                         }`}
                       >
-                        {conversationDate(c.updated_at)}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => handleDeleteConversation(c.conversation_id, e)}
-                      title="Delete conversation"
-                      aria-label="Delete conversation"
-                      className={`absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 ${
-                        isActive
-                          ? "text-blue-200 hover:bg-blue-700 hover:text-white"
-                          : "text-zinc-400 hover:bg-zinc-200 hover:text-red-600"
-                      }`}
-                    >
-                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                        />
-                      </svg>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+                        <span className="block truncate text-[13px] font-medium">
+                          {c.title ?? "Untitled chat"}
+                        </span>
+                        <span
+                          className={`block text-[11px] ${
+                            isActive ? "text-blue-100" : "text-zinc-400"
+                          }`}
+                        >
+                          {conversationDate(c.updated_at)}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteConversation(c.conversation_id, e)}
+                        title="Delete conversation"
+                        aria-label="Delete conversation"
+                        className={`absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 ${
+                          isActive
+                            ? "text-blue-200 hover:bg-blue-700 hover:text-white"
+                            : "text-zinc-400 hover:bg-zinc-200 hover:text-red-600"
+                        }`}
+                      >
+                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                          />
+                        </svg>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
         </div>
       </aside>
 
       {/* Chat thread */}
       <section className="flex min-w-0 flex-1 flex-col">
+        {/* Desktop: keep "New chat" reachable when the conversation rail is
+            collapsed (portal sidebar closed). */}
+        {collapsed && (
+          <div className="hidden items-center gap-2 border-b border-zinc-200 px-3 py-2 lg:flex">
+            <button
+              type="button"
+              onClick={newChat}
+              disabled={streaming}
+              className="btn-primary"
+            >
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New chat
+            </button>
+            {activeId && (
+              <>
+                <span className="ml-auto truncate text-xs text-zinc-400">
+                  {conversations.find((c) => c.conversation_id === activeId)?.title ?? "Untitled chat"}
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => handleDeleteConversation(activeId, e)}
+                  title="Delete conversation"
+                  aria-label="Delete conversation"
+                  className="rounded p-2 text-zinc-500 hover:bg-zinc-100 hover:text-red-600"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    />
+                  </svg>
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Mobile conversation switcher */}
         <div className="flex items-center gap-2 border-b border-zinc-200 px-3 py-2 lg:hidden">
           <select
