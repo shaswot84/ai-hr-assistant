@@ -288,6 +288,12 @@ const MessageBubble = memo(function MessageBubble({
   );
 });
 
+/** Local title for a brand-new conversation, mirroring the backend's
+ * first-message-derived title (truncated at 80 chars). */
+function localTitleFromMessage(text: string) {
+  return text.length <= 80 ? text : `${text.slice(0, 80)}…`;
+}
+
 /** ChatGPT-style relative label for a conversation's last activity. */
 function conversationTime(iso: string) {
   const then = new Date(iso).getTime();
@@ -362,6 +368,34 @@ export function AssistantChat() {
     } catch {
       // offline / not authed; keep current
     }
+  }, []);
+
+  /** Update the rail in place after a turn — bump the active conversation's
+   * updated_at (moving it to the top) or insert the brand-new conversation —
+   * instead of refetching the whole list on every message. */
+  const bumpConversation = useCallback((conversationId: string, title?: string) => {
+    const now = new Date().toISOString();
+    setConversations((prev) => {
+      const exists = prev.some((c) => c.conversation_id === conversationId);
+      const next = exists
+        ? prev.map((c) =>
+            c.conversation_id === conversationId ? { ...c, updated_at: now } : c
+          )
+        : [
+            ...prev,
+            {
+              conversation_id: conversationId,
+              title: title ?? null,
+              created_at: now,
+              updated_at: now,
+            },
+          ];
+      return next.sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime() ||
+          b.conversation_id.localeCompare(a.conversation_id)
+      );
+    });
   }, []);
 
   useEffect(() => {
@@ -546,6 +580,8 @@ export function AssistantChat() {
     let agent = "knowledge";
     let uiWidget: any = null;
     let sawTurnStarted = false;
+    const startedNewChat = activeId === null;
+    let turnConversationId: string | null = null;
 
     const patchAssistant = (patch: Partial<ViewMessage>) =>
       setMessages((m) => m.map((msg) => (msg.id === assistantId ? { ...msg, ...patch } : msg)));
@@ -557,6 +593,7 @@ export function AssistantChat() {
       )) {
         if (event.type === "turn_started") {
           sawTurnStarted = true;
+          turnConversationId = event.conversation_id;
           skipHistoryFetchRef.current = event.conversation_id;
           setActiveId(event.conversation_id);
         } else if (event.type === "route") {
@@ -592,6 +629,7 @@ export function AssistantChat() {
           confidenceApplicable = event.confidence_applicable;
           uiWidget = event.ui_widget || uiWidget;
           textSoFar = event.message || textSoFar;
+          turnConversationId = event.conversation_id;
           if (sawTurnStarted) {
             skipHistoryFetchRef.current = event.conversation_id;
             setActiveId(event.conversation_id);
@@ -627,7 +665,9 @@ export function AssistantChat() {
     } finally {
       setStreaming(false);
       abortRef.current = null;
-      refreshConversations();
+      // Update the rail locally instead of refetching the whole list.
+      const convId = turnConversationId ?? activeId;
+      if (convId) bumpConversation(convId, startedNewChat ? localTitleFromMessage(textToSend) : undefined);
     }
   }
   // Keep the ref pointed at the latest sendMessage closure (written in an
