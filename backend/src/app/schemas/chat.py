@@ -42,6 +42,7 @@ class ChatResponse(BaseModel):
     # confidence is always 0.0 and has no meaning — consumers must not render
     # a confidence badge when this is False.
     confidence_applicable: bool = False
+    meta: dict | None = None
 
 
 class ConversationSummary(BaseModel):

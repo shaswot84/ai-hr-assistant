@@ -66,6 +66,87 @@ class AgentTurnResult:
     # model_version, prompt_version, latency_ms, token_usage). None only
     # when the provider call itself failed before returning anything.
     raw_model_action: dict[str, Any] | None = None
+    ui_widget: dict[str, Any] | None = None
+
+
+def _staged_action_widget(tool_name: str, args: dict, summary: str) -> dict[str, Any]:
+    if tool_name == "submit_leave_request":
+        return {
+            "type": "staged_action",
+            "action_type": "submit_leave",
+            "title": "Confirm Leave Request",
+            "tool": tool_name,
+            "args": args,
+            "summary": summary,
+            "confirm_text": "Confirm & Submit",
+            "cancel_text": "Cancel Draft",
+        }
+    elif tool_name == "cancel_leave_request":
+        return {
+            "type": "staged_action",
+            "action_type": "cancel_leave",
+            "title": "Confirm Leave Cancellation",
+            "tool": tool_name,
+            "args": args,
+            "summary": summary,
+            "confirm_text": f"Cancel {args.get('request_number', 'Request')}",
+            "cancel_text": "Keep Request",
+        }
+    elif tool_name == "decide_leave_request":
+        approve = args.get("approve", True)
+        verb = "Approve" if approve else "Reject"
+        return {
+            "type": "staged_action",
+            "action_type": "decide_leave",
+            "title": f"Confirm Decision ({verb})",
+            "tool": tool_name,
+            "args": args,
+            "summary": summary,
+            "confirm_text": f"{verb} {args.get('request_number', 'Request')}",
+            "cancel_text": "Dismiss",
+        }
+    return {
+        "type": "staged_action",
+        "action_type": "generic",
+        "title": "Confirm Action",
+        "tool": tool_name,
+        "args": args,
+        "summary": summary,
+        "confirm_text": "Confirm",
+        "cancel_text": "Cancel",
+    }
+
+
+def _action_result_widget(tool_name: str, result: Any) -> dict[str, Any]:
+    return {
+        "type": "action_result",
+        "tool": tool_name,
+        "result": result,
+    }
+
+
+def _leave_balance_widget(result: list[dict], year: int | None = None, employee_code: str | None = None) -> dict[str, Any]:
+    return {
+        "type": "leave_balance",
+        "balances": result,
+        "year": year,
+        "employee_code": employee_code,
+    }
+
+
+def _leave_requests_widget(result: list[dict], is_manager: bool = False) -> dict[str, Any]:
+    return {
+        "type": "leave_requests_list",
+        "requests": result,
+        "is_manager": is_manager,
+    }
+
+
+def _leave_types_widget(result: list[dict]) -> dict[str, Any]:
+    return {
+        "type": "leave_types_list",
+        "types": result,
+    }
 
 
 async def handle_turn(
@@ -179,12 +260,19 @@ def _reply(
     tool_called: str | None = None,
     tool_result: dict[str, Any] | None = None,
     raw_model_action: dict[str, Any] | None = None,
+    ui_widget: dict[str, Any] | None = None,
 ) -> AgentTurnResult:
     """Record the agent's turn and build the result — the one place this
     "append history, then return" pairing happens, instead of repeated
     inline at every call site."""
     state.add_turn("agent", text, clock=clock)
-    return AgentTurnResult(reply=text, tool_called=tool_called, tool_result=tool_result, raw_model_action=raw_model_action)
+    return AgentTurnResult(
+        reply=text,
+        tool_called=tool_called,
+        tool_result=tool_result,
+        raw_model_action=raw_model_action,
+        ui_widget=ui_widget,
+    )
 
 
 # ---- deterministic list flows (requests / leave types) --------------------
@@ -263,6 +351,7 @@ def _intercept_list_requests(
     return _reply(
         state, text, clock=clock,
         tool_called="list_my_leave_requests", tool_result=result,
+        ui_widget=_leave_requests_widget(result, is_manager=False),
     )
 
 
@@ -287,6 +376,7 @@ def _intercept_types_question(
     return _reply(
         state, text, clock=clock,
         tool_called="list_leave_types", tool_result=result,
+        ui_widget=_leave_types_widget(result),
     )
 
 
@@ -403,7 +493,10 @@ def _stage_draft(
     summary = prompts.summarize_for_confirmation("submit_leave_request", canonical)
     state.stage("submit_leave_request", canonical, summary, clock=clock)
     state.clear_draft(clock=clock)
-    return _reply(state, summary, clock=clock)
+    return _reply(
+        state, summary, clock=clock,
+        ui_widget=_staged_action_widget("submit_leave_request", canonical, summary),
+    )
 
 
 _BALANCE_ASK_WORDS = ("balance", "remaining", "left", "how much", "do i have")
@@ -491,6 +584,7 @@ def _intercept_draft_turn(
         # history + workflow state, never from the DB or the model.
         return _recap_reply(state, clock=clock)
 
+    today = clock.today()
     if actor.coarse_role == "EMPLOYEE" and _is_balance_ask(user_message):
         # "get me leave balance" / "get my leave" / "how much leave do i
         # have" — answered from the employee's REAL balance deterministically.
@@ -506,9 +600,9 @@ def _intercept_draft_turn(
         return _reply(
             state, text, clock=clock,
             tool_called="get_leave_balance", tool_result=result,
+            ui_widget=_leave_balance_widget(result, year=today.year),
         )
 
-    today = clock.today()
     start, end = extract_dates(user_message, today)
 
     draft = state.draft
@@ -623,7 +717,10 @@ def _stage_reference_write(
 
     summary = prompts.summarize_for_confirmation(tool_name, args)
     state.stage(tool_name, args, summary, clock=clock)
-    return _reply(state, summary, clock=clock)
+    return _reply(
+        state, summary, clock=clock,
+        ui_widget=_staged_action_widget(tool_name, args, summary),
+    )
 
 
 def _intercept_employee_cancel(
@@ -870,7 +967,10 @@ async def _handle_stage(
     # the model getting the wording right.
     summary = prompts.summarize_for_confirmation(tool_name, canonical)
     state.stage(tool_name, canonical, summary, clock=clock)
-    return _reply(state, summary, clock=clock, raw_model_action=raw_model_action)
+    return _reply(
+        state, summary, clock=clock, raw_model_action=raw_model_action,
+        ui_widget=_staged_action_widget(tool_name, canonical, summary),
+    )
 
 
 _HR_SELF_SERVICE_LIST_TOOLS = ("list_my_leave_requests", "list_leave_types")
@@ -919,6 +1019,7 @@ def _recover_hr_list_all(
         state, text, clock=clock,
         tool_called="list_leave_requests", tool_result=result,
         raw_model_action=raw_model_action,
+        ui_widget=_leave_requests_widget(result, is_manager=True),
     )
 
 
@@ -954,6 +1055,18 @@ async def _handle_read(
 
     logger.info("Leave Agent: executed read tool %s (args=%r)", tool_name, args)
 
+    ui_widget: dict[str, Any] | None = None
+    if tool_name in ("get_leave_balance", "get_employee_leave_balance"):
+        ui_widget = _leave_balance_widget(result, year=args.get("year"), employee_code=args.get("employee_code"))
+    elif tool_name == "list_leave_types":
+        ui_widget = _leave_types_widget(result)
+    elif tool_name == "list_my_leave_requests":
+        ui_widget = _leave_requests_widget(result, is_manager=False)
+    elif tool_name == "list_leave_requests":
+        ui_widget = _leave_requests_widget(result, is_manager=True)
+    elif tool_name == "get_leave_request":
+        ui_widget = {"type": "single_leave_request", "request": result}
+
     if tool_name == "list_leave_types":
         override = _list_types_reply_override(user_message)
         if override is not None:
@@ -967,6 +1080,7 @@ async def _handle_read(
                 tool_called=tool_name,
                 tool_result=result,
                 raw_model_action=raw_model_action,
+                ui_widget=ui_widget,
             )
 
     text = format_tool_result(tool_name, result)
@@ -998,7 +1112,10 @@ async def _handle_read(
                 DraftRequest(leave_type_name=candidates[0] if len(candidates) == 1 else None),
                 clock=clock,
             )
-    return _reply(state, text, clock=clock, tool_called=tool_name, tool_result=result, raw_model_action=raw_model_action)
+    return _reply(
+        state, text, clock=clock, tool_called=tool_name, tool_result=result,
+        raw_model_action=raw_model_action, ui_widget=ui_widget,
+    )
 
 
 _REQUEST_INTENT_WORDS = (
@@ -1189,7 +1306,11 @@ async def _handle_confirmed_write(
 
         state.clear_pending(clock=clock)
         text = format_tool_result(tool_name, result)
-        return _reply(state, text, clock=clock, tool_called=tool_name, tool_result=result, raw_model_action=raw_model_action)
+        ui_widget = _action_result_widget(tool_name, result)
+        return _reply(
+            state, text, clock=clock, tool_called=tool_name, tool_result=result,
+            raw_model_action=raw_model_action, ui_widget=ui_widget,
+        )
     finally:
         state.end_execution(clock=clock)
 

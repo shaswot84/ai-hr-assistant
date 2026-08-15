@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ApiError, api, chatStream } from "@/lib/api";
 import type { ChatCitation, ChatConversation } from "@/lib/types";
+import { ChatWidgetRenderer } from "./chat-widgets";
 
 interface ViewMessage {
   id: string;
@@ -17,6 +18,7 @@ interface ViewMessage {
     low_confidence?: boolean;
     confidence_applicable?: boolean;
     safety?: "PASS" | "REDACTED" | "BLOCKED" | "FLAGGED_FOR_REVIEW";
+    ui_widget?: any;
   } | null;
   streaming?: boolean;
 }
@@ -42,7 +44,7 @@ function Markdown({ children }: { children: string }) {
           ol: ({ children }) => (
             <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>
           ),
-          li: ({ children }) => <li>{children}</li>,
+          li: ({ children }) => <li className="my-0.5">{children}</li>,
           strong: ({ children }) => (
             <strong className="font-semibold text-zinc-900">{children}</strong>
           ),
@@ -67,7 +69,9 @@ function Markdown({ children }: { children: string }) {
             </a>
           ),
           code: ({ children }) => (
-            <code className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-xs">{children}</code>
+            <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-xs text-zinc-800">
+              {children}
+            </code>
           ),
         }}
       >
@@ -80,31 +84,37 @@ function Markdown({ children }: { children: string }) {
 function CitationChips({ citations }: { citations: ChatCitation[] }) {
   if (citations.length === 0) return null;
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-1.5">
-      <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400">Sources</span>
-      {citations.map((c) => (
-        <span
-          key={c.chunk_id}
-          className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-600"
-        >
-          <svg className="h-3 w-3 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-            />
-          </svg>
-          {c.document_title}
-          {c.section_title ? ` › ${c.section_title}` : ""}
-          <span className="text-zinc-400">v{c.version_number}</span>
-        </span>
-      ))}
+    <div className="mt-3 flex flex-wrap gap-1.5 border-t border-zinc-100 pt-2.5">
+      <span className="text-[11px] font-medium text-zinc-600">Sources:</span>
+      {citations.map((c) => {
+        const pageLabel = c.page ? ` p.${c.page}` : "";
+        const sectionLabel = c.section_title ? ` · ${c.section_title}` : "";
+        return (
+          <span
+            key={c.chunk_id}
+            title={`${c.document_title} (v${c.version_number})${pageLabel}${sectionLabel}`}
+            className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-700 hover:bg-zinc-200"
+          >
+            <span className="font-medium text-zinc-900 truncate max-w-[140px]">
+              {c.document_title}
+            </span>
+            {pageLabel && <span className="text-zinc-600">{pageLabel}</span>}
+          </span>
+        );
+      })}
     </div>
   );
 }
 
-function MessageBubble({ message }: { message: ViewMessage }) {
+function MessageBubble({
+  message,
+  onAction,
+  disabled,
+}: {
+  message: ViewMessage;
+  onAction?: (actionText: string) => void;
+  disabled?: boolean;
+}) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -117,13 +127,7 @@ function MessageBubble({ message }: { message: ViewMessage }) {
 
   const lowConfidence = message.meta?.low_confidence ?? false;
   const confidence = message.meta?.confidence ?? 0;
-  // Non-retrieval agents (leave/recruitment/clarify/recap) have no retrieval
-  // confidence — the backend marks it not-applicable. Older transcripts
-  // without the flag fall back to "confidence > 0" (knowledge turns always
-  // carry a real confidence, transactional turns are 0.0).
   const confidenceApplicable = message.meta?.confidence_applicable ?? confidence > 0;
-  // Only render an agent badge for agents we know about — "unknown" (or an
-  // old persisted label) must never surface as a badge.
   const agentLabel = message.meta?.agent ? AGENT_LABELS[message.meta.agent] : undefined;
   const showMeta =
     confidenceApplicable ||
@@ -136,7 +140,7 @@ function MessageBubble({ message }: { message: ViewMessage }) {
         {message.content ? (
           <Markdown>{message.content}</Markdown>
         ) : (
-          <span className="text-zinc-400">Thinking…</span>
+          !message.meta?.ui_widget && <span className="text-zinc-400">Thinking…</span>
         )}
         {message.streaming && message.content && (
           <span
@@ -144,6 +148,15 @@ function MessageBubble({ message }: { message: ViewMessage }) {
             className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-[2px] bg-blue-500 align-text-bottom"
           />
         )}
+
+        {message.meta?.ui_widget && (
+          <ChatWidgetRenderer
+            widget={message.meta.ui_widget}
+            onAction={onAction}
+            disabled={disabled}
+          />
+        )}
+
         <CitationChips citations={message.citations ?? []} />
         {showMeta && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -181,11 +194,6 @@ function conversationDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-/**
- * Multi-turn assistant chat: conversation history, streaming answers with
- * citations, and low-confidence honesty — wired to the supervisor graph via
- * `POST /api/chat/stream`.
- */
 export function AssistantChat() {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -194,11 +202,17 @@ export function AssistantChat() {
   const [streaming, setStreaming] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  const refreshConversations = useCallback(() => {
-    api.listConversations().then(setConversations).catch(() => {});
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const refreshConversations = useCallback(async () => {
+    try {
+      const list = await api.listConversations();
+      setConversations(list);
+    } catch {
+      // offline / not authed; keep current
+    }
   }, []);
 
   useEffect(() => {
@@ -206,35 +220,50 @@ export function AssistantChat() {
   }, [refreshConversations]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
-
-  async function selectConversation(id: string) {
-    if (streaming) return;
-    setActiveId(id);
+    if (!activeId) {
+      setMessages([]);
+      return;
+    }
+    let cancelled = false;
     setLoadingHistory(true);
     setError(null);
-    try {
-      const rows = await api.listChatMessages(id);
-      setMessages(
-        rows.map((m) => ({
-          id: m.message_id,
-          role: m.role,
-          content: m.content,
-          citations: m.citations,
-          meta: m.meta,
-        }))
-      );
-    } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to load conversation.");
-    } finally {
-      setLoadingHistory(false);
-    }
+    api
+      .listChatMessages(activeId)
+      .then((history) => {
+        if (cancelled) return;
+        setMessages(
+          history.map((m) => ({
+            id: m.message_id,
+            role: m.role as "user" | "assistant" | "system",
+            content: m.content,
+            citations: (m.citations as ChatCitation[]) ?? null,
+            meta: (m.meta as ViewMessage["meta"]) ?? null,
+          }))
+        );
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof ApiError ? err.detail : "Failed to load conversation.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingHistory(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, streaming]);
+
+  function selectConversation(id: string) {
+    if (streaming) return;
+    setActiveId(id);
   }
 
   function newChat() {
-    if (streaming) return;
-    abortRef.current?.abort();
+    if (streaming) abortRef.current?.abort();
     setActiveId(null);
     setMessages([]);
     setInput("");
@@ -255,17 +284,15 @@ export function AssistantChat() {
     }
   }
 
-  async function handleSend(e: React.FormEvent) {
-    e.preventDefault();
-    const text = input.trim();
-    if (!text || streaming) return;
+  async function sendMessage(textToSend: string) {
+    if (!textToSend.trim() || streaming) return;
     setInput("");
     setError(null);
 
     const userMessage: ViewMessage = {
       id: `local-${Date.now()}`,
       role: "user",
-      content: text,
+      content: textToSend,
       citations: null,
       meta: null,
     };
@@ -286,6 +313,7 @@ export function AssistantChat() {
     let lowConfidence = false;
     let confidenceApplicable = false;
     let agent = "knowledge";
+    let uiWidget: any = null;
     let sawTurnStarted = false;
 
     const patchAssistant = (patch: Partial<ViewMessage>) =>
@@ -293,7 +321,7 @@ export function AssistantChat() {
 
     try {
       for await (const event of chatStream(
-        { conversation_id: activeId ?? undefined, message: text },
+        { conversation_id: activeId ?? undefined, message: textToSend },
         controller.signal
       )) {
         if (event.type === "turn_started") {
@@ -305,6 +333,17 @@ export function AssistantChat() {
           citations = event.citations;
           confidence = event.confidence;
           lowConfidence = event.low_confidence;
+        } else if (event.type === "ui_widget") {
+          uiWidget = event.widget;
+          patchAssistant({
+            meta: {
+              agent,
+              confidence,
+              low_confidence: lowConfidence,
+              confidence_applicable: confidenceApplicable,
+              ui_widget: uiWidget,
+            },
+          });
         } else if (event.type === "token" || event.type === "message") {
           textSoFar += event.text;
           patchAssistant({ content: textSoFar });
@@ -314,12 +353,19 @@ export function AssistantChat() {
           confidence = event.confidence;
           lowConfidence = event.low_confidence;
           confidenceApplicable = event.confidence_applicable;
+          uiWidget = event.ui_widget || uiWidget;
           textSoFar = event.message || textSoFar;
           if (sawTurnStarted) setActiveId(event.conversation_id);
           patchAssistant({
             content: textSoFar,
             citations,
-            meta: { agent, confidence, low_confidence: lowConfidence, confidence_applicable: confidenceApplicable },
+            meta: {
+              agent,
+              confidence,
+              low_confidence: lowConfidence,
+              confidence_applicable: confidenceApplicable,
+              ui_widget: uiWidget,
+            },
             streaming: false,
           });
         } else if (event.type === "error") {
@@ -338,6 +384,16 @@ export function AssistantChat() {
       abortRef.current = null;
       refreshConversations();
     }
+  }
+
+  async function handleSend(e: React.FormEvent) {
+    e.preventDefault();
+    await sendMessage(input);
+  }
+
+  function handleAction(actionText: string) {
+    if (streaming) return;
+    sendMessage(actionText);
   }
 
   return (
@@ -483,7 +539,12 @@ export function AssistantChat() {
           )}
 
           {messages.map((m) => (
-            <MessageBubble key={m.id} message={m} />
+            <MessageBubble
+              key={m.id}
+              message={m}
+              onAction={handleAction}
+              disabled={streaming}
+            />
           ))}
           <div ref={bottomRef} />
         </div>
