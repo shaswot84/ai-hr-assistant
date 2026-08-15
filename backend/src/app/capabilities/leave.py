@@ -137,6 +137,47 @@ class LeaveService:
             raise ValueError(f"Employee '{employee_code}' not found.")
         return self._balance_rows(employee, year or self._clock.today().year)
 
+    def list_all_employee_balances(
+        self, actor: UserContext, year: int | None = None
+    ) -> list[dict]:
+        """Return all active employees' leave balances (manager-only)."""
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can view all employee leave balances.")
+
+        target_year = year or self._clock.today().year
+        stmt = (
+            select(Employee, Person)
+            .join(Person, Employee.person_id == Person.person_id)
+            .where(Employee.employment_status == "ACTIVE")
+            .order_by(Employee.employee_code)
+        )
+        pairs = self._db.execute(stmt).all()
+
+        results = []
+        for emp, person in pairs:
+            raw_rows = self._balance_rows(emp, target_year)
+            balances = [
+                {
+                    "leave_type_name": row["leave_type"].leave_name,
+                    "year": row["year"],
+                    "allocated_days": str(row["allocated_days"]),
+                    "used_days": str(row["used_days"]),
+                    "remaining_days": str(row["remaining_days"]),
+                }
+                for row in raw_rows
+            ]
+            results.append(
+                {
+                    "employee_id": str(emp.employee_id),
+                    "employee_code": emp.employee_code,
+                    "employee_name": f"{person.first_name} {person.last_name}".strip(),
+                    "employee_email": person.email,
+                    "year": target_year,
+                    "balances": balances,
+                }
+            )
+        return results
+
     def _balance_rows(self, employee: Employee, target_year: int) -> list[dict]:
         """The allocated/used/remaining grid for one employee in one year —
         shared by the employee's own balance and the manager's lookup."""

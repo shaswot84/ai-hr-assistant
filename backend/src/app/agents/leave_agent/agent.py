@@ -29,6 +29,7 @@ from app.agents.leave_agent.tools import (
     get_employee_leave_balance,
     get_leave_balance,
     hr_pending_request_lines,
+    list_all_employee_balances,
     list_leave_requests,
     list_leave_types,
     list_my_leave_requests,
@@ -330,6 +331,35 @@ def _is_list_my_requests(user_message: str) -> bool:
     return has_request_scope and not has_write_intent
 
 
+_ALL_BALANCES_PHRASES = (
+    "all employee",
+    "all employees",
+    "all the employee",
+    "all the employees",
+    "employees leave balance",
+    "employees leave balances",
+    "employees balance",
+    "employees balances",
+    "team balance",
+    "team balances",
+    "team leave balance",
+    "team leave balances",
+    "everyone's balance",
+    "everybody's balance",
+    "all balances",
+)
+
+
+def _is_all_employees_balance_ask(user_message: str) -> bool:
+    """Is this manager message asking to see all employees' leave balances?"""
+    lowered = user_message.lower()
+    if not any(word in lowered for word in ("balance", "balances", "quota", "quotas", "pto", "remaining")):
+        return False
+    if "request" in lowered:
+        return False
+    return any(phrase in lowered for phrase in _ALL_BALANCES_PHRASES) or ("all" in lowered and "employee" in lowered)
+
+
 def _is_list_hr_requests(user_message: str) -> bool:
     """Is this manager message asking to SEE all leave requests in the pipeline?"""
     lowered = user_message.lower()
@@ -374,8 +404,20 @@ def _intercept_list_requests(
     *,
     clock: Clock,
 ) -> AgentTurnResult | None:
-    """Answer "show leave requests" deterministically from the real data."""
+    """Answer "show leave requests" or all-employee balances deterministically from the real data."""
     if actor.coarse_role == "HR_ADMIN":
+        if _is_all_employees_balance_ask(user_message):
+            try:
+                result = list_all_employee_balances(service, actor)
+            except ToolError as err:
+                return _reply(state, str(err), clock=clock)
+            text = format_tool_result("list_all_employee_balances", result)
+            return _reply(
+                state, text, clock=clock,
+                tool_called="list_all_employee_balances", tool_result=result,
+                ui_widget={"type": "all_employee_balances", "employees": result, "year": clock.today().year},
+            )
+
         if not _is_list_hr_requests(user_message):
             return None
         try:
@@ -1171,6 +1213,8 @@ async def _handle_read(
         ui_widget = _leave_requests_widget(result, is_manager=False)
     elif tool_name == "list_leave_requests":
         ui_widget = _leave_requests_widget(result, is_manager=True)
+    elif tool_name == "list_all_employee_balances":
+        ui_widget = {"type": "all_employee_balances", "employees": result, "year": args.get("year", clock.today().year)}
     elif tool_name == "get_leave_request":
         ui_widget = {"type": "single_leave_request", "request": result}
 

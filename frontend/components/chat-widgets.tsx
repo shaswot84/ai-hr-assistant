@@ -134,6 +134,19 @@ function UserIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
+function UsersIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
+      />
+    </svg>
+  );
+}
+
 function SearchIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -162,6 +175,8 @@ export function ChatWidgetRenderer({ widget, onAction, disabled = false }: ChatW
   switch (widget.type) {
     case "leave_balance":
       return <LeaveBalanceWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "all_employee_balances":
+      return <AllEmployeeBalancesWidget widget={widget} onAction={onAction} disabled={disabled} />;
     case "leave_requests_list":
       return <LeaveRequestsListWidget widget={widget} onAction={onAction} disabled={disabled} />;
     case "leave_types_list":
@@ -200,7 +215,7 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
   const [reason, setReason] = useState<string>("");
 
   const year = currentMonthDate.getFullYear();
-  const month = currentMonthDate.getMonth(); // 0-indexed
+  const month = currentMonthDate.getMonth();
 
   const monthNames = [
     "January", "February", "March", "April", "May", "June",
@@ -208,7 +223,6 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
   ];
   const daysOfWeek = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
-  // Calculate days in month
   const firstDayOfWeek = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
 
@@ -258,7 +272,6 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
     }
   };
 
-  // Quick Preset Handlers
   const applyPreset = (preset: "tomorrow" | "next_monday" | "3_days" | "1_week") => {
     if (disabled) return;
     const base = new Date(initialMinDate);
@@ -405,12 +418,10 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
             </div>
           ))}
 
-          {/* Empty cells before 1st day of month */}
           {Array.from({ length: firstDayOfWeek }).map((_, i) => (
             <div key={`empty-${i}`} className="h-8" />
           ))}
 
-          {/* Month Day Cells */}
           {Array.from({ length: daysInMonth }).map((_, i) => {
             const dayNum = i + 1;
             const iso = toIso(year, month, dayNum);
@@ -495,7 +506,7 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
 }
 
 /**
- * 2. Leave Balance Grid / Cards (Employee & Manager Lookup)
+ * 2. Single Employee Leave Balance Grid / Cards
  */
 function LeaveBalanceWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const balances: any[] = widget.balances || [];
@@ -613,7 +624,155 @@ function LeaveBalanceWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 }
 
 /**
- * 3. Leave Requests History / Manager Pipeline Queue
+ * 3. All Employees Leave Balances (Manager Organization Overview)
+ */
+function AllEmployeeBalancesWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const employees: any[] = widget.employees || [];
+  const year = widget.year || new Date().getFullYear();
+  const [searchQuery, setSearchQuery] = useState("");
+
+  if (employees.length === 0) return null;
+
+  const filtered = employees.filter((emp) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    const nameMatch = (emp.employee_name || "").toLowerCase().includes(q);
+    const codeMatch = (emp.employee_code || "").toLowerCase().includes(q);
+    const emailMatch = (emp.employee_email || "").toLowerCase().includes(q);
+    return nameMatch || codeMatch || emailMatch;
+  });
+
+  return (
+    <div className="mt-3.5 space-y-3 w-full max-w-xl">
+      <div className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-800">
+          <UsersIcon className="w-4 h-4 text-blue-600" />
+          <span>Organization Leave Balances ({year})</span>
+        </div>
+        <span className="text-[11px] text-zinc-400 font-medium">
+          {employees.length} employee{employees.length > 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {employees.length > 2 && (
+        <div className="relative">
+          <SearchIcon className="w-3.5 h-3.5 absolute left-3 top-2.5 text-zinc-400" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search by employee name, code (e.g. EMP-001), or email..."
+            className="w-full text-xs pl-8 pr-3 py-1.5 rounded-lg border border-zinc-200 bg-white placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+      )}
+
+      <div className="space-y-2.5">
+        {filtered.length === 0 ? (
+          <div className="p-4 text-center text-xs text-zinc-400 bg-zinc-50 rounded-xl border border-zinc-200/60">
+            No employees matching "{searchQuery}".
+          </div>
+        ) : (
+          filtered.map((emp) => {
+            const initials = emp.employee_name
+              ? emp.employee_name
+                  .split(" ")
+                  .map((n: string) => n[0])
+                  .join("")
+                  .slice(0, 2)
+                  .toUpperCase()
+              : "EM";
+
+            const balances = emp.balances || [];
+
+            return (
+              <div
+                key={emp.employee_id || emp.employee_code}
+                className="p-3.5 rounded-xl bg-white border border-zinc-200/90 shadow-sm space-y-3"
+              >
+                {/* Employee Header */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs">
+                      {initials}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-xs text-zinc-900">
+                          {emp.employee_name}
+                        </span>
+                        <span className="font-mono text-[10px] font-semibold bg-zinc-100 text-zinc-600 px-1.5 py-0.5 rounded">
+                          {emp.employee_code}
+                        </span>
+                      </div>
+                      {emp.employee_email && (
+                        <span className="text-[11px] text-zinc-400 block truncate max-w-[200px]">
+                          {emp.employee_email}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {onAction && (
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => onAction(`Show leave requests for ${emp.employee_code}`)}
+                      className="px-2.5 py-1 text-[11px] font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200/80 rounded-lg transition-colors cursor-pointer"
+                    >
+                      View Requests
+                    </button>
+                  )}
+                </div>
+
+                {/* Balances List */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1 border-t border-zinc-100">
+                  {balances.map((b: any) => {
+                    const allocated = parseFloat(b.allocated_days) || 0;
+                    const remaining = parseFloat(b.remaining_days) || 0;
+                    const pct = allocated > 0 ? Math.min(100, Math.max(0, (remaining / allocated) * 100)) : 0;
+
+                    return (
+                      <div
+                        key={b.leave_type_name}
+                        className="p-2 rounded-lg bg-zinc-50/80 border border-zinc-100 space-y-1"
+                      >
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-semibold text-zinc-700 truncate">
+                            {b.leave_type_name}
+                          </span>
+                        </div>
+                        <div className="flex items-baseline gap-1">
+                          <span className="font-bold text-xs text-zinc-900">
+                            {remaining}
+                          </span>
+                          <span className="text-[10px] text-zinc-400">
+                            / {allocated}d
+                          </span>
+                        </div>
+                        <div className="w-full h-1 bg-zinc-200/80 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${
+                              pct > 50 ? "bg-blue-600" : pct > 20 ? "bg-amber-500" : "bg-rose-500"
+                            }`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 4. Leave Requests History / Manager Pipeline Queue
  */
 function LeaveRequestsListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const requests: any[] = widget.requests || [];
@@ -740,7 +899,7 @@ function LeaveRequestsListWidget({ widget, onAction, disabled }: ChatWidgetProps
                     : "border-zinc-200/90"
                 }`}
               >
-                {/* Employee Header (if manager view and employee data exists) */}
+                {/* Employee Header */}
                 {isManager && (r.employee_name || r.employee_code) && (
                   <div className="flex items-center justify-between pb-2 border-b border-zinc-100">
                     <div className="flex items-center gap-2">
@@ -863,7 +1022,7 @@ function LeaveRequestsListWidget({ widget, onAction, disabled }: ChatWidgetProps
 }
 
 /**
- * 4. Available Leave Types
+ * 5. Available Leave Types
  */
 function LeaveTypesWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const types: any[] = widget.types || [];
@@ -921,7 +1080,7 @@ function LeaveTypesWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 }
 
 /**
- * 5. Staged Action Confirmation Widget (Employee & Manager Staging)
+ * 6. Staged Action Confirmation Widget (Employee & Manager Staging)
  */
 function StagedActionWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const title = widget.title || "Confirm Action";
@@ -1065,7 +1224,7 @@ function StagedActionWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 }
 
 /**
- * 6. Action Execution Result Widget
+ * 7. Action Execution Result Widget
  */
 function ActionResultWidget({ widget }: { widget: any }) {
   const result = widget.result || {};
@@ -1107,7 +1266,7 @@ function ActionResultWidget({ widget }: { widget: any }) {
 }
 
 /**
- * 7. Single Leave Request Detail Widget
+ * 8. Single Leave Request Detail Widget
  */
 function SingleLeaveRequestWidget({ widget }: ChatWidgetProps) {
   const req = widget.request;

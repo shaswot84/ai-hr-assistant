@@ -166,6 +166,10 @@ class DecideLeaveRequestArgs(_StrictArgs):
     approve: bool
 
 
+class ListAllEmployeeBalancesArgs(_StrictArgs):
+    year: int | None = None
+
+
 _ARGS_MODELS: dict[str, type[_StrictArgs]] = {
     "get_leave_balance": GetLeaveBalanceArgs,
     "list_leave_types": ListLeaveTypesArgs,
@@ -175,6 +179,7 @@ _ARGS_MODELS: dict[str, type[_StrictArgs]] = {
     "submit_leave_request": SubmitLeaveRequestArgs,
     "cancel_leave_request": CancelLeaveRequestArgs,
     "get_employee_leave_balance": GetEmployeeLeaveBalanceArgs,
+    "list_all_employee_balances": ListAllEmployeeBalancesArgs,
     "decide_leave_request": DecideLeaveRequestArgs,
 }
 
@@ -582,6 +587,17 @@ def get_employee_leave_balance(
     ]
 
 
+def list_all_employee_balances(
+    service: LeaveService,
+    actor: UserContext,
+    *,
+    year: int | None = None,
+) -> list[dict]:
+    """Return ALL employees' leave balances across all leave types (HR administrators only)."""
+    _require_hr_access(actor)
+    return _call_service(service.list_all_employee_balances, actor, year)
+
+
 def decide_leave_request(
     service: LeaveService,
     actor: UserContext,
@@ -613,6 +629,15 @@ def format_tool_result(tool_name: str, result: Any) -> str:
             return "You have no leave balance records for this year."
         lines = [f"{r['leave_type_name']}: {r['remaining_days']} of {r['allocated_days']} days remaining" for r in result]
         return "Your leave balance:\n" + "\n".join(lines)
+
+    if tool_name == "list_all_employee_balances":
+        if not result:
+            return "There are no employee leave balance records found."
+        lines = []
+        for emp in result:
+            b_str = ", ".join(f"{b['leave_type_name']}: {b['remaining_days']}/{b['allocated_days']} left" for b in emp.get("balances", []))
+            lines.append(f"- {emp['employee_name']} ({emp['employee_code']}): {b_str}")
+        return "Employee leave balances:\n" + "\n".join(lines)
 
     if tool_name == "list_leave_types":
         if not result:
@@ -739,6 +764,15 @@ TOOLS: dict[str, ToolSpec] = {
             "year": "integer, optional — defaults to the current year",
         },
         handler=get_employee_leave_balance,
+        requires_confirmation=False,
+    ),
+    "list_all_employee_balances": ToolSpec(
+        name="list_all_employee_balances",
+        description="List all active employees' leave balances across all leave types (HR administrators only).",
+        parameters={
+            "year": "integer, optional — defaults to the current year",
+        },
+        handler=list_all_employee_balances,
         requires_confirmation=False,
     ),
     "decide_leave_request": ToolSpec(
