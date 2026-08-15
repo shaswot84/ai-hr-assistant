@@ -301,6 +301,9 @@ export function AssistantChat() {
   const skipHistoryFetchRef = useRef<string | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
   const sendMessageRef = useRef<typeof sendMessage>(sendMessage);
+  // Conversations this session already auto-recovered (see recovery effect
+  // below) — prevents a failed regeneration from looping.
+  const recoveredRef = useRef<Set<string>>(new Set());
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -573,6 +576,24 @@ export function AssistantChat() {
   useEffect(() => {
     sendMessageRef.current = sendMessage;
   });
+
+  // Auto-recover conversations whose LAST assistant reply was persisted empty
+  // (the pre-fix recap bug): re-ask the last user question so the answer
+  // regenerates. Only attempts once per conversation and never mid-stream or
+  // while history is still loading, so a failed regeneration can't loop. Placed
+  // after the ref-update effect so the latest sendMessage (with the current
+  // activeId in its closure) is used.
+  useEffect(() => {
+    if (streaming || loadingHistory || !activeId) return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "assistant") return;
+    if (last.content || last.meta?.ui_widget) return;
+    const penultimate = messages[messages.length - 2];
+    if (!penultimate || penultimate.role !== "user" || !penultimate.content.trim()) return;
+    if (recoveredRef.current.has(activeId)) return;
+    recoveredRef.current.add(activeId);
+    sendMessageRef.current(penultimate.content);
+  }, [messages, loadingHistory, streaming, activeId]);
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
