@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.conversation import Conversation, ConversationMessage
+from app.domain.conversation import Conversation, ConversationMessage, ConversationWorkflowState
 from app.shared.clock import get_clock
 
 
@@ -37,6 +37,26 @@ class ConversationRepo:
     async def get(self, conversation_id: uuid.UUID) -> Conversation | None:
         """Fetch a conversation by id, or None if it does not exist."""
         return await self._db.get(Conversation, conversation_id)
+
+    async def delete(self, conversation_id: uuid.UUID) -> bool:
+        """Delete a conversation by id, removing associated messages and workflow states.
+
+        Returns True if deleted, False if not found.
+        """
+        conversation = await self.get(conversation_id)
+        if conversation is None:
+            return False
+        await self._db.execute(
+            delete(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id)
+        )
+        await self._db.execute(
+            delete(ConversationWorkflowState).where(
+                ConversationWorkflowState.conversation_id == conversation_id
+            )
+        )
+        await self._db.delete(conversation)
+        await self._db.flush()
+        return True
 
     async def list_for_user(self, user_id: uuid.UUID, *, limit: int = 50) -> list[Conversation]:
         """List a user's conversations, most recently active first.

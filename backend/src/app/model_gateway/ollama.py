@@ -36,16 +36,16 @@ class OllamaChatProvider(ChatProvider):
         (defaults to a per-call AsyncClient).
         """
         self._settings = get_settings()
-        chat = self._settings.chat
-        llm = self._settings.llm
-        default_base = chat.api_base or llm.url
-        default_model = chat.model or llm.model
-        default_key = chat.api_key or llm.api_key
+        chat = getattr(self._settings, "chat", None)
+        llm = getattr(self._settings, "llm", None)
+        default_base = (getattr(chat, "api_base", None) or getattr(llm, "url", None) or "")
+        default_model = (getattr(chat, "model", None) or getattr(llm, "model", None) or "")
+        default_key = (getattr(chat, "api_key", None) or getattr(llm, "api_key", None) or "")
 
         self._base = (default_base if api_base is None else api_base).removesuffix("/")
         self._model = default_model if model is None else model
         self._api_key = default_key if api_key is None else api_key
-        self._timeout = chat.request_timeout
+        self._timeout = getattr(chat, "request_timeout", 30.0)
         self._client = client
 
     def is_configured(self) -> bool:

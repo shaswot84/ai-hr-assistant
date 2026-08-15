@@ -241,6 +241,20 @@ export function AssistantChat() {
     setError(null);
   }
 
+  async function handleDeleteConversation(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (streaming) return;
+    try {
+      await api.deleteConversation(id);
+      setConversations((prev) => prev.filter((c) => c.conversation_id !== id));
+      if (activeId === id) {
+        newChat();
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : "Failed to delete conversation.");
+    }
+  }
+
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
     const text = input.trim();
@@ -350,30 +364,53 @@ export function AssistantChat() {
             </p>
           ) : (
             <ul className="space-y-1">
-              {conversations.map((c) => (
-                <li key={c.conversation_id}>
-                  <button
-                    type="button"
-                    onClick={() => selectConversation(c.conversation_id)}
-                    className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${
-                      c.conversation_id === activeId
-                        ? "bg-blue-600 text-white"
-                        : "text-zinc-700 hover:bg-zinc-100"
-                    }`}
-                  >
-                    <span className="block truncate text-[13px] font-medium">
-                      {c.title ?? "Untitled chat"}
-                    </span>
-                    <span
-                      className={`block text-[11px] ${
-                        c.conversation_id === activeId ? "text-blue-100" : "text-zinc-400"
+              {conversations.map((c) => {
+                const isActive = c.conversation_id === activeId;
+                return (
+                  <li key={c.conversation_id} className="group relative">
+                    <button
+                      type="button"
+                      onClick={() => selectConversation(c.conversation_id)}
+                      className={`w-full rounded-lg px-3 py-2 pr-8 text-left transition-colors ${
+                        isActive
+                          ? "bg-blue-600 text-white"
+                          : "text-zinc-700 hover:bg-zinc-100"
                       }`}
                     >
-                      {conversationDate(c.updated_at)}
-                    </span>
-                  </button>
-                </li>
-              ))}
+                      <span className="block truncate text-[13px] font-medium">
+                        {c.title ?? "Untitled chat"}
+                      </span>
+                      <span
+                        className={`block text-[11px] ${
+                          isActive ? "text-blue-100" : "text-zinc-400"
+                        }`}
+                      >
+                        {conversationDate(c.updated_at)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeleteConversation(c.conversation_id, e)}
+                      title="Delete conversation"
+                      aria-label="Delete conversation"
+                      className={`absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 ${
+                        isActive
+                          ? "text-blue-200 hover:bg-blue-700 hover:text-white"
+                          : "text-zinc-400 hover:bg-zinc-200 hover:text-red-600"
+                      }`}
+                    >
+                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                        />
+                      </svg>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -396,6 +433,24 @@ export function AssistantChat() {
               </option>
             ))}
           </select>
+          {activeId && (
+            <button
+              type="button"
+              onClick={(e) => handleDeleteConversation(activeId, e)}
+              title="Delete conversation"
+              aria-label="Delete conversation"
+              className="rounded p-2 text-zinc-500 hover:bg-zinc-100 hover:text-red-600"
+            >
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                />
+              </svg>
+            </button>
+          )}
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">

@@ -231,3 +231,19 @@ async def test_redis_claim_blocks_concurrent_confirmation(
     )
     assert result.tool_called == "submit_leave_request"
     assert db.scalar(select(LeaveRequest)) is not None
+
+
+def test_delete_drops_working_state_and_claims():
+    """delete(session_id) drops the cached session and any active claims."""
+    actor = _employee()
+    store = _store()
+    state = _state(actor, session_id="sess-del")
+    store.put(state)
+    assert store.get("sess-del", actor) is not None
+    assert store.begin_execution("sess-del") is True
+
+    store.delete("sess-del")
+    assert store.get("sess-del", actor) is None
+    # Claim should be clear so a new begin_execution succeeds
+    assert store.begin_execution("sess-del") is True
+

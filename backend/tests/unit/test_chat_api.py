@@ -24,7 +24,7 @@ from app.api.routes import chat as chat_module
 from app.contracts.auth import UserContext
 from app.db.base import Base
 from app.db.session import get_session
-from app.domain.conversation import Conversation, ConversationMessage
+from app.domain.conversation import Conversation, ConversationMessage, ConversationWorkflowState
 from app.domain.identity import ApplicationUser, Person
 from app.knowledge.contracts import Citation, KnowledgeResult
 from app.model_gateway.interfaces import LLM
@@ -205,6 +205,7 @@ async def chat_env(monkeypatch) -> ChatEnv:
                 ApplicationUser.__table__,
                 Conversation.__table__,
                 ConversationMessage.__table__,
+                ConversationWorkflowState.__table__,
             ],
         )
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -411,6 +412,57 @@ async def test_list_messages_other_user_404(chat_env):
         f"/api/chat/conversations/{bob_conversation.conversation_id}/messages"
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_success(chat_env):
+    """Deleting a conversation cascades message deletions and removes it from listing."""
+    first = await chat_env.client.post("/api/chat", json={"message": "turn one"})
+    conversation_id = first.json()["conversation_id"]
+
+    # Confirm it exists
+    list_resp = await chat_env.client.get("/api/chat/conversations")
+    assert any(c["conversation_id"] == conversation_id for c in list_resp.json())
+
+    # Delete it
+    del_resp = await chat_env.client.delete(f"/api/chat/conversations/{conversation_id}")
+    assert del_resp.status_code == 204
+
+    # Confirm it's gone from list
+    list_after = await chat_env.client.get("/api/chat/conversations")
+    assert not any(c["conversation_id"] == conversation_id for c in list_after.json())
+
+    # Confirm messages are gone from database
+    async with chat_env.factory() as session:
+        conversation = await ConversationRepo(session).get(uuid.UUID(conversation_id))
+        assert conversation is None
+        messages = await ConversationRepo(session).list_messages(uuid.UUID(conversation_id))
+        assert messages == []
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_not_found_404(chat_env):
+    """Deleting a non-existent conversation returns 404."""
+    resp = await chat_env.client.delete(f"/api/chat/conversations/{uuid.uuid4()}")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_other_user_404(chat_env):
+    """Deleting another user's conversation returns 404 and preserves the row."""
+    async with chat_env.factory() as session:
+        bob_id = await make_user(session, email="bob@example.com", subject="sub-2")
+        bob_conversation = await ConversationRepo(session).create(user_id=bob_id)
+        await session.commit()
+        bob_cid = bob_conversation.conversation_id
+
+    resp = await chat_env.client.delete(f"/api/chat/conversations/{bob_cid}")
+    assert resp.status_code == 404
+
+    # Bob's conversation still exists
+    async with chat_env.factory() as session:
+        assert await ConversationRepo(session).get(bob_cid) is not None
+
 
 
 # --- SSE helpers -----------------------------------------------------------

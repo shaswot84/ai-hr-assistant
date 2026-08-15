@@ -488,3 +488,21 @@ async def list_messages(
         )
         for m in messages
     ]
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204)
+async def delete_conversation(
+    conversation_id: uuid.UUID,
+    user: UserContext = Depends(require_role(*ALL_ROLES)),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Delete a conversation owned by the authenticated user."""
+    user_id = await _resolve_user_id(session, user)
+    repo = ConversationRepo(session)
+    conversation = await repo.get(conversation_id)
+    if conversation is None or conversation.user_id != user_id:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    await repo.delete(conversation_id)
+    await session.commit()
+    _leave_store().delete(str(conversation_id))
+

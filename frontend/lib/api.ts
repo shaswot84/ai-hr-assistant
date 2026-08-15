@@ -349,6 +349,11 @@ export const api = {
 
   listChatMessages: (conversationId: string) =>
     request<ChatMessage[]>(`/api/chat/conversations/${conversationId}/messages`),
+
+  deleteConversation: (conversationId: string) =>
+    request<void>(`/api/chat/conversations/${conversationId}`, {
+      method: "DELETE",
+    }),
 };
 
 /** One SSE event emitted by `GET /api/knowledge/search/stream`. */
