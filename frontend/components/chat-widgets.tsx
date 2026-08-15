@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 
 // Inline SVG Icons
 function CalendarIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
@@ -105,6 +105,48 @@ function SparklesIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
+function ChevronLeftIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+    </svg>
+  );
+}
+
+function UserIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+      />
+    </svg>
+  );
+}
+
+function SearchIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+      />
+    </svg>
+  );
+}
+
 export interface ChatWidgetProps {
   widget: {
     type: string;
@@ -124,6 +166,8 @@ export function ChatWidgetRenderer({ widget, onAction, disabled = false }: ChatW
       return <LeaveRequestsListWidget widget={widget} onAction={onAction} disabled={disabled} />;
     case "leave_types_list":
       return <LeaveTypesWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "leave_date_picker":
+      return <LeaveDatePickerWidget widget={widget} onAction={onAction} disabled={disabled} />;
     case "staged_action":
       return <StagedActionWidget widget={widget} onAction={onAction} disabled={disabled} />;
     case "action_result":
@@ -136,7 +180,322 @@ export function ChatWidgetRenderer({ widget, onAction, disabled = false }: ChatW
 }
 
 /**
- * 1. Leave Balance Grid / Cards
+ * 1. Interactive Calendar Date Picker Widget
+ */
+function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const leaveTypeName = widget.leave_type_name;
+  const initialMinDate = widget.min_date || new Date().toISOString().split("T")[0];
+
+  const [currentMonthDate, setCurrentMonthDate] = useState(() => {
+    if (widget.start_date) {
+      const [y, m] = widget.start_date.split("-").map(Number);
+      return new Date(y, m - 1, 1);
+    }
+    const [y, m] = initialMinDate.split("-").map(Number);
+    return new Date(y, m - 1, 1);
+  });
+
+  const [selectedStart, setSelectedStart] = useState<string | null>(widget.start_date || null);
+  const [selectedEnd, setSelectedEnd] = useState<string | null>(widget.end_date || null);
+  const [reason, setReason] = useState<string>("");
+
+  const year = currentMonthDate.getFullYear();
+  const month = currentMonthDate.getMonth(); // 0-indexed
+
+  const monthNames = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  ];
+  const daysOfWeek = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+  // Calculate days in month
+  const firstDayOfWeek = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const prevMonth = () => {
+    setCurrentMonthDate(new Date(year, month - 1, 1));
+  };
+
+  const nextMonth = () => {
+    setCurrentMonthDate(new Date(year, month + 1, 1));
+  };
+
+  const toIso = (y: number, m: number, d: number) => {
+    const mm = String(m + 1).padStart(2, "0");
+    const dd = String(d).padStart(2, "0");
+    return `${y}-${mm}-${dd}`;
+  };
+
+  const formatDisplayDate = (iso: string) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  };
+
+  const calculateDays = (start: string, end: string) => {
+    const s = new Date(start);
+    const e = new Date(end);
+    const diff = Math.round((e.getTime() - s.getTime()) / (1000 * 3600 * 24)) + 1;
+    return diff > 0 ? diff : 1;
+  };
+
+  const handleDateClick = (iso: string) => {
+    if (disabled || iso < initialMinDate) return;
+
+    if (!selectedStart || (selectedStart && selectedEnd)) {
+      setSelectedStart(iso);
+      setSelectedEnd(null);
+    } else if (selectedStart && !selectedEnd) {
+      if (iso < selectedStart) {
+        setSelectedStart(iso);
+        setSelectedEnd(null);
+      } else {
+        setSelectedEnd(iso);
+      }
+    }
+  };
+
+  // Quick Preset Handlers
+  const applyPreset = (preset: "tomorrow" | "next_monday" | "3_days" | "1_week") => {
+    if (disabled) return;
+    const base = new Date(initialMinDate);
+    
+    if (preset === "tomorrow") {
+      const target = new Date(base);
+      target.setDate(base.getDate() + 1);
+      const iso = target.toISOString().split("T")[0];
+      setSelectedStart(iso);
+      setSelectedEnd(iso);
+      setCurrentMonthDate(new Date(target.getFullYear(), target.getMonth(), 1));
+    } else if (preset === "next_monday") {
+      const target = new Date(base);
+      const day = target.getDay();
+      const daysUntilNextMonday = ((1 + 7 - day) % 7) || 7;
+      target.setDate(target.getDate() + daysUntilNextMonday);
+      const iso = target.toISOString().split("T")[0];
+      setSelectedStart(iso);
+      setSelectedEnd(iso);
+      setCurrentMonthDate(new Date(target.getFullYear(), target.getMonth(), 1));
+    } else if (preset === "3_days") {
+      const s = new Date(base);
+      s.setDate(base.getDate() + 1);
+      const e = new Date(s);
+      e.setDate(s.getDate() + 2);
+      setSelectedStart(s.toISOString().split("T")[0]);
+      setSelectedEnd(e.toISOString().split("T")[0]);
+      setCurrentMonthDate(new Date(s.getFullYear(), s.getMonth(), 1));
+    } else if (preset === "1_week") {
+      const s = new Date(base);
+      s.setDate(base.getDate() + 1);
+      const e = new Date(s);
+      e.setDate(s.getDate() + 6);
+      setSelectedStart(s.toISOString().split("T")[0]);
+      setSelectedEnd(e.toISOString().split("T")[0]);
+      setCurrentMonthDate(new Date(s.getFullYear(), s.getMonth(), 1));
+    }
+  };
+
+  const handleContinue = () => {
+    if (!selectedStart || !onAction || disabled) return;
+    let messageText = "";
+    const effectiveEnd = selectedEnd || selectedStart;
+
+    if (selectedStart === effectiveEnd) {
+      messageText = `for ${selectedStart}`;
+    } else {
+      messageText = `from ${selectedStart} to ${effectiveEnd}`;
+    }
+
+    if (reason.trim()) {
+      messageText += ` for ${reason.trim()}`;
+    }
+
+    onAction(messageText);
+  };
+
+  const totalDays = selectedStart ? calculateDays(selectedStart, selectedEnd || selectedStart) : 0;
+
+  return (
+    <div className="mt-3.5 p-4 rounded-xl bg-white border border-blue-200/90 shadow-sm w-full max-w-xl space-y-3.5">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-900">
+          <CalendarIcon className="w-4 h-4 text-blue-600" />
+          <span>Select Dates {leaveTypeName ? `for ${leaveTypeName}` : ""}</span>
+        </div>
+        <span className="text-[11px] text-zinc-500 font-medium">
+          {selectedStart && (selectedEnd || selectedStart)
+            ? `${totalDays} ${totalDays === 1 ? "day" : "days"} selected`
+            : "Click start & end dates"}
+        </span>
+      </div>
+
+      {/* Quick Presets */}
+      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+        <span className="text-[11px] font-medium text-zinc-400 mr-1">Presets:</span>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => applyPreset("tomorrow")}
+          className="px-2.5 py-1 text-xs font-medium rounded-lg bg-zinc-50 hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200/80 transition-colors disabled:opacity-50 cursor-pointer"
+        >
+          Tomorrow
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => applyPreset("next_monday")}
+          className="px-2.5 py-1 text-xs font-medium rounded-lg bg-zinc-50 hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200/80 transition-colors disabled:opacity-50 cursor-pointer"
+        >
+          Next Monday
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => applyPreset("3_days")}
+          className="px-2.5 py-1 text-xs font-medium rounded-lg bg-zinc-50 hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200/80 transition-colors disabled:opacity-50 cursor-pointer"
+        >
+          3 Days
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => applyPreset("1_week")}
+          className="px-2.5 py-1 text-xs font-medium rounded-lg bg-zinc-50 hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200/80 transition-colors disabled:opacity-50 cursor-pointer"
+        >
+          1 Week
+        </button>
+      </div>
+
+      {/* Month Navigation */}
+      <div className="p-3 bg-zinc-50/70 border border-zinc-200/80 rounded-xl space-y-2.5">
+        <div className="flex items-center justify-between px-1">
+          <span className="text-xs font-bold text-zinc-800">
+            {monthNames[month]} {year}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={prevMonth}
+              className="p-1 rounded-md text-zinc-600 hover:bg-zinc-200 transition-colors disabled:opacity-50 cursor-pointer"
+              aria-label="Previous month"
+            >
+              <ChevronLeftIcon className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={nextMonth}
+              className="p-1 rounded-md text-zinc-600 hover:bg-zinc-200 transition-colors disabled:opacity-50 cursor-pointer"
+              aria-label="Next month"
+            >
+              <ChevronRightIcon className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Calendar Grid */}
+        <div className="grid grid-cols-7 gap-1 text-center text-xs">
+          {daysOfWeek.map((d) => (
+            <div key={d} className="py-1 text-[11px] font-semibold text-zinc-400 uppercase">
+              {d}
+            </div>
+          ))}
+
+          {/* Empty cells before 1st day of month */}
+          {Array.from({ length: firstDayOfWeek }).map((_, i) => (
+            <div key={`empty-${i}`} className="h-8" />
+          ))}
+
+          {/* Month Day Cells */}
+          {Array.from({ length: daysInMonth }).map((_, i) => {
+            const dayNum = i + 1;
+            const iso = toIso(year, month, dayNum);
+            const isPast = iso < initialMinDate;
+            const isStart = iso === selectedStart;
+            const isEnd = iso === selectedEnd;
+            const isInRange = Boolean(
+              selectedStart && selectedEnd && iso > selectedStart && iso < selectedEnd
+            );
+
+            let cellClass = "h-8 w-full flex items-center justify-center text-xs rounded-lg transition-all ";
+
+            if (isStart || isEnd) {
+              cellClass += "bg-blue-600 text-white font-bold shadow-sm ";
+            } else if (isInRange) {
+              cellClass += "bg-blue-100 text-blue-900 font-semibold rounded-none ";
+            } else if (isPast) {
+              cellClass += "text-zinc-300 cursor-not-allowed ";
+            } else {
+              cellClass += "text-zinc-700 hover:bg-blue-50 hover:text-blue-600 cursor-pointer ";
+            }
+
+            return (
+              <button
+                key={iso}
+                type="button"
+                disabled={isPast || disabled}
+                onClick={() => handleDateClick(iso)}
+                className={cellClass}
+              >
+                {dayNum}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Date Summary and Reason Input */}
+      <div className="space-y-2 pt-1 border-t border-zinc-100">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-zinc-500 font-medium">Selected Range:</span>
+          <span className="font-semibold text-zinc-900">
+            {selectedStart ? (
+              <>
+                {formatDisplayDate(selectedStart)}
+                {selectedEnd && selectedEnd !== selectedStart
+                  ? ` → ${formatDisplayDate(selectedEnd)}`
+                  : ""}
+              </>
+            ) : (
+              <span className="italic text-zinc-400">None selected</span>
+            )}
+          </span>
+        </div>
+
+        <div>
+          <input
+            type="text"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Reason for leave (optional, e.g. Personal errand)"
+            disabled={disabled}
+            className="w-full text-xs px-3 py-1.5 rounded-lg border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-zinc-800 placeholder:text-zinc-400 bg-white"
+          />
+        </div>
+      </div>
+
+      {/* Action Submit Button */}
+      {onAction && (
+        <button
+          type="button"
+          disabled={!selectedStart || disabled}
+          onClick={handleContinue}
+          className="w-full inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors disabled:opacity-50 cursor-pointer"
+        >
+          <span>Continue with Selected Dates ({totalDays} {totalDays === 1 ? "day" : "days"})</span>
+          <ArrowRightIcon className="w-3.5 h-3.5" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 2. Leave Balance Grid / Cards (Employee & Manager Lookup)
  */
 function LeaveBalanceWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const balances: any[] = widget.balances || [];
@@ -159,6 +518,28 @@ function LeaveBalanceWidget({ widget, onAction, disabled }: ChatWidgetProps) {
           {balances.length} categor{balances.length > 1 ? "ies" : "y"}
         </span>
       </div>
+
+      {employeeCode && onAction && (
+        <div className="flex items-center justify-between p-2.5 bg-blue-50/80 border border-blue-200/80 rounded-xl text-xs">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-[10px]">
+              <UserIcon className="w-3.5 h-3.5" />
+            </div>
+            <div>
+              <span className="font-bold text-blue-950">Employee {employeeCode}</span>
+              <span className="text-blue-700 block text-[11px]">Manager Quota Inspection</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onAction(`Show leave requests for ${employeeCode}`)}
+            className="px-2.5 py-1 bg-white hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg font-medium text-[11px] transition-colors cursor-pointer"
+          >
+            View Requests
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
         {balances.map((b) => {
@@ -232,124 +613,257 @@ function LeaveBalanceWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 }
 
 /**
- * 2. Leave Requests History / Queue
+ * 3. Leave Requests History / Manager Pipeline Queue
  */
 function LeaveRequestsListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const requests: any[] = widget.requests || [];
   const isManager = Boolean(widget.is_manager);
 
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "PENDING" | "APPROVED" | "REJECTED">("ALL");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+
   if (requests.length === 0) return null;
 
+  const pendingCount = requests.filter((r) => r.status === "PENDING").length;
+  const approvedCount = requests.filter((r) => r.status === "APPROVED").length;
+  const rejectedCount = requests.filter((r) => r.status === "REJECTED").length;
+
+  const filtered = requests.filter((r) => {
+    if (statusFilter !== "ALL" && r.status !== statusFilter) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const numMatch = (r.request_number || "").toLowerCase().includes(q);
+      const typeMatch = (r.leave_type_name || "").toLowerCase().includes(q);
+      const nameMatch = (r.employee_name || "").toLowerCase().includes(q);
+      const codeMatch = (r.employee_code || "").toLowerCase().includes(q);
+      return numMatch || typeMatch || nameMatch || codeMatch;
+    }
+    return true;
+  });
+
   return (
-    <div className="mt-3.5 space-y-2.5 w-full max-w-xl">
+    <div className="mt-3.5 space-y-3 w-full max-w-xl">
       <div className="flex items-center justify-between px-1">
-        <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
-          <FileTextIcon className="w-3.5 h-3.5 text-blue-600" />
-          <span>{isManager ? "Leave Requests Queue (All Employees)" : "Your Leave Requests"}</span>
+        <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-800">
+          <FileTextIcon className="w-4 h-4 text-blue-600" />
+          <span>{isManager ? "Team Leave Requests Pipeline" : "Your Leave Requests"}</span>
         </div>
-        <span className="text-[11px] text-zinc-400">
-          {requests.length} request{requests.length > 1 ? "s" : ""}
+        <span className="text-[11px] text-zinc-400 font-medium">
+          {requests.length} total
         </span>
       </div>
 
+      {/* Filter Tabs & Search Bar */}
       <div className="space-y-2">
-        {requests.map((r) => {
-          const isPending = r.status === "PENDING";
-          const isApproved = r.status === "APPROVED";
-          const isRejected = r.status === "REJECTED";
+        <div className="flex items-center gap-1 overflow-x-auto pb-1 text-xs">
+          <button
+            type="button"
+            onClick={() => setStatusFilter("ALL")}
+            className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
+              statusFilter === "ALL"
+                ? "bg-zinc-800 text-white"
+                : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+            }`}
+          >
+            All ({requests.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("PENDING")}
+            className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer flex items-center gap-1 ${
+              statusFilter === "PENDING"
+                ? "bg-amber-600 text-white"
+                : "bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200/60"
+            }`}
+          >
+            <ClockIcon className="w-3 h-3" />
+            Pending ({pendingCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("APPROVED")}
+            className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer flex items-center gap-1 ${
+              statusFilter === "APPROVED"
+                ? "bg-emerald-600 text-white"
+                : "bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200/60"
+            }`}
+          >
+            <CheckIcon className="w-3 h-3" />
+            Approved ({approvedCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("REJECTED")}
+            className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer flex items-center gap-1 ${
+              statusFilter === "REJECTED"
+                ? "bg-rose-600 text-white"
+                : "bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200/60"
+            }`}
+          >
+            <XIcon className="w-3 h-3" />
+            Rejected ({rejectedCount})
+          </button>
+        </div>
 
-          return (
-            <div
-              key={r.request_number || r.leave_request_id}
-              className="p-3.5 rounded-xl bg-white border border-zinc-200/90 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-            >
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-mono text-xs font-bold text-zinc-900 bg-zinc-100 px-1.5 py-0.5 rounded">
-                    {r.request_number}
-                  </span>
-                  <span className="font-semibold text-xs text-zinc-800">
-                    {r.leave_type_name}
-                  </span>
-                  <span
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                      isApproved
-                        ? "bg-emerald-50 text-emerald-700 border border-emerald-200/60"
-                        : isPending
-                        ? "bg-amber-50 text-amber-700 border border-amber-200/60"
-                        : isRejected
-                        ? "bg-rose-50 text-rose-700 border border-rose-200/60"
-                        : "bg-zinc-100 text-zinc-600"
-                    }`}
-                  >
-                    {isApproved && <CheckIcon className="w-2.5 h-2.5" />}
-                    {isPending && <ClockIcon className="w-2.5 h-2.5" />}
-                    {isRejected && <XIcon className="w-2.5 h-2.5" />}
-                    <span>{r.status}</span>
-                  </span>
-                </div>
+        {requests.length > 2 && (
+          <div className="relative">
+            <SearchIcon className="w-3.5 h-3.5 absolute left-3 top-2.5 text-zinc-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by employee, request #, or leave type..."
+              className="w-full text-xs pl-8 pr-3 py-1.5 rounded-lg border border-zinc-200 bg-white placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+        )}
+      </div>
 
-                <div className="flex items-center gap-2 text-xs text-zinc-500">
-                  <span>
-                    {r.start_date} to {r.end_date}
-                  </span>
-                  <span>•</span>
-                  <span className="font-medium text-zinc-700">
-                    {r.total_days} {parseFloat(r.total_days) === 1 ? "day" : "days"}
-                  </span>
-                  {r.reason && (
-                    <>
+      {/* Requests List */}
+      <div className="space-y-2">
+        {filtered.length === 0 ? (
+          <div className="p-4 text-center text-xs text-zinc-400 bg-zinc-50 rounded-xl border border-zinc-200/60">
+            No requests matching the selected filter.
+          </div>
+        ) : (
+          filtered.map((r) => {
+            const isPending = r.status === "PENDING";
+            const isApproved = r.status === "APPROVED";
+            const isRejected = r.status === "REJECTED";
+
+            return (
+              <div
+                key={r.request_number || r.leave_request_id}
+                className={`p-3.5 rounded-xl bg-white border shadow-sm transition-all duration-150 flex flex-col gap-2.5 ${
+                  isPending && isManager
+                    ? "border-amber-300 ring-1 ring-amber-400/20"
+                    : "border-zinc-200/90"
+                }`}
+              >
+                {/* Employee Header (if manager view and employee data exists) */}
+                {isManager && (r.employee_name || r.employee_code) && (
+                  <div className="flex items-center justify-between pb-2 border-b border-zinc-100">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-[10px]">
+                        {r.employee_name
+                          ? r.employee_name
+                              .split(" ")
+                              .map((n: string) => n[0])
+                              .join("")
+                              .slice(0, 2)
+                          : "EM"}
+                      </div>
+                      <div>
+                        <span className="font-bold text-xs text-zinc-900">
+                          {r.employee_name || "Employee"}
+                        </span>
+                        {r.employee_code && (
+                          <span className="ml-1.5 text-[11px] font-mono text-zinc-500">
+                            ({r.employee_code})
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {r.employee_email && (
+                      <span className="text-[11px] text-zinc-400 truncate max-w-[160px]">
+                        {r.employee_email}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-xs font-bold text-zinc-900 bg-zinc-100 px-1.5 py-0.5 rounded">
+                        {r.request_number}
+                      </span>
+                      <span className="font-semibold text-xs text-zinc-800">
+                        {r.leave_type_name}
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                          isApproved
+                            ? "bg-emerald-50 text-emerald-700 border border-emerald-200/60"
+                            : isPending
+                            ? "bg-amber-50 text-amber-700 border border-amber-200/60"
+                            : isRejected
+                            ? "bg-rose-50 text-rose-700 border border-rose-200/60"
+                            : "bg-zinc-100 text-zinc-600"
+                        }`}
+                      >
+                        {isApproved && <CheckIcon className="w-2.5 h-2.5" />}
+                        {isPending && <ClockIcon className="w-2.5 h-2.5" />}
+                        {isRejected && <XIcon className="w-2.5 h-2.5" />}
+                        <span>{r.status}</span>
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs text-zinc-500">
+                      <span>
+                        {r.start_date} to {r.end_date}
+                      </span>
                       <span>•</span>
-                      <span className="italic truncate max-w-[180px]">"{r.reason}"</span>
-                    </>
+                      <span className="font-medium text-zinc-700">
+                        {r.total_days} {parseFloat(r.total_days) === 1 ? "day" : "days"}
+                      </span>
+                      {r.reason && (
+                        <>
+                          <span>•</span>
+                          <span className="italic truncate max-w-[180px]">"{r.reason}"</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Action Buttons */}
+                  {isPending && onAction && (
+                    <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                      {isManager ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => onAction(`Approve request ${r.request_number}`)}
+                            className="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors shadow-sm disabled:opacity-50 cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <CheckIcon className="w-3 h-3" />
+                            <span>Approve</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => onAction(`Reject request ${r.request_number}`)}
+                            className="px-3 py-1.5 text-xs font-medium bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg transition-colors disabled:opacity-50 cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <XIcon className="w-3 h-3" />
+                            <span>Reject</span>
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => onAction(`Cancel request ${r.request_number}`)}
+                          className="px-2.5 py-1 text-xs font-medium text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200/70 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
+                        >
+                          Cancel Request
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
-
-              {/* Action Buttons */}
-              {isPending && onAction && (
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {isManager ? (
-                    <>
-                      <button
-                        type="button"
-                        disabled={disabled}
-                        onClick={() => onAction(`Approve request ${r.request_number}`)}
-                        className="px-2.5 py-1 text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        type="button"
-                        disabled={disabled}
-                        onClick={() => onAction(`Reject request ${r.request_number}`)}
-                        className="px-2.5 py-1 text-xs font-medium bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
-                      >
-                        Reject
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={disabled}
-                      onClick={() => onAction(`Cancel request ${r.request_number}`)}
-                      className="px-2.5 py-1 text-xs font-medium text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200/70 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
-                    >
-                      Cancel Request
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
+            );
+          })
+        )}
       </div>
     </div>
   );
 }
 
 /**
- * 3. Available Leave Types
+ * 4. Available Leave Types
  */
 function LeaveTypesWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const types: any[] = widget.types || [];
@@ -407,7 +921,7 @@ function LeaveTypesWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 }
 
 /**
- * 4. Staged Action Confirmation Widget
+ * 5. Staged Action Confirmation Widget (Employee & Manager Staging)
  */
 function StagedActionWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const title = widget.title || "Confirm Action";
@@ -433,7 +947,7 @@ function StagedActionWidget({ widget, onAction, disabled }: ChatWidgetProps) {
         </div>
       </div>
 
-      <div className="mt-3 p-3 bg-white border border-blue-100 rounded-lg text-xs space-y-1.5">
+      <div className="mt-3 p-3.5 bg-white border border-blue-100 rounded-xl text-xs space-y-2">
         {actionType === "submit_leave" && (
           <>
             <div className="flex justify-between">
@@ -469,26 +983,49 @@ function StagedActionWidget({ widget, onAction, disabled }: ChatWidgetProps) {
         )}
 
         {actionType === "decide_leave" && (
-          <>
+          <div className="space-y-2">
+            {args.employee_name && (
+              <div className="flex items-center justify-between pb-2 border-b border-zinc-100">
+                <span className="text-zinc-500">Requesting Employee:</span>
+                <span className="font-bold text-zinc-900">
+                  {args.employee_name} {args.employee_code ? `(${args.employee_code})` : ""}
+                </span>
+              </div>
+            )}
             <div className="flex justify-between">
-              <span className="text-zinc-500">Request:</span>
+              <span className="text-zinc-500">Request Number:</span>
               <span className="font-mono font-bold text-zinc-900">
                 {args.request_number}
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Decision:</span>
+            {args.start_date && (
+              <div className="flex justify-between">
+                <span className="text-zinc-500">Duration:</span>
+                <span className="font-semibold text-zinc-800">
+                  {args.start_date} to {args.end_date} ({args.total_days} days)
+                </span>
+              </div>
+            )}
+            {args.reason && (
+              <div className="flex justify-between">
+                <span className="text-zinc-500">Employee Reason:</span>
+                <span className="italic text-zinc-800">"{args.reason}"</span>
+              </div>
+            )}
+            <div className="flex justify-between items-center pt-1 border-t border-zinc-100">
+              <span className="text-zinc-500">Decision Outcome:</span>
               <span
-                className={`font-semibold ${
+                className={`inline-flex items-center gap-1 font-bold text-xs px-2 py-0.5 rounded-full ${
                   args.approve
-                    ? "text-emerald-600"
-                    : "text-rose-600"
+                    ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                    : "bg-rose-50 text-rose-700 border border-rose-200"
                 }`}
               >
-                {args.approve ? "Approve" : "Reject"}
+                {args.approve ? <CheckIcon className="w-3 h-3" /> : <XIcon className="w-3 h-3" />}
+                {args.approve ? "APPROVE REQUEST" : "REJECT REQUEST"}
               </span>
             </div>
-          </>
+          </div>
         )}
 
         {summary && !actionType && (
@@ -502,7 +1039,13 @@ function StagedActionWidget({ widget, onAction, disabled }: ChatWidgetProps) {
             type="button"
             disabled={disabled}
             onClick={() => onAction("yes")}
-            className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors disabled:opacity-50 cursor-pointer"
+            className={`flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors disabled:opacity-50 cursor-pointer ${
+              actionType === "decide_leave" && !args.approve
+                ? "bg-rose-600 hover:bg-rose-700 active:bg-rose-800"
+                : actionType === "decide_leave" && args.approve
+                ? "bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800"
+                : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
+            }`}
           >
             <CheckIcon className="w-3.5 h-3.5" />
             <span>{confirmText}</span>
@@ -522,24 +1065,40 @@ function StagedActionWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 }
 
 /**
- * 5. Action Execution Result Widget
+ * 6. Action Execution Result Widget
  */
 function ActionResultWidget({ widget }: { widget: any }) {
   const result = widget.result || {};
+  const isApproved = result.status === "APPROVED";
+  const isRejected = result.status === "REJECTED";
+  const isCancelled = result.status === "CANCELLED";
 
   return (
-    <div className="mt-3 p-3.5 rounded-xl bg-emerald-50/80 border border-emerald-200/90 w-full max-w-xl flex items-start gap-2.5">
-      <div className="w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0 mt-0.5">
-        <CheckCircleIcon className="w-4 h-4" />
+    <div
+      className={`mt-3 p-3.5 rounded-xl border w-full max-w-xl flex items-start gap-2.5 ${
+        isRejected
+          ? "bg-rose-50/80 border-rose-200/90 text-rose-900"
+          : isCancelled
+          ? "bg-zinc-50 border-zinc-200 text-zinc-800"
+          : "bg-emerald-50/80 border-emerald-200/90 text-emerald-900"
+      }`}
+    >
+      <div
+        className={`w-6 h-6 rounded-full text-white flex items-center justify-center shrink-0 mt-0.5 ${
+          isRejected ? "bg-rose-600" : isCancelled ? "bg-zinc-600" : "bg-emerald-600"
+        }`}
+      >
+        {isRejected ? <XIcon className="w-3.5 h-3.5" /> : <CheckCircleIcon className="w-4 h-4" />}
       </div>
       <div className="space-y-1 text-xs">
-        <div className="font-bold text-emerald-900">
-          Action Completed Successfully
+        <div className="font-bold">
+          Action Completed: {result.status || "SUCCESS"}
         </div>
         {result.request_number && (
-          <div className="text-emerald-800">
-            Request <span className="font-mono font-bold">{result.request_number}</span> status is now{" "}
-            <span className="font-semibold">{result.status}</span>.
+          <div>
+            Request <span className="font-mono font-bold">{result.request_number}</span>{" "}
+            {result.employee_name ? `for ${result.employee_name} ` : ""}is now{" "}
+            <span className="font-semibold uppercase">{result.status}</span>.
           </div>
         )}
       </div>
@@ -548,7 +1107,7 @@ function ActionResultWidget({ widget }: { widget: any }) {
 }
 
 /**
- * 6. Single Leave Request Detail Widget
+ * 7. Single Leave Request Detail Widget
  */
 function SingleLeaveRequestWidget({ widget }: ChatWidgetProps) {
   const req = widget.request;

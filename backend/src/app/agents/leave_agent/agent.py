@@ -26,6 +26,7 @@ from app.agents.leave_agent.tools import (
     ToolError,
     canonical_args,
     format_tool_result,
+    get_employee_leave_balance,
     get_leave_balance,
     hr_pending_request_lines,
     list_leave_requests,
@@ -301,18 +302,43 @@ _LIST_MY_REQUESTS_PHRASES = (
     "my pending",
     "my history",
 )
+_HR_LIST_REQUESTS_PHRASES = (
+    "all leave request",
+    "all leave requests",
+    "all request",
+    "all requests",
+    "leave request",
+    "leave requests",
+    "show all requests",
+    "list all requests",
+    "pending leave",
+    "pending requests",
+    "pipeline",
+)
 _TYPES_QUESTION_PHRASES = ("leave type", "types of leave", "which leaves", "what leaves")
 
 
 def _is_list_my_requests(user_message: str) -> bool:
-    """Is this employee message asking to SEE their own leave requests?
-
-    Self-scoped ("my requests") so an HR "show me all leave requests" keeps
-    the manager flow. Write intents (cancel / decide / approve) are excluded
-    — they belong to the reference-write interception.
-    """
+    """Is this employee message asking to SEE their own leave requests?"""
     lowered = user_message.lower()
     has_request_scope = any(phrase in lowered for phrase in _LIST_MY_REQUESTS_PHRASES)
+    has_write_intent = (
+        any(word in lowered for word in _CANCEL_INTENT_WORDS)
+        or any(word in lowered for word in _DECIDE_INTENT_WORDS)
+        or "approve" in lowered
+    )
+    return has_request_scope and not has_write_intent
+
+
+def _is_list_hr_requests(user_message: str) -> bool:
+    """Is this manager message asking to SEE all leave requests in the pipeline?"""
+    lowered = user_message.lower()
+    if "pending" in lowered or "balance" in lowered:
+        return False
+    has_request_scope = (
+        any(phrase in lowered for phrase in _HR_LIST_REQUESTS_PHRASES)
+        or ("request" in lowered and ("show" in lowered or "list" in lowered or "all" in lowered))
+    )
     has_write_intent = (
         any(word in lowered for word in _CANCEL_INTENT_WORDS)
         or any(word in lowered for word in _DECIDE_INTENT_WORDS)
@@ -348,21 +374,35 @@ def _intercept_list_requests(
     *,
     clock: Clock,
 ) -> AgentTurnResult | None:
-    """Answer "show my leave requests" deterministically from the real data."""
-    if actor.coarse_role != "EMPLOYEE":
-        return None
-    if not _is_list_my_requests(user_message):
-        return None
-    try:
-        result = list_my_leave_requests(service, actor)
-    except ToolError as err:
-        return _reply(state, str(err), clock=clock)
-    text = format_tool_result("list_my_leave_requests", result)
-    return _reply(
-        state, text, clock=clock,
-        tool_called="list_my_leave_requests", tool_result=result,
-        ui_widget=_leave_requests_widget(result, is_manager=False),
-    )
+    """Answer "show leave requests" deterministically from the real data."""
+    if actor.coarse_role == "HR_ADMIN":
+        if not _is_list_hr_requests(user_message):
+            return None
+        try:
+            result = list_leave_requests(service, actor)
+        except ToolError as err:
+            return _reply(state, str(err), clock=clock)
+        text = format_tool_result("list_leave_requests", result)
+        return _reply(
+            state, text, clock=clock,
+            tool_called="list_leave_requests", tool_result=result,
+            ui_widget=_leave_requests_widget(result, is_manager=True),
+        )
+
+    if actor.coarse_role == "EMPLOYEE":
+        if not _is_list_my_requests(user_message):
+            return None
+        try:
+            result = list_my_leave_requests(service, actor)
+        except ToolError as err:
+            return _reply(state, str(err), clock=clock)
+        text = format_tool_result("list_my_leave_requests", result)
+        return _reply(
+            state, text, clock=clock,
+            tool_called="list_my_leave_requests", tool_result=result,
+            ui_widget=_leave_requests_widget(result, is_manager=False),
+        )
+    return None
 
 
 def _intercept_types_question(
@@ -553,6 +593,30 @@ def _is_balance_ask(user_message: str) -> bool:
         )
         return not request_wording
     return "get" in lowered and "my leave" in lowered
+
+
+_EMP_CODE_RE = re.compile(r"EMP-\d{3,}", re.IGNORECASE)
+
+
+def _extract_employee_lookup_target(user_message: str) -> str | None:
+    """Extract an employee code or name from a manager's balance inquiry."""
+    match = _EMP_CODE_RE.search(user_message)
+    if match:
+        return match.group(0).upper()
+    lowered = user_message.lower()
+    if " for " in lowered:
+        idx = lowered.find(" for ")
+        target = user_message[idx + 5:].strip().rstrip(".?!\"'")
+        if target.lower().startswith("employee "):
+            target = target[9:].strip()
+        if target:
+            return target
+    if "employee " in lowered:
+        idx = lowered.find("employee ")
+        target = user_message[idx + 9:].strip().rstrip(".?!\"'")
+        if target:
+            return target
+    return None
 
 
 def _intercept_draft_turn(
@@ -906,6 +970,7 @@ def _intercept_hr_reference_write(
             return _reply(
                 state, text, clock=clock,
                 tool_called="list_leave_requests", tool_result=result,
+                ui_widget=_leave_requests_widget(result, is_manager=True),
             )
         try:
             lines = hr_pending_request_lines(service, actor)
@@ -915,6 +980,11 @@ def _intercept_hr_reference_write(
             return _reply(
                 state, "There are no pending leave requests to act on.", clock=clock
             )
+        pending_result = []
+        try:
+            pending_result = [r for r in list_leave_requests(service, actor) if r.get("status") == "PENDING"]
+        except Exception:
+            pass
         return _reply(
             state,
             "Here are the pending leave requests:\n"
@@ -922,6 +992,7 @@ def _intercept_hr_reference_write(
             + "\n\nReply with the request number (e.g., LR-2026-001) to "
             "approve or reject one.",
             clock=clock,
+            ui_widget=_leave_requests_widget(pending_result, is_manager=True) if pending_result else None,
         )
 
     tool_name, args = "decide_leave_request", {

@@ -109,16 +109,32 @@ class LeaveService:
     ) -> list[dict]:
         """Return ANOTHER employee's balance grid (manager-only).
 
-        ``employee_code`` is the human-readable employee identifier the
-        manager sees in the portal — never an internal UUID, mirroring the
-        request-reference rule the agent tools use.
+        ``employee_code`` is the human-readable employee identifier (or name/email) the
+        manager sees in the portal — never an internal UUID.
         """
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can view employee leave balances.")
-        stmt = select(Employee).where(Employee.employee_code == employee_code.strip())
+        target = employee_code.strip()
+        stmt = select(Employee).where(Employee.employee_code.ilike(target))
         employee = self._db.scalar(stmt)
         if employee is None:
-            raise ValueError("Employee not found.")
+            words = target.split()
+            if len(words) >= 2:
+                p_stmt = select(Person).where(
+                    Person.first_name.ilike(f"%{words[0]}%"),
+                    Person.last_name.ilike(f"%{words[-1]}%"),
+                )
+            else:
+                p_stmt = select(Person).where(
+                    (Person.first_name.ilike(f"%{target}%"))
+                    | (Person.last_name.ilike(f"%{target}%"))
+                    | (Person.email.ilike(f"%{target}%"))
+                )
+            person = self._db.scalar(p_stmt)
+            if person is not None:
+                employee = self._db.scalar(select(Employee).where(Employee.person_id == person.person_id))
+        if employee is None:
+            raise ValueError(f"Employee '{employee_code}' not found.")
         return self._balance_rows(employee, year or self._clock.today().year)
 
     def _balance_rows(self, employee: Employee, target_year: int) -> list[dict]:

@@ -344,6 +344,7 @@ export interface ChatMessage {
     low_confidence?: boolean;
     confidence_applicable?: boolean;
     safety?: "PASS" | "REDACTED" | "BLOCKED" | "FLAGGED_FOR_REVIEW";
+    ui_widget?: any;
   } | null;
   created_at: string;
 }
