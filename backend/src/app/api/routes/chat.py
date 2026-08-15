@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.leave_agent.state import RedisSessionStore, SessionStore
 from app.agents.supervisor.graph import build_supervisor_graph
-from app.api.deps import require_role
+from app.api.deps import get_optional_user, require_role
 from app.config.settings import get_settings
 from app.contracts.auth import UserContext
 from app.db.session import get_session
@@ -52,6 +52,8 @@ from app.schemas.chat import (
     CitationOut,
     ConversationSummary,
     MessageOut,
+    PublicChatRequest,
+    PublicChatResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,7 +123,7 @@ def _leave_store() -> SessionStore:
     return store
 
 
-def build_chat_graph(session: AsyncSession, user: UserContext):
+def build_chat_graph(session: AsyncSession, user: UserContext | None = None):
     """Assemble the supervisor graph for this request.
 
     Request-scoped like the search endpoints: the KnowledgeService binds the
@@ -144,8 +146,8 @@ def build_chat_graph(session: AsyncSession, user: UserContext):
         knowledge_service=service,
         guard=build_output_guard(),
         leave_actor=user,
-        leave_store=_leave_store(),
-        leave_chat_provider=OllamaChatProvider(),
+        leave_store=_leave_store() if user is not None else None,
+        leave_chat_provider=OllamaChatProvider() if user is not None else None,
         knowledge_actor=user,
         recruitment_actor=user,
         recruitment_chat_provider=OllamaChatProvider(),
@@ -531,4 +533,62 @@ async def delete_conversation(
     await repo.delete(conversation_id)
     await session.commit()
     _leave_store().delete(str(conversation_id))
+
+
+@router.post("/public", response_model=PublicChatResponse)
+async def public_chat(
+    body: PublicChatRequest,
+    user: UserContext | None = Depends(get_optional_user),
+    session: AsyncSession = Depends(get_session),
+) -> PublicChatResponse:
+    """Run one chat turn for anonymous/public visitors (e.g. /welcome page)."""
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="message must not be empty")
+
+    history_messages: list[BaseMessage] = []
+    for h in body.history:
+        if h.role == "user":
+            history_messages.append(HumanMessage(content=h.content))
+        elif h.role == "assistant":
+            history_messages.append(AIMessage(content=h.content))
+
+    graph = build_chat_graph(session, user)
+    result = await graph.ainvoke(
+        {
+            "messages": history_messages,
+            "current_query": message,
+            "conversation_id": "public",
+        }
+    )
+
+    answer = result.get("answer", "")
+    citations = [_serialize_citation(c) for c in result.get("citations", [])]
+    agent = result.get("agent", "unknown")
+    confidence = result.get("confidence", 0.0)
+    knowledge_result = result.get("knowledge_result")
+    safety = result.get("safety", "PASS")
+    confidence_applicable = knowledge_result is not None
+    ui_widget = result.get("ui_widget")
+
+    meta = {
+        "agent": agent,
+        "confidence": confidence,
+        "low_confidence": bool(knowledge_result is not None and knowledge_result.low_confidence),
+        "safety": safety,
+        "confidence_applicable": confidence_applicable,
+    }
+    if ui_widget:
+        meta["ui_widget"] = ui_widget
+
+    return PublicChatResponse(
+        message=answer,
+        citations=[CitationOut(**c) for c in citations],
+        confidence=confidence,
+        low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
+        agent=agent,
+        confidence_applicable=confidence_applicable,
+        meta=meta,
+        ui_widget=ui_widget,
+    )
 

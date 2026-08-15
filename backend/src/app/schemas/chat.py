@@ -63,3 +63,31 @@ class MessageOut(BaseModel):
     citations: list[dict] | None
     meta: dict | None
     created_at: datetime
+
+
+class PublicHistoryMessage(BaseModel):
+    """One prior turn sent by an anonymous client in the public chat."""
+
+    role: str  # user | assistant
+    content: str
+
+
+class PublicChatRequest(BaseModel):
+    """One turn of public/anonymous chat."""
+
+    message: str = Field(min_length=1, max_length=4000)
+    history: list[PublicHistoryMessage] = Field(default_factory=list)
+
+
+class PublicChatResponse(BaseModel):
+    """The assistant's reply to a public chat turn."""
+
+    message: str
+    citations: list[CitationOut] = Field(default_factory=list)
+    confidence: float = 0.0
+    low_confidence: bool = False
+    agent: str  # knowledge | leave | recruitment | clarify
+    confidence_applicable: bool = False
+    meta: dict | None = None
+    ui_widget: dict | None = None
+

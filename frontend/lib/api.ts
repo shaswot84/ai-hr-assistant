@@ -348,6 +348,21 @@ export const api = {
       body: JSON.stringify(conversationId ? { conversation_id: conversationId, message } : { message }),
     }),
 
+  publicChat: (body: { message: string; history?: { role: string; content: string }[] }) =>
+    request<{
+      message: string;
+      citations: ChatCitation[];
+      confidence: number;
+      low_confidence: boolean;
+      agent: string;
+      confidence_applicable: boolean;
+      meta?: any;
+      ui_widget?: any;
+    }>("/api/chat/public", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   listConversations: () => request<ChatConversation[]>("/api/chat/conversations"),
 
   listChatMessages: (conversationId: string) =>

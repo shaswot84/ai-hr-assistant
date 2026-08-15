@@ -648,3 +648,19 @@ async def test_low_confidence_never_fabricates(chat_env, monkeypatch):
     assert body["low_confidence"] is True
     assert "couldn't find enough evidence" in body["message"]
     assert "should not be used" not in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_public_chat_anonymous(chat_env, monkeypatch):
+    """Anonymous visitors can chat via POST /api/chat/public without authentication."""
+    monkeypatch.setattr(chat_module, "build_chat_graph", fake_graph_builder)
+
+    resp = await chat_env.client.post(
+        "/api/chat/public",
+        json={"message": "what jobs are open?", "history": []},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "answer" in body["message"]
+    assert body["agent"] == "knowledge"
+
