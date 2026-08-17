@@ -24,13 +24,16 @@ interface ApplyForm {
 const emptyForm: ApplyForm = { first_name: "", last_name: "", email: "", phone: "", password: "" };
 
 /**
- * Public apply flow: first-time candidates give their details + CV (all
- * compulsory). Applying provisions their account (password chosen here) and
+ * Apply flow for a vacancy. Signed-in candidates only upload a resume — their
+ * identity comes from the session and the application is attached to their
+ * existing account. Anonymous visitors give their details + CV (all
+ * compulsory): applying provisions their account (password chosen here) and
  * the application in one transaction, then signs them in automatically.
  */
 function ApplySection({ vacancy }: { vacancy: Vacancy }) {
   const router = useRouter();
   const { addToast } = useToast();
+  const [isLoggedIn] = useState<boolean>(() => !!getAuthToken());
   const [existing, setExisting] = useState<ApplicationStatusView | null | undefined>(undefined);
   const [form, setForm] = useState<ApplyForm>(emptyForm);
   const [file, setFile] = useState<File | null>(null);
@@ -81,13 +84,19 @@ function ApplySection({ vacancy }: { vacancy: Vacancy }) {
       setError("Please upload your resume — it's required to apply.");
       return;
     }
-    if (form.password.length < 8) {
+    if (!isLoggedIn && form.password.length < 8) {
       setError("Password must be at least 8 characters — you'll use it to sign in.");
       return;
     }
     setSubmitting(true);
     setError(null);
     try {
+      if (isLoggedIn) {
+        await api.apply(vacancy.vacancy_id, file);
+        addToast("Application submitted.", "success");
+        router.push("/candidate/applications");
+        return;
+      }
       const formData = new FormData();
       formData.append("file", file);
       formData.append("first_name", form.first_name);
@@ -138,66 +147,77 @@ function ApplySection({ vacancy }: { vacancy: Vacancy }) {
     <div className="card p-5">
       <h2 className="text-sm font-semibold text-zinc-900">Apply for this role</h2>
       <p className="mt-1 text-sm text-zinc-500">
-        Tell us about yourself and upload your resume. Your details create your account — you&apos;ll
-        use your email and the password below to track this application.
+        {isLoggedIn ? (
+          <>
+            Upload your resume and we&apos;ll apply from your candidate account — no need to re-enter
+            your details.
+          </>
+        ) : (
+          <>
+            Tell us about yourself and upload your resume. Your details create your account —
+            you&apos;ll use your email and the password below to track this application.
+          </>
+        )}
       </p>
 
       <form onSubmit={handleApply} className="mt-4 space-y-4">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="label">First Name *</label>
-            <input
-              required
-              className="input"
-              value={form.first_name}
-              onChange={(e) => setField("first_name", e.target.value)}
-              placeholder="Jane"
-            />
+        {!isLoggedIn && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="label">First Name *</label>
+              <input
+                required
+                className="input"
+                value={form.first_name}
+                onChange={(e) => setField("first_name", e.target.value)}
+                placeholder="Jane"
+              />
+            </div>
+            <div>
+              <label className="label">Last Name *</label>
+              <input
+                required
+                className="input"
+                value={form.last_name}
+                onChange={(e) => setField("last_name", e.target.value)}
+                placeholder="Doe"
+              />
+            </div>
+            <div>
+              <label className="label">Email *</label>
+              <input
+                required
+                type="email"
+                className="input"
+                value={form.email}
+                onChange={(e) => setField("email", e.target.value)}
+                placeholder="jane.doe@email.com"
+              />
+            </div>
+            <div>
+              <label className="label">Phone *</label>
+              <input
+                required
+                className="input"
+                value={form.phone}
+                onChange={(e) => setField("phone", e.target.value)}
+                placeholder="+91 90000 00000"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="label">Set a Password * (min 8 characters)</label>
+              <input
+                required
+                type="password"
+                minLength={8}
+                className="input"
+                value={form.password}
+                onChange={(e) => setField("password", e.target.value)}
+                placeholder="You'll use this to sign in and track your application"
+              />
+            </div>
           </div>
-          <div>
-            <label className="label">Last Name *</label>
-            <input
-              required
-              className="input"
-              value={form.last_name}
-              onChange={(e) => setField("last_name", e.target.value)}
-              placeholder="Doe"
-            />
-          </div>
-          <div>
-            <label className="label">Email *</label>
-            <input
-              required
-              type="email"
-              className="input"
-              value={form.email}
-              onChange={(e) => setField("email", e.target.value)}
-              placeholder="jane.doe@email.com"
-            />
-          </div>
-          <div>
-            <label className="label">Phone *</label>
-            <input
-              required
-              className="input"
-              value={form.phone}
-              onChange={(e) => setField("phone", e.target.value)}
-              placeholder="+91 90000 00000"
-            />
-          </div>
-          <div className="sm:col-span-2">
-            <label className="label">Set a Password * (min 8 characters)</label>
-            <input
-              required
-              type="password"
-              minLength={8}
-              className="input"
-              value={form.password}
-              onChange={(e) => setField("password", e.target.value)}
-              placeholder="You'll use this to sign in and track your application"
-            />
-          </div>
-        </div>
+        )}
 
         <div>
           <label className="label">Resume *</label>
