@@ -56,11 +56,111 @@ const FEATURES = [
   },
 ];
 
-const CORD_TRAVEL = 60;
-const CORD_THRESHOLD = 30;
+// The cord is a physical rope (verlet simulation). It hangs from the lamp's
+// attachment point (PIVOT); the bead (last point) is driven by the pointer
+// while dragged and by a spring on release, and the whole rope sags, trails,
+// and ripples naturally.
+const PIVOT_X = 130; // attachment point under the shade (svg units)
+const PIVOT_Y = 110;
+const REST_X = 130; // bead rest position
+const REST_Y = 190;
+const REST_DIST = 80; // pivot → rest bead
+const CORD_TRAVEL = 36; // how far down (svg units) the bead can be pulled
+const CORD_THRESHOLD = 18; // min pull to ignite
+const CORD_MAX_SWING_X = 44; // max sideways travel of the bead
+// Rope physics. Zero slack + enough constraint passes = a taut, completely
+// straight cord at rest (verified: sub-pixel deviation); it only ripples/
+// trails while the bead moves, then settles straight again.
+const ROPE_POINTS = 6; // simulation points (5 segments) — few, so it stays stiff/straight
+const ROPE_GRAVITY = 800; // units/s² (kept for natural fall; slack=0 keeps it straight)
+const ROPE_MAX_SLACK = 0; // no extra length — the rope is always taut/straight
+const ROPE_DAMPING = 0.98; // verlet velocity damping
+const ROPE_ITERATIONS = 16; // constraint relaxation passes per frame (converges straight)
+// Sling spring: an underdamped harmonic oscillator (ω rad/s, ζ damping ratio).
+// Released, the bead whips past rest in the OPPOSITE direction (up/against the
+// pull) before settling — the natural cord behavior.
+const SLING_OMEGA = 8;
+const SLING_ZETA = 0.15;
+const PHYSICS_DT = 1 / 60;
 //: How long the ignite wash plays before navigating — must match the
 //: transition-duration below so the redirect fires right as it completes.
 const IGNITE_MS = 450;
+
+interface Point {
+  x: number;
+  y: number;
+}
+
+/** Total rope length for a given pivot→bead distance: taut when pulled, a
+ *  little slack (for droop) when at rest. */
+function ropeLength(dist: number) {
+  const f = Math.max(0, Math.min(1, (dist - REST_DIST) / CORD_TRAVEL));
+  return dist + ROPE_MAX_SLACK * (1 - f);
+}
+
+/** One verlet step of the rope: integrate inner points under gravity, then
+ *  relax segment lengths so the chain connects the pinned pivot to `target`.
+ *  Mutates `points`/`prev` in place for performance. */
+function stepRope(points: Point[], prev: Point[], target: Point) {
+  const dist = Math.hypot(target.x - PIVOT_X, target.y - PIVOT_Y);
+  const seg = ropeLength(dist) / (ROPE_POINTS - 1);
+
+  for (let i = 1; i < ROPE_POINTS - 1; i++) {
+    const vx = (points[i].x - prev[i].x) * ROPE_DAMPING;
+    const vy = (points[i].y - prev[i].y) * ROPE_DAMPING;
+    prev[i] = points[i];
+    points[i] = {
+      x: points[i].x + vx,
+      y: points[i].y + vy + ROPE_GRAVITY * PHYSICS_DT * PHYSICS_DT,
+    };
+  }
+
+  for (let iter = 0; iter < ROPE_ITERATIONS; iter++) {
+    for (let i = 0; i < ROPE_POINTS - 1; i++) {
+      const dx = points[i + 1].x - points[i].x;
+      const dy = points[i + 1].y - points[i].y;
+      const d = Math.hypot(dx, dy) || 1e-6;
+      const diff = (d - seg) / d;
+      if (i === 0) {
+        points[i + 1] = { x: points[i + 1].x - dx * diff, y: points[i + 1].y - dy * diff };
+      } else if (i === ROPE_POINTS - 2) {
+        points[i] = { x: points[i].x + dx * diff, y: points[i].y + dy * diff };
+      } else {
+        points[i] = { x: points[i].x + dx * diff * 0.5, y: points[i].y + dy * diff * 0.5 };
+        points[i + 1] = { x: points[i + 1].x - dx * diff * 0.5, y: points[i + 1].y - dy * diff * 0.5 };
+      }
+    }
+    points[0] = { x: PIVOT_X, y: PIVOT_Y };
+    points[ROPE_POINTS - 1] = target;
+  }
+  return points;
+}
+
+/** The settled resting shape of the rope — a gentle droop — computed once. */
+function computeRestRope() {
+  const points: Point[] = [];
+  for (let i = 0; i < ROPE_POINTS; i++) {
+    points.push({ x: PIVOT_X, y: PIVOT_Y + (REST_Y - PIVOT_Y) * (i / (ROPE_POINTS - 1)) });
+  }
+  const prev = points.map((p) => ({ ...p }));
+  for (let f = 0; f < 400; f++) stepRope(points, prev, { x: REST_X, y: REST_Y });
+  return points;
+}
+const REST_ROPE = computeRestRope();
+
+/** Smooth open curve through the rope points (midpoint quadratic B-spline). */
+function ropePath(points: Point[]) {
+  if (points.length < 2) return "";
+  let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+  for (let i = 1; i < points.length - 1; i++) {
+    const mx = (points[i].x + points[i + 1].x) / 2;
+    const my = (points[i].y + points[i + 1].y) / 2;
+    d += ` Q ${points[i].x.toFixed(1)} ${points[i].y.toFixed(1)} ${mx.toFixed(1)} ${my.toFixed(1)}`;
+  }
+  const last = points[points.length - 1];
+  d += ` L ${last.x.toFixed(1)} ${last.y.toFixed(1)}`;
+  return d;
+}
 
 /** Tiny synthesized "click" for the cord pull — no external audio asset. */
 function playClick() {
@@ -86,12 +186,14 @@ function playClick() {
   }
 }
 
-/** Desk lamp SVG: the pull cord is draggable and ignites the transition to /welcome. */
-function Lamp({ on, dragging, cordY, handlers }: LampProps) {
+/** Desk lamp SVG: the pull cord is a physical rope — draggable, and igniting
+ *  the transition to /welcome when pulled. */
+function Lamp({ on, dragging, slinging, rope, bead, svgRef, handlers }: LampProps) {
   const shadeFill = on ? "#ffffff" : "#f5f0e6";
+  const driving = dragging || slinging;
   return (
     <div className="relative flex h-[340px] w-[220px] items-start justify-center sm:h-[430px] sm:w-[280px]">
-      <svg className="h-full w-full overflow-visible" viewBox="0 0 200 300" xmlns="http://www.w3.org/2000/svg">
+      <svg ref={svgRef} className="h-full w-full overflow-visible" viewBox="0 0 200 300" xmlns="http://www.w3.org/2000/svg">
         {/* glow tints neutral grey, not the lamp's usual warm gold — it's
             the same hand-off color as the full-screen ignite wash below, so
             the bulb and the transition read as one continuous flash */}
@@ -108,13 +210,15 @@ function Lamp({ on, dragging, cordY, handlers }: LampProps) {
         <rect className="transition-colors duration-500" x="92" y="100" width="16" height="160" rx="8" fill="#d1ccc2" />
         <rect className="transition-colors duration-500" x="60" y="250" width="80" height="12" rx="6" fill="#d1ccc2" />
 
+        {/* The rope is drawn point-to-point from the lamp's attachment point
+            (PIVOT) down to the bead, sagging under gravity — so it reads as a
+            real thread and can never detach. Idle, the group sways around the
+            pivot (cord-sway keyframes); while dragged/slung the rope is driven
+            by the physics loop (same element, so pointer capture survives). */}
         <g
-          className={`cursor-grab touch-none select-none outline-none ${
-            dragging
-              ? ""
-              : "transition-transform duration-500 ease-[cubic-bezier(0.68,-0.55,0.265,1.55)]"
-          } active:cursor-grabbing`}
-          style={{ transform: `translateY(${cordY}px)` }}
+          className={`cursor-grab touch-none select-none outline-none active:cursor-grabbing ${
+            driving ? "" : "cord-sway"
+          }`}
           onPointerDown={handlers.onDown}
           onPointerMove={handlers.onMove}
           onPointerUp={handlers.onUp}
@@ -124,9 +228,15 @@ function Lamp({ on, dragging, cordY, handlers }: LampProps) {
           role="button"
           aria-label="Pull the lamp cord to enter the app"
         >
-          <line className="cord-line" x1="130" y1="110" x2="130" y2="180" stroke="#555" strokeWidth="2" />
-          <circle className="cord-bead" cx="130" cy="190" r="6" fill="#d4a373" />
-          <circle className="cord-hit" cx="130" cy="190" r="26" fill="transparent" pointerEvents="all" />
+          <path
+            d={ropePath(rope)}
+            fill="none"
+            stroke="#555"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+          <circle cx={bead.x} cy={bead.y} r="6" fill="#d4a373" />
+          <circle cx={bead.x} cy={bead.y} r="26" fill="transparent" pointerEvents="all" />
         </g>
 
         <path
@@ -142,7 +252,10 @@ function Lamp({ on, dragging, cordY, handlers }: LampProps) {
 interface LampProps {
   on: boolean;
   dragging: boolean;
-  cordY: number;
+  slinging: boolean;
+  rope: Point[];
+  bead: Point;
+  svgRef: React.RefObject<SVGSVGElement | null>;
   handlers: {
     onDown: (e: React.PointerEvent<SVGGElement>) => void;
     onMove: (e: React.PointerEvent<SVGGElement>) => void;
@@ -164,9 +277,25 @@ export default function HomePage() {
 
   const [igniting, setIgniting] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [cordY, setCordY] = useState(0);
-  const cordYRef = useRef(0);
-  const dragStartRef = useRef<number | null>(null);
+  const [slinging, setSlinging] = useState(false);
+  const [rope, setRope] = useState<Point[]>(() => REST_ROPE.map((p) => ({ ...p })));
+  const [bead, setBead] = useState<Point>({ x: REST_X, y: REST_Y });
+  const ropeRef = useRef<Point[]>(REST_ROPE.map((p) => ({ ...p })));
+  const prevRef = useRef<Point[]>(REST_ROPE.map((p) => ({ ...p })));
+  // Bead spring: displacement from rest while released (integrated); while
+  // dragged it is locked to the pointer target.
+  const springRef = useRef({ dx: 0, dy: 0, vx: 0, vy: 0 });
+  const dragTargetRef = useRef<Point>({ x: REST_X, y: REST_Y });
+  const draggingRef = useRef(false);
+  const slingRafRef = useRef<number | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  // Cancel the sling loop if the page unmounts mid-whiplash.
+  useEffect(() => {
+    return () => {
+      if (slingRafRef.current !== null) cancelAnimationFrame(slingRafRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -204,43 +333,126 @@ export default function HomePage() {
     setTimeout(() => router.push("/welcome"), IGNITE_MS);
   }
 
+  /** Map a pointer client position to SVG viewBox coordinates (200×300). */
+  function clientToSvg(clientX: number, clientY: number) {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect || !rect.width || !rect.height) return { x: REST_X, y: REST_Y };
+    return {
+      x: ((clientX - rect.left) / rect.width) * 200,
+      y: ((clientY - rect.top) / rect.height) * 300,
+    };
+  }
+
+  /** Keep the bead in a natural reachable region: it can be pulled down
+   *  (but never above rest) and swung sideways, never leaving the lamp. */
+  function clampBead(x: number, y: number) {
+    return {
+      x: Math.max(PIVOT_X - CORD_MAX_SWING_X, Math.min(PIVOT_X + CORD_MAX_SWING_X, x)),
+      y: Math.max(REST_Y, Math.min(REST_Y + CORD_TRAVEL, y)),
+    };
+  }
+
+  /** Run the combined spring + rope physics loop. While dragging the spring is
+   *  locked to the pointer target; on release it becomes an underdamped
+   *  oscillator, whipping the bead PAST rest in the opposite direction of the
+   *  pull while the rope ripples behind it. Stops once everything calms. */
+  function startRopeLoop() {
+    if (slingRafRef.current !== null) cancelAnimationFrame(slingRafRef.current);
+    setSlinging(true);
+
+    const step = () => {
+      const s = springRef.current;
+      if (draggingRef.current) {
+        const t = dragTargetRef.current;
+        s.dx = t.x - REST_X;
+        s.dy = t.y - REST_Y;
+        s.vx = 0;
+        s.vy = 0;
+      } else {
+        const ax = -SLING_OMEGA * SLING_OMEGA * s.dx - 2 * SLING_ZETA * SLING_OMEGA * s.vx;
+        const ay = -SLING_OMEGA * SLING_OMEGA * s.dy - 2 * SLING_ZETA * SLING_OMEGA * s.vy;
+        s.vx += ax * PHYSICS_DT;
+        s.dx += s.vx * PHYSICS_DT;
+        s.vy += ay * PHYSICS_DT;
+        s.dy += s.vy * PHYSICS_DT;
+      }
+
+      const target: Point = { x: REST_X + s.dx, y: REST_Y + s.dy };
+      stepRope(ropeRef.current, prevRef.current, target);
+      setRope(ropeRef.current.map((p) => ({ ...p })));
+      setBead({ x: target.x, y: target.y });
+
+      // Settle: spring near rest AND the rope no longer moving.
+      if (
+        !draggingRef.current &&
+        Math.abs(s.dx) < 0.3 &&
+        Math.abs(s.dy) < 0.3 &&
+        Math.abs(s.vx) < 1 &&
+        Math.abs(s.vy) < 1
+      ) {
+        let calm = true;
+        for (let i = 1; i < ROPE_POINTS - 1; i++) {
+          const vx = ropeRef.current[i].x - prevRef.current[i].x;
+          const vy = ropeRef.current[i].y - prevRef.current[i].y;
+          if (Math.abs(vx) > 0.15 || Math.abs(vy) > 0.15) {
+            calm = false;
+            break;
+          }
+        }
+        if (calm) {
+          setSlinging(false);
+          return;
+        }
+      }
+      slingRafRef.current = requestAnimationFrame(step);
+    };
+    slingRafRef.current = requestAnimationFrame(step);
+  }
+
   function handleCordDown(e: React.PointerEvent<SVGGElement>) {
     e.currentTarget.setPointerCapture(e.pointerId);
-    dragStartRef.current = e.clientY;
+    draggingRef.current = true;
     setDragging(true);
+    const p = clientToSvg(e.clientX, e.clientY);
+    dragTargetRef.current = clampBead(p.x, p.y);
+    startRopeLoop();
   }
 
   function handleCordMove(e: React.PointerEvent<SVGGElement>) {
-    if (dragStartRef.current === null) return;
-    const y = Math.max(0, Math.min(CORD_TRAVEL, e.clientY - dragStartRef.current));
-    cordYRef.current = y;
-    setCordY(y);
+    if (!draggingRef.current) return;
+    const p = clientToSvg(e.clientX, e.clientY);
+    dragTargetRef.current = clampBead(p.x, p.y);
   }
 
   function handleCordUp() {
-    if (dragStartRef.current === null) return;
-    if (cordYRef.current > CORD_THRESHOLD) ignite();
-    dragStartRef.current = null;
-    cordYRef.current = 0;
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
     setDragging(false);
-    setCordY(0);
+    const t = dragTargetRef.current;
+    // A full pull ignites the transition; the spring (already at the pull
+    // position, zero velocity) takes over and slings the cord back naturally.
+    if (t.y - REST_Y > CORD_THRESHOLD) ignite();
   }
 
   function handleCordKey(e: React.KeyboardEvent) {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       ignite();
+      draggingRef.current = false;
+      setDragging(false);
+      springRef.current = { dx: 0, dy: CORD_TRAVEL, vx: 0, vy: 0 };
+      startRopeLoop();
     }
   }
 
   if (checkingSession) {
-    return <div className="min-h-screen bg-[#121417]" />;
+    return <div className="min-h-screen bg-[#0a0a0a]" />;
   }
 
   return (
     <div
       className={`relative min-h-screen select-none overflow-hidden transition-colors duration-500 ${
-        igniting ? "bg-white" : "bg-[#121417]"
+        igniting ? "bg-white" : "bg-[#0a0a0a]"
       }`}
     >
       {/* neutral grey glow that blooms to fill the screen on ignite,
@@ -302,7 +514,7 @@ export default function HomePage() {
               </li>
             ))}
           </ul>
-          <p className="mt-9 text-xs text-zinc-600">
+          <p className="mt-9 text-xs text-zinc-500">
             Runs locally · PostgreSQL + pgvector · local model serving
           </p>
         </div>
@@ -316,7 +528,10 @@ export default function HomePage() {
           <Lamp
             on={igniting}
             dragging={dragging}
-            cordY={cordY}
+            slinging={slinging}
+            rope={rope}
+            bead={bead}
+            svgRef={svgRef}
             handlers={{
               onDown: handleCordDown,
               onMove: handleCordMove,
@@ -325,7 +540,7 @@ export default function HomePage() {
             }}
           />
 
-          <p className="animate-pulse text-center text-sm text-white/40">
+          <p className="animate-pulse text-center text-sm text-white/50">
             Pull the cord to get started
           </p>
         </div>
