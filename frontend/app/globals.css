@@ -82,6 +82,24 @@
     opacity: 1;
   }
 }
+/* Idle pendulum sway for the landing-page lamp cord. transform-origin is the
+   cord's pivot (set inline on the element, in SVG user units). */
+@keyframes cordSway {
+  0%,
+  100% {
+    transform: rotate(-1.5deg);
+  }
+  50% {
+    transform: rotate(1.5deg);
+  }
+}
+/* The cord hangs from the lamp's pivot; while idle the whole string group
+   sways around that pivot. Removed while dragged/slung, when the bead is
+   driven directly by pointer/spring state instead. */
+.cord-sway {
+  transform-origin: 130px 110px;
+  animation: cordSway 4s ease-in-out infinite;
+}
 
 body {
   font-family: var(--font-sans);
