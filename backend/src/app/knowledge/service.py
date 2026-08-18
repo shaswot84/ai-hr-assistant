@@ -78,7 +78,6 @@ class KnowledgeService:
         query: str,
         *,
         category: DocumentCategory | None = None,
-        document_type: str | None = None,
         current_only: bool = CURRENT_ONLY,
         top_k: int | None = None,
         access_roles: list[str] | None = None,
@@ -135,7 +134,6 @@ class KnowledgeService:
             top_k,
             current_only=current_only,
             category=category,
-            document_type=document_type,
             access_roles=access_roles,
         )
         vector_hits = await self._repository.vector_search(
@@ -143,7 +141,6 @@ class KnowledgeService:
             top_k,
             current_only=current_only,
             category=category,
-            document_type=document_type,
             access_roles=access_roles,
         )
 

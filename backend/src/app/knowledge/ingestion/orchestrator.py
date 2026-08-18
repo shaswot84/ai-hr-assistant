@@ -59,7 +59,6 @@ async def register_document(
     filename: str,
     data: bytes,
     category: DocumentCategory,
-    document_type: str = "OTHER",
     description: str | None = None,
     uploaded_by: uuid.UUID | None = None,
     role_access: list[str] | None = None,
@@ -99,7 +98,6 @@ async def register_document(
     if document is None:
         document = Document(
             title=name,
-            document_type=document_type,
             category=category,
             description=description,
             status="PENDING",

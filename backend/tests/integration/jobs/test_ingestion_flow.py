@@ -141,7 +141,7 @@ async def test_end_to_end_register_process_index_search(db_session):
     uploaded = await register_document(
         db_session, store,
         filename="annual_leave.md", data=data,
-        category=DocumentCategory.POLICY, document_type="policy",
+        category=DocumentCategory.POLICY,
     )
     assert uploaded["status"] == "PENDING"
     assert uploaded["object_key"] in store.objects

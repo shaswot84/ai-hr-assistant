@@ -35,6 +35,51 @@ const SUGGESTIONS = [
   "What is the annual leave policy?",
 ];
 
+function WelcomeCitationChips({ citations }: { citations: ChatCitation[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  if (citations.length === 0) return null;
+  return (
+    <div className="mt-3 border-t border-zinc-100 pt-2">
+      <span className="text-[11px] font-semibold text-zinc-600">Sources:</span>
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {citations.map((c, cIdx) => {
+          const isOpen = expanded === `${c.chunk_id}-${cIdx}`;
+          return (
+            <span key={cIdx} className="relative">
+              <button
+                type="button"
+                onClick={() => setExpanded(isOpen ? null : `${c.chunk_id}-${cIdx}`)}
+                className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-700 hover:bg-zinc-200 transition-colors"
+              >
+                <span className="truncate max-w-[140px] text-zinc-900">{c.document_title}</span>
+                {c.page && <span className="text-zinc-600">p.{c.page}</span>}
+                <svg className={`h-3 w-3 text-zinc-400 transition-transform ${isOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            </span>
+          );
+        })}
+      </div>
+      {/* Inline detail panel for the expanded citation */}
+      {expanded && (() => {
+        const c = citations.find((x) => `${x.chunk_id}-${citations.indexOf(x)}` === expanded);
+        if (!c) return null;
+        return (
+          <div className="mt-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2.5 text-[11px] text-zinc-600">
+            <div className="space-y-0.5">
+              <div><span className="font-medium text-zinc-800">Document:</span> {c.document_title}</div>
+              <div><span className="font-medium text-zinc-800">Version:</span> v{c.version_number}</div>
+              <div><span className="font-medium text-zinc-800">Page:</span> {c.page ?? "—"}</div>
+              <div><span className="font-medium text-zinc-800">Section:</span> {c.section_title || "—"}</div>
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
 function MarkdownContent({ content }: { content: string }) {
   return (
     <div className="text-sm leading-relaxed text-zinc-800">
@@ -198,7 +243,7 @@ export default function WelcomePage() {
           );
         } else if (event.type === "done") {
           if (event.message) accumulatedText = event.message;
-          if (event.citations?.length) citations = event.citations;
+          citations = event.citations || [];
           if (event.ui_widget) uiWidget = event.ui_widget;
           setMessages((prev) =>
             prev.map((m) =>
@@ -346,18 +391,7 @@ export default function WelcomePage() {
 
                   {/* Citations */}
                   {m.citations && m.citations.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1.5 border-t border-zinc-100 pt-2 text-[11px] text-zinc-500">
-                      <span className="font-semibold text-zinc-600">Sources:</span>
-                      {m.citations.map((c, cIdx) => (
-                        <span
-                          key={cIdx}
-                          className="rounded bg-zinc-100 px-1.5 py-0.5 font-medium text-zinc-700"
-                        >
-                          {c.document_title}
-                          {c.page ? ` (p. ${c.page})` : ""}
-                        </span>
-                      ))}
-                    </div>
+                    <WelcomeCitationChips citations={m.citations} />
                   )}
                 </div>
 

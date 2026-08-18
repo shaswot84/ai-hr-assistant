@@ -99,7 +99,6 @@ class HybridRetrievalRepository:
         *,
         current_only: bool = True,
         category: DocumentCategory | None = None,
-        document_type: str | None = None,
         access_roles: list[str] | None = None,
     ) -> list[RetrievalHit]:
         """Lexical leg: PostgreSQL Full-Text Search (BM25 via ``ts_rank``).
@@ -124,7 +123,7 @@ class HybridRetrievalRepository:
               AND to_tsvector('english', c.processed_content)
                   @@ plainto_tsquery('english', :query)
               AND (:current_only = FALSE OR v.is_current = TRUE)
-              {self._filter_clause(category, document_type, access_roles)}
+              {self._filter_clause(category, access_roles)}
             ORDER BY score DESC
             LIMIT :limit"""
         )
@@ -133,7 +132,7 @@ class HybridRetrievalRepository:
             "current_only": current_only,
             "limit": limit,
         }
-        self._add_filter_params(params, category, document_type, access_roles)
+        self._add_filter_params(params, category, access_roles)
         return await self._fetch(sql, params)
 
     async def vector_search(
@@ -143,7 +142,6 @@ class HybridRetrievalRepository:
         *,
         current_only: bool = True,
         category: DocumentCategory | None = None,
-        document_type: str | None = None,
         access_roles: list[str] | None = None,
     ) -> list[RetrievalHit]:
         """Semantic leg: pgvector cosine-distance search (``<=>``).
@@ -160,7 +158,7 @@ class HybridRetrievalRepository:
               AND d.deleted_at IS NULL
               AND c.embedding IS NOT NULL
               AND (:current_only = FALSE OR v.is_current = TRUE)
-              {self._filter_clause(category, document_type, access_roles)}
+              {self._filter_clause(category, access_roles)}
             ORDER BY c.embedding <=> (:query_embedding)::vector ASC
             LIMIT :limit"""
         )
@@ -169,7 +167,7 @@ class HybridRetrievalRepository:
             "current_only": current_only,
             "limit": limit,
         }
-        self._add_filter_params(params, category, document_type, access_roles)
+        self._add_filter_params(params, category, access_roles)
         return await self._fetch(sql, params)
 
     async def fetch_parent_context(self, chunk_ids: list[UUID]) -> dict[UUID, str]:
@@ -232,15 +230,12 @@ class HybridRetrievalRepository:
     @staticmethod
     def _filter_clause(
         category: DocumentCategory | None,
-        document_type: str | None,
         access_roles: list[str] | None,
     ) -> str:
         """Build the optional WHERE fragment for metadata filters."""
         clauses: list[str] = []
         if category is not None:
             clauses.append("d.category = :category")
-        if document_type:
-            clauses.append("d.document_type = :document_type")
         if access_roles is not None:
             clauses.append("d.role_access @> (:role_access)::jsonb")
         return (" AND " + " AND ".join(clauses)) if clauses else ""
@@ -249,14 +244,11 @@ class HybridRetrievalRepository:
     def _add_filter_params(
         params: dict,
         category: DocumentCategory | None,
-        document_type: str | None,
         access_roles: list[str] | None,
     ) -> None:
         """Register the bound params for the metadata filters, if present."""
         if category is not None:
             params["category"] = category.value
-        if document_type:
-            params["document_type"] = document_type
         if access_roles is not None:
             params["role_access"] = json.dumps(access_roles)
 

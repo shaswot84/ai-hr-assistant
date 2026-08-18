@@ -183,7 +183,6 @@ export type KnowledgeAccessRole = "HR_ADMIN" | "EMPLOYEE" | "CANDIDATE" | "VISIT
 export interface KnowledgeDocumentSummary {
   document_id: string;
   title: string;
-  document_type: string;
   category: string;
   description: string | null;
   status: KnowledgeDocumentStatus;
@@ -227,7 +226,6 @@ export interface KnowledgeVersion {
 export interface KnowledgeDocumentDetail {
   document_id: string;
   title: string;
-  document_type: string;
   category: string;
   description: string | null;
   status: KnowledgeDocumentStatus;

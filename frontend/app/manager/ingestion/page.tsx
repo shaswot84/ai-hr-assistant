@@ -84,7 +84,6 @@ export default function ManagerIngestionPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<KnowledgeDocumentDetail | null>(null);
   const [category, setCategory] = useState("POLICY");
-  const [docType, setDocType] = useState("policy");
   const [description, setDescription] = useState("");
   const [accessRoles, setAccessRoles] = useState<string[]>(["EMPLOYEE", "CANDIDATE", "VISITOR"]);
   const [files, setFiles] = useState<File[]>([]);
@@ -174,7 +173,6 @@ export default function ManagerIngestionPage() {
       const form = new FormData();
       form.append("file", file);
       form.append("category", category);
-      form.append("document_type", docType);
       if (description) form.append("description", description);
 
       try {
@@ -364,37 +362,22 @@ export default function ManagerIngestionPage() {
               )}
             </div>
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <label className="label" htmlFor="category">
-                  Category
-                </label>
-                <select
-                  id="category"
-                  className="input"
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                >
-                  {CATEGORIES.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="label" htmlFor="docType">
-                  Document type
-                </label>
-                <input
-                  id="docType"
-                  type="text"
-                  className="input"
-                  value={docType}
-                  placeholder="e.g. policy, procedure, form"
-                  onChange={(e) => setDocType(e.target.value)}
-                />
-              </div>
+            <div>
+              <label className="label" htmlFor="category">
+                Category
+              </label>
+              <select
+                id="category"
+                className="input"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+              >
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div>

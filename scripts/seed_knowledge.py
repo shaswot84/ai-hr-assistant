@@ -30,7 +30,7 @@ def _upload_and_wait(client: httpx.Client, path: Path, *, timeout: int) -> dict:
     """Upload one document and poll its job until terminal, or raise."""
     resp = client.post(
         "/api/knowledge/documents/upload",
-        data={"category": "POLICY", "document_type": "policy"},
+        data={"category": "POLICY"},
         files={"file": (path.name, path.read_bytes(), "text/markdown")},
     )
     resp.raise_for_status()

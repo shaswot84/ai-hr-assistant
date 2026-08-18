@@ -118,7 +118,6 @@ def _serialize_document(row: Document, versions: int, current_chunks: int) -> di
     return {
         "document_id": str(row.document_id),
         "title": row.title,
-        "document_type": row.document_type,
         "category": row.category.value if isinstance(row.category, DocumentCategory) else str(row.category),
         "description": row.description,
         "status": row.status,
@@ -134,7 +133,6 @@ def _serialize_document(row: Document, versions: int, current_chunks: int) -> di
 async def upload_document(
     file: UploadFile = File(...),
     category: str = Form("OTHER"),
-    document_type: str = Form("OTHER"),
     description: str | None = Form(None),
     role_access: list[str] = Form(default=ALL_ACCESS_ROLES),
     session: AsyncSession = Depends(get_session),
@@ -164,7 +162,6 @@ async def upload_document(
             filename=file.filename or "document",
             data=data,
             category=_parse_category(category),
-            document_type=document_type or "OTHER",
             description=description,
             role_access=normalized_roles,
         )

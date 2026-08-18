@@ -83,7 +83,6 @@ class Document(Base):
 
     document_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
-    document_type: Mapped[str] = mapped_column(String(50), nullable=False)
     category: Mapped[DocumentCategory] = mapped_column(
         Enum(DocumentCategory, name="document_category"), nullable=False
     )

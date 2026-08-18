@@ -56,7 +56,6 @@ async def test_repository_serves_only_indexed_current_chunks(db_session):
 
     doc = Document(
         title="Leave Policy",
-        document_type="policy",
         category=DocumentCategory.POLICY,
         description="Annual leave rules",
         status="INDEXED",
@@ -149,7 +148,6 @@ async def test_repository_excludes_non_indexed(db_session):
 
     doc = Document(
         title="Pending Doc",
-        document_type="policy",
         category=DocumentCategory.POLICY,
         status="PROCESSING",
     )
@@ -203,7 +201,6 @@ async def test_repository_expands_leaf_to_parent_section(db_session):
 
     doc = Document(
         title="Hybrid Work Policy",
-        document_type="policy",
         category=DocumentCategory.POLICY,
         status="INDEXED",
     )
@@ -303,7 +300,6 @@ async def _indexed_doc(
 
     doc = Document(
         title=title,
-        document_type="policy",
         category=DocumentCategory.POLICY,
         status="INDEXED",
         role_access=role_access,
@@ -437,7 +433,6 @@ async def test_repository_has_indexed_documents(db_session):
     await _indexed_doc(db_session, "Pending Doc", role_access=["HR_ADMIN"], content="x.", first=2.0)
     pending = Document(
         title="Pending Only",
-        document_type="policy",
         category=DocumentCategory.POLICY,
         status="PENDING",
     )

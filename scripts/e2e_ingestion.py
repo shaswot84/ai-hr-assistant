@@ -39,7 +39,7 @@ def main() -> int:
     # 1. Upload.
     resp = client.post(
         "/api/knowledge/documents/upload",
-        data={"category": "POLICY", "document_type": "policy"},
+        data={"category": "POLICY"},
         files={"file": ("annual_leave_policy.md", FAQ_MD.encode(), "text/markdown")},
     )
     resp.raise_for_status()
