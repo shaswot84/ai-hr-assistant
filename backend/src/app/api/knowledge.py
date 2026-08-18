@@ -27,10 +27,13 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_optional_user
 from app.config.settings import get_settings
+from app.contracts.auth import UserContext
 from app.db.session import get_session
 from app.integrations.object_store import ObjectStoreError, S3ObjectStore
 from app.jobs.ingestion_worker import retry_job as retry_ingestion_job
+from app.knowledge.access import ALL_ACCESS_ROLES, access_roles_for, validate_access_roles
 from app.knowledge.contracts import KnowledgeResult
 from app.knowledge.ingestion.orchestrator import (
     DocumentNotFoundError,
@@ -119,6 +122,7 @@ def _serialize_document(row: Document, versions: int, current_chunks: int) -> di
         "category": row.category.value if isinstance(row.category, DocumentCategory) else str(row.category),
         "description": row.description,
         "status": row.status,
+        "role_access": list(row.role_access or ALL_ACCESS_ROLES),
         "versions": versions,
         "current_chunks": current_chunks,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -132,9 +136,14 @@ async def upload_document(
     category: str = Form("OTHER"),
     document_type: str = Form("OTHER"),
     description: str | None = Form(None),
+    role_access: list[str] = Form(default=ALL_ACCESS_ROLES),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Register an uploaded document and enqueue its ingestion job."""
+    """Register an uploaded document and enqueue its ingestion job.
+
+    ``role_access`` is the uploader-chosen allowlist of roles that may
+    retrieve the document (checkbox form: HR_ADMIN is always included).
+    """
     data = await file.read()
     if not data:
         raise HTTPException(status_code=422, detail="uploaded file is empty")
@@ -145,6 +154,10 @@ async def upload_document(
             detail=f"file is {len(data)} bytes; limit is {max_size}",
         )
     try:
+        normalized_roles = validate_access_roles(role_access)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    try:
         return await register_document(
             session,
             _object_store(),
@@ -153,6 +166,7 @@ async def upload_document(
             category=_parse_category(category),
             document_type=document_type or "OTHER",
             description=description,
+            role_access=normalized_roles,
         )
     except ObjectStoreError as exc:
         raise HTTPException(status_code=503, detail=f"object storage unavailable: {exc}") from exc
@@ -282,6 +296,9 @@ def _serialize_search_result(query: str, result: KnowledgeResult) -> dict:
         "grounded_context": result.grounded_context,
         "confidence": round(result.confidence, 4),
         "low_confidence": result.low_confidence,
+        "restricted_documents": [
+            {"title": d.title, "allowed_roles": list(d.allowed_roles)} for d in result.restricted
+        ],
         "citations": [
             {
                 "chunk_id": str(c.chunk_id),
@@ -365,9 +382,17 @@ async def search(
     category: str | None = Query(None),
     top_k: int | None = Query(None, ge=1, le=50),
     generate: bool = Query(True, description="Generate a polished LLM answer when configured"),
+    user: UserContext | None = Depends(get_optional_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Knowledge Service hybrid retrieval over INDEXED versions only.
+
+    Retrieval is gated by the requester's role: anonymous visitors may only
+    retrieve ``VISITOR``-tagged documents, authenticated users their own
+    coarse role, and HR admins everything. When a query matches only
+    documents the requester cannot access, ``restricted_documents`` lists
+    their titles + allowlists (identity only) so callers can reply with an
+    access denial.
 
     When an LLM is configured (``LLM_ENABLED=true`` + ``LLM_API_KEY``) and
     ``generate=true``, the grounded context is turned into a polished,
@@ -384,6 +409,7 @@ async def search(
         q,
         category=_parse_category(category) if category else None,
         top_k=top_k,
+        access_roles=access_roles_for(user),
     )
     answer = await service.generate_answer(q, result) if generate else None
     return {**_serialize_search_result(q, result), "answer": answer}
@@ -395,6 +421,7 @@ async def search_stream(
     category: str | None = Query(None),
     top_k: int | None = Query(None, ge=1, le=50),
     generate: bool = Query(True, description="Stream a generated LLM answer when configured"),
+    user: UserContext | None = Depends(get_optional_user),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     """SSE variant of ``/search``: retrieval metadata first, then answer tokens.
@@ -410,6 +437,9 @@ async def search_stream(
     When no LLM is configured, ``generate=false``, or retrieval is
     low-confidence, only ``retrieval`` + ``done`` are emitted and the client
     falls back to serving ``grounded_context`` — exactly like ``/search``.
+
+    Access control is identical to ``/search``: role-gated retrieval with
+    ``restricted_documents`` in the retrieval event for denied matches.
     """
     service = KnowledgeService(
         HybridRetrievalRepository(session),
@@ -423,6 +453,7 @@ async def search_stream(
             q,
             category=_parse_category(category) if category else None,
             top_k=top_k,
+            access_roles=access_roles_for(user),
         )
         retrieval_event = {**_serialize_search_result(q, result), "type": "retrieval"}
         yield f"data: {json.dumps(retrieval_event)}\n\n"

@@ -45,6 +45,7 @@ from app.agents.leave_agent.tools import (
 )
 from app.capabilities.leave import LeaveService
 from app.contracts.auth import UserContext
+from app.knowledge.access import access_roles_for
 from app.knowledge.contracts import Citation, KnowledgeResult
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.interfaces import LLM
@@ -159,6 +160,18 @@ REFUSAL_MESSAGE = (
     "that confidently. Try rephrasing the question, or ask about a "
     "specific policy, procedure, or guideline."
 )
+
+
+def denied_message(result: KnowledgeResult) -> str:
+    """Deterministic access-denial reply for restricted matches.
+
+    The query hit document(s) the requester cannot access; the reply names
+    the allowlist roles of the matched documents (identity only — never the
+    content) so the user knows the file exists but is out of their reach.
+    """
+    roles = sorted({role for doc in result.restricted for role in doc.allowed_roles})
+    role_label = ", ".join(roles) if roles else "HR_ADMIN"
+    return f"You cannot access this file. Only {role_label} can see it."
 
 
 @dataclass
@@ -327,8 +340,23 @@ async def stream_knowledge_turn(
     context) — see ``_employee_balance_block``.
     """
     rewritten = await rewrite_query(llm, query, history)
-    result = await service.retrieve(rewritten)
+    result = await service.retrieve(rewritten, access_roles=access_roles_for(actor))
     writer({"type": "retrieval", "rewritten_query": rewritten, "result": result})
+
+    if result.restricted:
+        # The query matched only documents the requester cannot access:
+        # reply with a deterministic denial naming the allowed roles.
+        message = denied_message(result)
+        writer({"type": "message", "text": message})
+        return {
+            "messages": [AIMessage(content=message)],
+            "knowledge_result": result,
+            "answer": message,
+            "citations": [],
+            "confidence": result.confidence,
+            "agent": "knowledge",
+            "safety": GuardVerdict.PASS.value,
+        }
 
     history_block = history_text(history, max_tokens=history_max_tokens)
     balance_block = _employee_balance_block(actor, leave_service, query)

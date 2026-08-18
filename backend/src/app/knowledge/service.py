@@ -11,7 +11,7 @@ from uuid import UUID
 
 from app.config.settings import RetrievalSettings
 from app.knowledge.confidence import ConfidenceEstimator, LowConfidenceDetector
-from app.knowledge.contracts import KnowledgeResult, RetrievedChunk
+from app.knowledge.contracts import KnowledgeResult, RestrictedDocument, RetrievedChunk
 from app.knowledge.grounding import GroundingContextBuilder
 from app.knowledge.models import DocumentCategory
 from app.knowledge.ranking import reciprocal_rank_fusion
@@ -78,6 +78,7 @@ class KnowledgeService:
         document_type: str | None = None,
         current_only: bool = CURRENT_ONLY,
         top_k: int | None = None,
+        access_roles: list[str] | None = None,
     ) -> KnowledgeResult:
         """Run the full retrieval pipeline for a query and return evidence.
 
@@ -90,6 +91,15 @@ class KnowledgeService:
            (small-to-big).
         6. Estimate confidence and apply the low-confidence gate.
         7. Build grounded context + citations.
+
+        ``access_roles`` gates every leg to documents whose ``role_access``
+        allowlist contains the requester's role(s); ``None`` disables access
+        control (HR admin / unrestricted callers). When access control is on
+        and NO accessible evidence is found, a cheap BM25 probe runs to
+        surface ``restricted`` matches — documents the query hit but the
+        requester cannot see (identity only, never content) — so the agent
+        can reply "you cannot access this" instead of pretending the
+        document does not exist.
         """
         top_k = top_k or self._settings.top_k
         # nomic-embed-text is trained with task prefixes; matching the query
@@ -103,7 +113,12 @@ class KnowledgeService:
         # already-computed query embedding, so there is nothing left to
         # parallelize at this layer.
         bm25_hits = await self._repository.bm25_search(
-            query, top_k, current_only=current_only, category=category, document_type=document_type
+            query,
+            top_k,
+            current_only=current_only,
+            category=category,
+            document_type=document_type,
+            access_roles=access_roles,
         )
         vector_hits = await self._repository.vector_search(
             query_embedding,
@@ -111,6 +126,7 @@ class KnowledgeService:
             current_only=current_only,
             category=category,
             document_type=document_type,
+            access_roles=access_roles,
         )
 
         # De-duplicate by chunk id so a chunk present in both legs is one row.
@@ -147,12 +163,19 @@ class KnowledgeService:
 
         grounded_context, citations = self._grounding.build(final)
 
+        restricted: list[RestrictedDocument] = []
+        if access_roles is not None and not citations:
+            restricted = await self._repository.restricted_matches(
+                query, access_roles, current_only=current_only
+            )
+
         return KnowledgeResult(
             grounded_context=grounded_context,
             citations=citations,
             confidence=confidence,
             chunks=final,
             low_confidence=low_confidence,
+            restricted=restricted,
         )
 
     async def generate_answer(

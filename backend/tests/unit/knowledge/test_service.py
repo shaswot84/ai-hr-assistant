@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 from app.config.settings import RetrievalSettings
+from app.knowledge.contracts import RestrictedDocument
 from app.knowledge.models import DocumentCategory
 from app.knowledge.repository import RetrievalHit
 from app.knowledge.reranker import PassThroughReranker
@@ -35,6 +36,7 @@ class FakeRepository:
         self._bm25_hits = bm25_hits
         self._vector_hits = vector_hits
         self.last_kwargs: dict = {}
+        self.restricted_calls: list[dict] = []
 
     async def bm25_search(self, query, limit, **kwargs):
         self.last_kwargs["bm25"] = kwargs
@@ -46,6 +48,10 @@ class FakeRepository:
 
     async def fetch_parent_context(self, chunk_ids):
         return {}
+
+    async def restricted_matches(self, query, access_roles, **kwargs):
+        self.restricted_calls.append({"query": query, "access_roles": access_roles, **kwargs})
+        return []
 
 
 class FakeRepositoryWithParents(FakeRepository):
@@ -165,6 +171,81 @@ async def test_service_forwards_metadata_filters():
     assert repo.last_kwargs["bm25"]["document_type"] == "policy"
     assert repo.last_kwargs["bm25"]["current_only"] is False
     assert repo.last_kwargs["vector"]["category"] == DocumentCategory.POLICY
+
+
+@pytest.mark.asyncio
+async def test_service_forwards_access_roles_to_both_legs():
+    """access_roles is forwarded to both retrieval legs for role gating."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("a", "Annual leave accrues.")],
+        vector_hits=[make_hit("a", "Annual leave accrues.")],
+    )
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    await service.retrieve("leave", access_roles=["EMPLOYEE"])
+
+    assert repo.last_kwargs["bm25"]["access_roles"] == ["EMPLOYEE"]
+    assert repo.last_kwargs["vector"]["access_roles"] == ["EMPLOYEE"]
+
+
+@pytest.mark.asyncio
+async def test_service_access_roles_none_skips_filter():
+    """access_roles=None (HR admin / unrestricted) must not filter the legs."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("a", "Annual leave accrues.")],
+        vector_hits=[make_hit("a", "Annual leave accrues.")],
+    )
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    await service.retrieve("leave")
+
+    assert repo.last_kwargs["bm25"]["access_roles"] is None
+    assert repo.last_kwargs["vector"]["access_roles"] is None
+
+
+@pytest.mark.asyncio
+async def test_service_probes_restricted_when_no_accessible_evidence():
+    """Access-controlled queries with no visible evidence surface restricted docs."""
+    repo = FakeRepository(bm25_hits=[], vector_hits=[])
+
+    async def restricted_matches(query, access_roles, **kwargs):
+        return [RestrictedDocument(title="Confidential Compensation", allowed_roles=["HR_ADMIN"])]
+
+    repo.restricted_matches = restricted_matches
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    result = await service.retrieve("compensation bands", access_roles=["VISITOR"])
+
+    assert len(result.restricted) == 1
+    assert result.restricted[0].title == "Confidential Compensation"
+    assert result.restricted[0].allowed_roles == ["HR_ADMIN"]
+
+
+@pytest.mark.asyncio
+async def test_service_skips_probe_when_evidence_is_visible():
+    """Accessible evidence means the restricted probe never runs."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("a", "Annual leave accrues.")],
+        vector_hits=[make_hit("a", "Annual leave accrues.")],
+    )
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    result = await service.retrieve("leave", access_roles=["EMPLOYEE"])
+
+    assert repo.restricted_calls == []
+    assert result.restricted == []
+
+
+@pytest.mark.asyncio
+async def test_service_skips_probe_when_unrestricted():
+    """HR admin (access_roles=None) never triggers the restricted probe."""
+    repo = FakeRepository(bm25_hits=[], vector_hits=[])
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    result = await service.retrieve("compensation bands")
+
+    assert repo.restricted_calls == []
+    assert result.restricted == []
 
 
 @pytest.mark.asyncio

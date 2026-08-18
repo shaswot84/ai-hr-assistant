@@ -220,11 +220,15 @@ export const api = {
   getDocument: (id: string) =>
     request<KnowledgeDocumentDetail>(`/api/knowledge/documents/${id}`),
 
-  upload: (formData: FormData) =>
-    request<KnowledgeUploadResult>("/api/knowledge/documents/upload", {
+  upload: (formData: FormData, accessRoles?: string[]) => {
+    if (accessRoles) {
+      for (const role of accessRoles) formData.append("role_access", role);
+    }
+    return request<KnowledgeUploadResult>("/api/knowledge/documents/upload", {
       method: "POST",
       body: formData,
-    }),
+    });
+  },
 
   getJob: (id: string) => request<KnowledgeJob>(`/api/knowledge/jobs/${id}`),
 

@@ -78,6 +78,18 @@ class Citation:
 
 
 @dataclass(frozen=True)
+class RestrictedDocument:
+    """A document that matched the query but the requester may not access.
+
+    Carries only identity metadata (title + allowlist) — never content — so
+    the chatbot can reply "you cannot access this" without leaking the file.
+    """
+
+    title: str
+    allowed_roles: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class KnowledgeResult:
     """Structured result the Knowledge Service returns to the agent."""
 
@@ -86,6 +98,10 @@ class KnowledgeResult:
     confidence: float = 0.0
     chunks: list[RetrievedChunk] = field(default_factory=list)
     low_confidence: bool = False
+    # Documents the query would have matched but the requester cannot see.
+    # Populated only when access control is applied AND no accessible
+    # evidence was found; empty otherwise.
+    restricted: list[RestrictedDocument] = field(default_factory=list)
 
     @property
     def has_evidence(self) -> bool:

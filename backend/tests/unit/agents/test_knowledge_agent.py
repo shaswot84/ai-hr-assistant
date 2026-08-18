@@ -75,11 +75,13 @@ class FakeKnowledgeService:
         self.result = result
         self.answer = answer
         self.retrieve_queries: list[str] = []
+        self.retrieve_kwargs: list[dict] = []
         self.stream_queries: list[str] = []
         self.stream_histories: list[str | None] = []
 
     async def retrieve(self, query: str, **kwargs) -> KnowledgeResult:
         self.retrieve_queries.append(query)
+        self.retrieve_kwargs.append(kwargs)
         return self.result
 
     async def stream_answer(self, query: str, result: KnowledgeResult, *, history=None):
@@ -232,6 +234,80 @@ async def test_stream_knowledge_turn_rewrites_then_retrieves():
     assert state_update["safety"] == "PASS"
     assert [c.document_title for c in state_update["citations"]] == ["Leave Policy"]
     assert state_update["messages"][-1].content == "Grounded answer from the policy. [1]"
+
+
+# --- role-based access control --------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_knowledge_turn_forwards_role_access():
+    """The turn retrieves with the actor's role access tag."""
+    service = FakeKnowledgeService(make_result())
+
+    await stream_knowledge_turn(
+        service=service, llm=None, query="leave policy", history=[], writer=EventCollector()
+    )
+    assert service.retrieve_kwargs[-1]["access_roles"] == ["VISITOR"]
+
+    candidate = UserContext(
+        subject="c-1", email="c@x.com", display_name="C", coarse_role="CANDIDATE"
+    )
+    await stream_knowledge_turn(
+        service=service,
+        llm=None,
+        query="leave policy",
+        history=[],
+        writer=EventCollector(),
+        actor=candidate,
+    )
+    assert service.retrieve_kwargs[-1]["access_roles"] == ["CANDIDATE"]
+
+    hr = UserContext(subject="h-1", email="h@x.com", display_name="H", coarse_role="HR_ADMIN")
+    await stream_knowledge_turn(
+        service=service,
+        llm=None,
+        query="leave policy",
+        history=[],
+        writer=EventCollector(),
+        actor=hr,
+    )
+    assert service.retrieve_kwargs[-1]["access_roles"] is None
+
+
+@pytest.mark.asyncio
+async def test_stream_knowledge_turn_replies_denial_for_restricted():
+    """A query matching only inaccessible documents gets a deterministic
+    denial reply naming the allowed roles — never an LLM answer."""
+    from app.knowledge.contracts import RestrictedDocument
+
+    result = make_result()
+    result = KnowledgeResult(
+        grounded_context="",
+        citations=[],
+        confidence=0.0,
+        chunks=[],
+        low_confidence=True,
+        restricted=[
+            RestrictedDocument(title="Compensation Bands", allowed_roles=["HR_ADMIN", "EMPLOYEE"]),
+        ],
+    )
+    service = FakeKnowledgeService(result)
+    writer = EventCollector()
+
+    state = await stream_knowledge_turn(
+        service=service,
+        llm=FakeLLM("rewritten"),
+        query="what are the compensation bands",
+        history=[],
+        writer=writer,
+        actor=_employee(),
+    )
+
+    assert state["answer"] == "You cannot access this file. Only EMPLOYEE, HR_ADMIN can see it."
+    assert state["citations"] == []
+    assert state["safety"] == "PASS"
+    assert service.stream_queries == []  # never generated from restricted content
+    assert [e["type"] for e in writer.events] == ["retrieval", "message"]
 
 
 # --- balance reconciliation (policy + real balance) -------------------------

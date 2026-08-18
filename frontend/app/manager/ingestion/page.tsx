@@ -23,6 +23,60 @@ const CATEGORIES = [
   "OTHER",
 ];
 
+const ACCESS_ROLE_OPTIONS: Array<{
+  key: "EMPLOYEE" | "CANDIDATE" | "VISITOR";
+  label: string;
+  description: string;
+}> = [
+  { key: "EMPLOYEE", label: "Employees", description: "Current staff can retrieve this" },
+  { key: "CANDIDATE", label: "Candidates", description: "Job applicants can retrieve this" },
+  { key: "VISITOR", label: "Visitors", description: "General public, no login required" },
+];
+
+const ACCESS_ROLE_CHIP_STYLE: Record<string, string> = {
+  HR_ADMIN: "bg-purple-50 text-purple-700",
+  EMPLOYEE: "bg-blue-50 text-blue-700",
+  CANDIDATE: "bg-emerald-50 text-emerald-700",
+  VISITOR: "bg-amber-50 text-amber-700",
+};
+
+const ACCESS_ROLE_SHORT_LABEL: Record<string, string> = {
+  HR_ADMIN: "HR Admin",
+  EMPLOYEE: "Employees",
+  CANDIDATE: "Candidates",
+  VISITOR: "Visitors",
+};
+
+function AccessChips({ roles }: { roles: string[] }) {
+  const list = roles ?? [];
+  const allRoles = ["HR_ADMIN", "EMPLOYEE", "CANDIDATE", "VISITOR"];
+  if (allRoles.every((r) => list.includes(r))) {
+    return (
+      <span
+        title="Everyone can access this file"
+        className="inline-flex rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] font-medium text-zinc-600"
+      >
+        Everyone
+      </span>
+    );
+  }
+  return (
+    <span className="flex flex-wrap gap-1">
+      {list.map((r) => (
+        <span
+          key={r}
+          title={`Only ${ACCESS_ROLE_SHORT_LABEL[r] ?? r} can access this file`}
+          className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+            ACCESS_ROLE_CHIP_STYLE[r] ?? "bg-zinc-100 text-zinc-600"
+          }`}
+        >
+          {ACCESS_ROLE_SHORT_LABEL[r] ?? r}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 export default function ManagerIngestionPage() {
   const { addToast } = useToast();
   const [documents, setDocuments] = useState<KnowledgeDocumentSummary[]>([]);
@@ -32,6 +86,7 @@ export default function ManagerIngestionPage() {
   const [category, setCategory] = useState("POLICY");
   const [docType, setDocType] = useState("policy");
   const [description, setDescription] = useState("");
+  const [accessRoles, setAccessRoles] = useState<string[]>(["EMPLOYEE", "CANDIDATE", "VISITOR"]);
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [retrying, setRetrying] = useState<string | null>(null);
@@ -123,7 +178,7 @@ export default function ManagerIngestionPage() {
       if (description) form.append("description", description);
 
       try {
-        const uploaded = await api.upload(form);
+        const uploaded = await api.upload(form, [...accessRoles, "HR_ADMIN"]);
         if (uploaded.status === "SKIPPED_DUPLICATE") {
           setSelectedId(uploaded.document_id);
           lastSelected = uploaded.document_id;
@@ -296,10 +351,16 @@ export default function ManagerIngestionPage() {
                 className="block w-full cursor-pointer rounded-md border border-dashed border-zinc-300 bg-zinc-50/50 px-3 py-6 text-sm text-zinc-600 transition-colors file:mr-3 file:rounded-md file:border-0 file:bg-blue-50 file:px-3 file:py-1.5 file:text-[13px] file:font-medium file:text-blue-700 hover:border-zinc-400"
               />
               {files.length > 0 && (
-                <p className="mt-1.5 text-xs text-zinc-500">
-                  {files.length} file{files.length === 1 ? "" : "s"} selected:{" "}
-                  {files.map((f) => f.name).join(", ")}
-                </p>
+                <div className="mt-1.5 text-xs text-zinc-500">
+                  <p>
+                    {files.length} file{files.length === 1 ? "" : "s"} selected:{" "}
+                    {files.map((f) => f.name).join(", ")}
+                  </p>
+                  <p className="mt-1 flex items-center gap-1.5">
+                    <span>Access:</span>
+                    <AccessChips roles={[...accessRoles, "HR_ADMIN"]} />
+                  </p>
+                </div>
               )}
             </div>
 
@@ -349,6 +410,97 @@ export default function ManagerIngestionPage() {
               />
             </div>
 
+            <div className="rounded-lg border border-zinc-200 bg-zinc-50/40 p-3.5">
+              <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+                <span className="label mb-0">
+                  Who can access these documents in the chatbot?
+                </span>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    className="btn-ghost px-2.5 py-1 text-xs"
+                    onClick={() => setAccessRoles(["EMPLOYEE", "CANDIDATE", "VISITOR"])}
+                  >
+                    Allow everyone
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost px-2.5 py-1 text-xs"
+                    onClick={() => setAccessRoles([])}
+                  >
+                    HR only
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between rounded-md border border-zinc-200 bg-white px-3 py-2 opacity-70">
+                  <div className="flex items-center gap-2.5">
+                    <svg className="h-4 w-4 shrink-0 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={1.75}
+                        d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                      />
+                    </svg>
+                    <div>
+                      <p className="text-sm font-medium text-zinc-900">HR Admin</p>
+                      <p className="text-xs text-zinc-400">Always has access — cannot be removed</p>
+                    </div>
+                  </div>
+                  <span className="rounded bg-purple-50 px-1.5 py-0.5 text-[11px] font-medium text-purple-700">
+                    Locked
+                  </span>
+                </div>
+                {ACCESS_ROLE_OPTIONS.map((role) => {
+                  const checked = accessRoles.includes(role.key);
+                  return (
+                    <label
+                      key={role.key}
+                      className={`flex cursor-pointer items-center justify-between rounded-md border px-3 py-2 transition-colors ${
+                        checked
+                          ? "border-blue-200 bg-blue-50/50"
+                          : "border-zinc-200 bg-white hover:border-zinc-300"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) =>
+                            setAccessRoles((prev) =>
+                              e.target.checked
+                                ? [...prev, role.key]
+                                : prev.filter((r) => r !== role.key)
+                            )
+                          }
+                          className="h-4 w-4 accent-blue-600"
+                        />
+                        <div>
+                          <p className="text-sm font-medium text-zinc-900">{role.label}</p>
+                          <p className="text-xs text-zinc-400">{role.description}</p>
+                        </div>
+                      </div>
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                          ACCESS_ROLE_CHIP_STYLE[role.key]
+                        }`}
+                      >
+                        {checked ? "Can access" : "No access"}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-xs text-zinc-400">
+                {accessRoles.length === 0
+                  ? "Only HR Admin will be able to retrieve these files from the chatbot."
+                  : `These files will be visible to: ${accessRoles
+                      .map((r) => ACCESS_ROLE_SHORT_LABEL[r] ?? r)
+                      .join(", ")}, and HR Admin.`}
+              </p>
+            </div>
+
             <div className="flex items-center gap-3">
               <button className="btn-primary" type="submit" disabled={uploading}>
                 {uploading ? "Uploading…" : "Upload & index"}
@@ -389,6 +541,7 @@ export default function ManagerIngestionPage() {
                   <tr>
                     <th className="table-th">Title</th>
                     <th className="table-th">Category</th>
+                    <th className="table-th">Access</th>
                     <th className="table-th">Status</th>
                     <th className="table-th text-right">Versions</th>
                     <th className="table-th text-right">Chunks</th>
@@ -422,6 +575,9 @@ export default function ManagerIngestionPage() {
                       </td>
                       <td className="table-td text-zinc-500">{d.category}</td>
                       <td className="table-td">
+                        <AccessChips roles={d.role_access ?? []} />
+                      </td>
+                      <td className="table-td">
                         <span className={`badge ${statusBadgeClass(d.status)}`}>{d.status}</span>
                       </td>
                       <td className="table-td text-right tabular-nums text-zinc-500">{d.versions}</td>
@@ -443,6 +599,10 @@ export default function ManagerIngestionPage() {
               <h2 className="text-sm font-semibold text-zinc-900">{detail.title}</h2>
               <span className="badge bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-600/20">{detail.category}</span>
               <span className={`badge ${statusBadgeClass(detail.status)}`}>{detail.status}</span>
+              <span className="flex items-center gap-1">
+                <span className="text-[11px] text-zinc-400">Access</span>
+                <AccessChips roles={detail.role_access ?? []} />
+              </span>
             </div>
             <div className="flex items-center gap-2">
               <button type="button" className="btn-secondary" onClick={() => loadDetail(selectedId!)}>

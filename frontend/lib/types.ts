@@ -178,6 +178,8 @@ export type KnowledgeDocumentStatus =
   | "FAILED"
   | "DELETED";
 
+export type KnowledgeAccessRole = "HR_ADMIN" | "EMPLOYEE" | "CANDIDATE" | "VISITOR";
+
 export interface KnowledgeDocumentSummary {
   document_id: string;
   title: string;
@@ -185,6 +187,7 @@ export interface KnowledgeDocumentSummary {
   category: string;
   description: string | null;
   status: KnowledgeDocumentStatus;
+  role_access: KnowledgeAccessRole[];
   versions: number;
   current_chunks: number;
   created_at: string | null;
@@ -228,6 +231,7 @@ export interface KnowledgeDocumentDetail {
   category: string;
   description: string | null;
   status: KnowledgeDocumentStatus;
+  role_access: KnowledgeAccessRole[];
   current_chunks: number;
   created_at: string | null;
   updated_at: string | null;

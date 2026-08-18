@@ -167,6 +167,7 @@ async def test_end_to_end_register_process_index_search(db_session):
     assert version.status == "INDEXED" and version.is_current is True
     document = await db_session.get(Document, uploaded["document_id"])
     assert document.status == "INDEXED"
+    assert document.role_access == ["HR_ADMIN", "EMPLOYEE", "CANDIDATE", "VISITOR"]
 
     # Chunk tree: leaf rows embedded, context rows NULL embeddings.
     chunks = (

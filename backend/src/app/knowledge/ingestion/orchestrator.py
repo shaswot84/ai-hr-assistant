@@ -62,6 +62,7 @@ async def register_document(
     document_type: str = "OTHER",
     description: str | None = None,
     uploaded_by: uuid.UUID | None = None,
+    role_access: list[str] | None = None,
 ) -> dict:
     """Register an uploaded document and enqueue its ingestion job.
 
@@ -69,6 +70,9 @@ async def register_document(
     (enqueued) or ``SKIPPED_DUPLICATE`` (identical bytes already indexed).
     Raises :class:`DuplicateDocumentError` when ``skip_duplicate`` is set
     (not used by the default path — the API maps the returned status).
+
+    ``role_access`` is the uploader-chosen allowlist of roles that may
+    retrieve the document; ``None`` keeps the model default (all roles).
     """
     checksum = hashlib.sha256(data).hexdigest()
 
@@ -101,8 +105,12 @@ async def register_document(
             status="PENDING",
             created_by=uploaded_by,
         )
+        if role_access is not None:
+            document.role_access = role_access
         session.add(document)
         await session.flush()
+    elif role_access is not None:
+        document.role_access = role_access
 
     # 3. Version row: bump version_number, link the previous INDEXED version.
     max_version = (
