@@ -102,6 +102,10 @@ class KnowledgeResult:
     # Populated only when access control is applied AND no accessible
     # evidence was found; empty otherwise.
     restricted: list[RestrictedDocument] = field(default_factory=list)
+    # True when no documents are indexed at all. The agent replies with a
+    # deterministic "knowledge base is empty" message instead of a generic
+    # refusal — and retrieval skips embedding entirely in this state.
+    empty_knowledge_base: bool = False
 
     @property
     def has_evidence(self) -> bool:

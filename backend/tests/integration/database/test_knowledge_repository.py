@@ -414,3 +414,53 @@ async def test_repository_restricted_matches_probe(db_session):
     assert restricted[0].allowed_roles == ["HR_ADMIN"]
     # Never content: RestrictedDocument has no content field by construction.
     assert not hasattr(restricted[0], "content")
+
+
+@pytest.mark.asyncio
+async def test_repository_has_indexed_documents(db_session):
+    """has_indexed_documents reflects the presence of INDEXED, non-deleted docs."""
+    from app.knowledge.repository import HybridRetrievalRepository
+
+    repo = HybridRetrievalRepository(db_session)
+    assert await repo.has_indexed_documents() is False
+
+    await _indexed_doc(
+        db_session,
+        "General Company Info",
+        role_access=["VISITOR", "CANDIDATE", "EMPLOYEE", "HR_ADMIN"],
+        content="Summit Technologies is a software company.",
+        first=1.0,
+    )
+    assert await repo.has_indexed_documents() is True
+
+    # A pending-only document does not make the knowledge base non-empty.
+    await _indexed_doc(db_session, "Pending Doc", role_access=["HR_ADMIN"], content="x.", first=2.0)
+    pending = Document(
+        title="Pending Only",
+        document_type="policy",
+        category=DocumentCategory.POLICY,
+        status="PENDING",
+    )
+    db_session.add(pending)
+    await db_session.flush()
+    version = DocumentVersion(
+        document_id=pending.document_id,
+        version_number=1,
+        object_key="documents/pending-only.pdf",
+        original_filename="pending-only.pdf",
+        mime_type="application/pdf",
+        file_size=1,
+        checksum="pending-only",
+        is_current=True,
+        status="PENDING",
+    )
+    db_session.add(version)
+    await db_session.flush()
+    job = IngestionJob(
+        document_version_id=version.document_version_id,
+        status=IngestionStatus.PENDING,
+    )
+    db_session.add(job)
+    await db_session.flush()
+
+    assert await repo.has_indexed_documents() is True

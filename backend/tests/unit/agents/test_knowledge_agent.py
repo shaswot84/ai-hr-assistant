@@ -307,6 +307,31 @@ async def test_stream_knowledge_turn_replies_denial_for_restricted():
     assert state["citations"] == []
     assert state["safety"] == "PASS"
     assert service.stream_queries == []  # never generated from restricted content
+
+
+@pytest.mark.asyncio
+async def test_stream_knowledge_turn_empty_knowledge_base_message():
+    """An empty knowledge base yields a deterministic 'no documents' reply,
+    never an LLM generation or a generic failure."""
+    from app.agents.knowledge_agent.agent import EMPTY_KB_MESSAGE
+
+    result = KnowledgeResult(grounded_context="", empty_knowledge_base=True)
+    service = FakeKnowledgeService(result)
+    writer = EventCollector()
+
+    state = await stream_knowledge_turn(
+        service=service,
+        llm=FakeLLM("rewritten"),
+        query="what is the leave policy",
+        history=[],
+        writer=writer,
+    )
+
+    assert state["answer"] == EMPTY_KB_MESSAGE
+    assert state["citations"] == []
+    assert state["safety"] == "PASS"
+    assert service.stream_queries == []  # never generated for an empty KB
+    assert writer.events[-1] == {"type": "message", "text": EMPTY_KB_MESSAGE}
     assert [e["type"] for e in writer.events] == ["retrieval", "message"]
 
 

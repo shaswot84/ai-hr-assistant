@@ -32,18 +32,31 @@ def make_hit(chunk_id: str, content: str, category: str = "POLICY") -> Retrieval
 class FakeRepository:
     """Stands in for HybridRetrievalRepository; records filter kwargs."""
 
-    def __init__(self, bm25_hits: list[RetrievalHit], vector_hits: list[RetrievalHit]) -> None:
+    def __init__(
+        self,
+        bm25_hits: list[RetrievalHit],
+        vector_hits: list[RetrievalHit],
+        *,
+        has_docs: bool = True,
+    ) -> None:
         self._bm25_hits = bm25_hits
         self._vector_hits = vector_hits
+        self._has_docs = has_docs
         self.last_kwargs: dict = {}
         self.restricted_calls: list[dict] = []
+        self.leg_calls: int = 0
+
+    async def has_indexed_documents(self) -> bool:
+        return self._has_docs
 
     async def bm25_search(self, query, limit, **kwargs):
         self.last_kwargs["bm25"] = kwargs
+        self.leg_calls += 1
         return self._bm25_hits
 
     async def vector_search(self, query_embedding, limit, **kwargs):
         self.last_kwargs["vector"] = kwargs
+        self.leg_calls += 1
         return self._vector_hits
 
     async def fetch_parent_context(self, chunk_ids):
@@ -72,7 +85,14 @@ class FakeEmbedder(Embedder):
     version = "1"
     dimension = 4
 
+    def __init__(self, *, fail: bool = False) -> None:
+        self.calls = 0
+        self._fail = fail
+
     async def embed(self, texts, *, prefix=""):
+        self.calls += 1
+        if self._fail:
+            raise RuntimeError("embedder unreachable")
         # The service must use the nomic query prefix so query embeddings are
         # in the same space as ingestion-time document embeddings.
         assert prefix == "search_query: "
@@ -337,4 +357,38 @@ async def test_generate_answer_skipped_on_low_confidence():
     result = await service.retrieve("nothing relevant")
     assert result.low_confidence is True
     assert await service.generate_answer("nothing relevant", result) is None
-    assert llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_service_empty_knowledge_base_skips_retrieval():
+    """No INDEXED documents short-circuits before embedding and the legs."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("a", "Annual leave accrues.")],
+        vector_hits=[make_hit("a", "Annual leave accrues.")],
+        has_docs=False,
+    )
+    embedder = FakeEmbedder()
+    service = KnowledgeService(repo, embedder)
+
+    result = await service.retrieve("how much annual leave?")
+
+    assert result.empty_knowledge_base is True
+    assert result.chunks == []
+    assert result.citations == []
+    assert embedder.calls == 0
+    assert repo.leg_calls == 0
+    assert repo.restricted_calls == []
+
+
+@pytest.mark.asyncio
+async def test_service_embed_failure_degrades_to_empty_result():
+    """A down embedder degrades to an empty low-confidence result, never raises."""
+    repo = FakeRepository(bm25_hits=[], vector_hits=[])
+    service = KnowledgeService(repo, FakeEmbedder(fail=True))
+
+    result = await service.retrieve("anything")
+
+    assert result.chunks == []
+    assert result.citations == []
+    assert result.low_confidence is True
+    assert result.empty_knowledge_base is False

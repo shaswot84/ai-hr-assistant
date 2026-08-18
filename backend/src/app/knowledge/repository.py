@@ -308,3 +308,26 @@ class HybridRetrievalRepository:
             )
             for row in result.mappings()
         ]
+
+    async def has_indexed_documents(self) -> bool:
+        """True when at least one INDEXED document version is servable.
+
+        A cheap existence probe (no ranking, no embedding) used to short-
+        circuit retrieval when the knowledge base is empty — the caller can
+        reply "no documents yet" without ever touching the embedder.
+        """
+        sql = text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM document d
+                JOIN document_version v ON v.document_id = d.document_id
+                JOIN ingestion_job j ON j.document_version_id = v.document_version_id
+                WHERE j.status = 'INDEXED'
+                  AND v.status = 'INDEXED'
+                  AND d.deleted_at IS NULL
+            )
+            """
+        )
+        result = await self._session.execute(sql)
+        return bool(result.scalar_one())

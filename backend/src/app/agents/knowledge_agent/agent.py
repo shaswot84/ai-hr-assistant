@@ -161,6 +161,15 @@ REFUSAL_MESSAGE = (
     "specific policy, procedure, or guideline."
 )
 
+# Deterministic reply when the knowledge base has no INDEXED documents at
+# all — distinct from a low-confidence refusal so an empty system never
+# reads as a retrieval failure.
+EMPTY_KB_MESSAGE = (
+    "The knowledge base is empty — no documents have been uploaded yet. "
+    "Ask an HR admin to upload policies, procedures, or guidelines, and "
+    "I can answer questions from them."
+)
+
 
 def denied_message(result: KnowledgeResult) -> str:
     """Deterministic access-denial reply for restricted matches.
@@ -342,6 +351,21 @@ async def stream_knowledge_turn(
     rewritten = await rewrite_query(llm, query, history)
     result = await service.retrieve(rewritten, access_roles=access_roles_for(actor))
     writer({"type": "retrieval", "rewritten_query": rewritten, "result": result})
+
+    if result.empty_knowledge_base:
+        # No documents indexed at all: deterministic "empty knowledge base"
+        # reply, never a connection-looking failure.
+        message = EMPTY_KB_MESSAGE
+        writer({"type": "message", "text": message})
+        return {
+            "messages": [AIMessage(content=message)],
+            "knowledge_result": result,
+            "answer": message,
+            "citations": [],
+            "confidence": result.confidence,
+            "agent": "knowledge",
+            "safety": GuardVerdict.PASS.value,
+        }
 
     if result.restricted:
         # The query matched only documents the requester cannot access:

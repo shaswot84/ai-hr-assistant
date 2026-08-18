@@ -1,6 +1,7 @@
 """Knowledge service agent: query rewriting + RAG turn orchestration."""
 
 from app.agents.knowledge_agent.agent import (
+    EMPTY_KB_MESSAGE,
     KnowledgeTurn,
     fallback_message,
     rewrite_query,
@@ -10,6 +11,7 @@ from app.agents.knowledge_agent.agent import (
 )
 
 __all__ = [
+    "EMPTY_KB_MESSAGE",
     "KnowledgeTurn",
     "fallback_message",
     "rewrite_query",

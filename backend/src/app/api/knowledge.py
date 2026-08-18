@@ -296,6 +296,7 @@ def _serialize_search_result(query: str, result: KnowledgeResult) -> dict:
         "grounded_context": result.grounded_context,
         "confidence": round(result.confidence, 4),
         "low_confidence": result.low_confidence,
+        "empty_knowledge_base": result.empty_knowledge_base,
         "restricted_documents": [
             {"title": d.title, "allowed_roles": list(d.allowed_roles)} for d in result.restricted
         ],

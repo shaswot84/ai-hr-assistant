@@ -5,6 +5,7 @@ It never touches pgvector/FTS/MinIO directly — it only talks to the
 repository (PostgreSQL) and the Model Gateway (embedding + reranking).
 """
 
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from uuid import UUID
@@ -18,6 +19,8 @@ from app.knowledge.ranking import reciprocal_rank_fusion
 from app.knowledge.repository import HybridRetrievalRepository, RetrievalHit
 from app.knowledge.reranker import PassThroughReranker
 from app.model_gateway.interfaces import LLM, Embedder, Reranker
+
+logger = logging.getLogger(__name__)
 
 CURRENT_ONLY = True
 
@@ -100,12 +103,27 @@ class KnowledgeService:
         requester cannot see (identity only, never content) — so the agent
         can reply "you cannot access this" instead of pretending the
         document does not exist.
+
+        An empty knowledge base (no INDEXED documents) short-circuits before
+        embedding: the result carries ``empty_knowledge_base=True`` so the
+        agent can say "no documents yet" without a wasted (or, when the
+        embedder is unreachable, failing) model call. A failed embedding
+        call is also degraded to an empty result instead of raising — search
+        must never hard-fail because the embedder is down.
         """
         top_k = top_k or self._settings.top_k
+
+        if not await self._repository.has_indexed_documents():
+            return KnowledgeResult(grounded_context="", empty_knowledge_base=True)
+
         # nomic-embed-text is trained with task prefixes; matching the query
         # prefix against the document prefix used at ingestion improves
         # semantic retrieval substantially.
-        query_embedding = (await self._embedder.embed([query], prefix="search_query: "))[0]
+        try:
+            query_embedding = (await self._embedder.embed([query], prefix="search_query: "))[0]
+        except Exception:  # noqa: BLE001 - a down embedder degrades to an empty result
+            logger.warning("query embedding failed; serving an empty result", exc_info=True)
+            return KnowledgeResult(grounded_context="", low_confidence=True)
 
         # Run the legs sequentially: the repository is bound to a single
         # AsyncSession, which SQLAlchemy forbids using concurrently
