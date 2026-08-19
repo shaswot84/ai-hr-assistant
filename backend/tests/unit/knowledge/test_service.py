@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 from app.config.settings import RetrievalSettings
+from app.knowledge.contracts import RestrictedDocument
 from app.knowledge.models import DocumentCategory
 from app.knowledge.repository import RetrievalHit
 from app.knowledge.reranker import PassThroughReranker
@@ -31,21 +32,39 @@ def make_hit(chunk_id: str, content: str, category: str = "POLICY") -> Retrieval
 class FakeRepository:
     """Stands in for HybridRetrievalRepository; records filter kwargs."""
 
-    def __init__(self, bm25_hits: list[RetrievalHit], vector_hits: list[RetrievalHit]) -> None:
+    def __init__(
+        self,
+        bm25_hits: list[RetrievalHit],
+        vector_hits: list[RetrievalHit],
+        *,
+        has_docs: bool = True,
+    ) -> None:
         self._bm25_hits = bm25_hits
         self._vector_hits = vector_hits
+        self._has_docs = has_docs
         self.last_kwargs: dict = {}
+        self.restricted_calls: list[dict] = []
+        self.leg_calls: int = 0
+
+    async def has_indexed_documents(self) -> bool:
+        return self._has_docs
 
     async def bm25_search(self, query, limit, **kwargs):
         self.last_kwargs["bm25"] = kwargs
+        self.leg_calls += 1
         return self._bm25_hits
 
     async def vector_search(self, query_embedding, limit, **kwargs):
         self.last_kwargs["vector"] = kwargs
+        self.leg_calls += 1
         return self._vector_hits
 
     async def fetch_parent_context(self, chunk_ids):
         return {}
+
+    async def restricted_matches(self, query, access_roles, **kwargs):
+        self.restricted_calls.append({"query": query, "access_roles": access_roles, **kwargs})
+        return []
 
 
 class FakeRepositoryWithParents(FakeRepository):
@@ -66,7 +85,14 @@ class FakeEmbedder(Embedder):
     version = "1"
     dimension = 4
 
+    def __init__(self, *, fail: bool = False) -> None:
+        self.calls = 0
+        self._fail = fail
+
     async def embed(self, texts, *, prefix=""):
+        self.calls += 1
+        if self._fail:
+            raise RuntimeError("embedder unreachable")
         # The service must use the nomic query prefix so query embeddings are
         # in the same space as ingestion-time document embeddings.
         assert prefix == "search_query: "
@@ -168,6 +194,81 @@ async def test_service_forwards_metadata_filters():
 
 
 @pytest.mark.asyncio
+async def test_service_forwards_access_roles_to_both_legs():
+    """access_roles is forwarded to both retrieval legs for role gating."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("a", "Annual leave accrues.")],
+        vector_hits=[make_hit("a", "Annual leave accrues.")],
+    )
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    await service.retrieve("leave", access_roles=["EMPLOYEE"])
+
+    assert repo.last_kwargs["bm25"]["access_roles"] == ["EMPLOYEE"]
+    assert repo.last_kwargs["vector"]["access_roles"] == ["EMPLOYEE"]
+
+
+@pytest.mark.asyncio
+async def test_service_access_roles_none_skips_filter():
+    """access_roles=None (HR admin / unrestricted) must not filter the legs."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("a", "Annual leave accrues.")],
+        vector_hits=[make_hit("a", "Annual leave accrues.")],
+    )
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    await service.retrieve("leave")
+
+    assert repo.last_kwargs["bm25"]["access_roles"] is None
+    assert repo.last_kwargs["vector"]["access_roles"] is None
+
+
+@pytest.mark.asyncio
+async def test_service_probes_restricted_when_no_accessible_evidence():
+    """Access-controlled queries with no visible evidence surface restricted docs."""
+    repo = FakeRepository(bm25_hits=[], vector_hits=[])
+
+    async def restricted_matches(query, access_roles, **kwargs):
+        return [RestrictedDocument(title="Confidential Compensation", allowed_roles=["HR_ADMIN"])]
+
+    repo.restricted_matches = restricted_matches
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    result = await service.retrieve("compensation bands", access_roles=["VISITOR"])
+
+    assert len(result.restricted) == 1
+    assert result.restricted[0].title == "Confidential Compensation"
+    assert result.restricted[0].allowed_roles == ["HR_ADMIN"]
+
+
+@pytest.mark.asyncio
+async def test_service_skips_probe_when_evidence_is_visible():
+    """Accessible evidence means the restricted probe never runs."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("a", "Annual leave accrues.")],
+        vector_hits=[make_hit("a", "Annual leave accrues.")],
+    )
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    result = await service.retrieve("leave", access_roles=["EMPLOYEE"])
+
+    assert repo.restricted_calls == []
+    assert result.restricted == []
+
+
+@pytest.mark.asyncio
+async def test_service_skips_probe_when_unrestricted():
+    """HR admin (access_roles=None) never triggers the restricted probe."""
+    repo = FakeRepository(bm25_hits=[], vector_hits=[])
+    service = KnowledgeService(repo, FakeEmbedder())
+
+    result = await service.retrieve("compensation bands")
+
+    assert repo.restricted_calls == []
+    assert result.restricted == []
+
+
+@pytest.mark.asyncio
 async def test_service_expands_leaf_with_parent_section():
     """Small-to-big: matched leaves carry their enclosing section text."""
     hit = make_hit("a", "Sign the contract, then receive equipment.")
@@ -256,4 +357,38 @@ async def test_generate_answer_skipped_on_low_confidence():
     result = await service.retrieve("nothing relevant")
     assert result.low_confidence is True
     assert await service.generate_answer("nothing relevant", result) is None
-    assert llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_service_empty_knowledge_base_skips_retrieval():
+    """No INDEXED documents short-circuits before embedding and the legs."""
+    repo = FakeRepository(
+        bm25_hits=[make_hit("a", "Annual leave accrues.")],
+        vector_hits=[make_hit("a", "Annual leave accrues.")],
+        has_docs=False,
+    )
+    embedder = FakeEmbedder()
+    service = KnowledgeService(repo, embedder)
+
+    result = await service.retrieve("how much annual leave?")
+
+    assert result.empty_knowledge_base is True
+    assert result.chunks == []
+    assert result.citations == []
+    assert embedder.calls == 0
+    assert repo.leg_calls == 0
+    assert repo.restricted_calls == []
+
+
+@pytest.mark.asyncio
+async def test_service_embed_failure_degrades_to_empty_result():
+    """A down embedder degrades to an empty low-confidence result, never raises."""
+    repo = FakeRepository(bm25_hits=[], vector_hits=[])
+    service = KnowledgeService(repo, FakeEmbedder(fail=True))
+
+    result = await service.retrieve("anything")
+
+    assert result.chunks == []
+    assert result.citations == []
+    assert result.low_confidence is True
+    assert result.empty_knowledge_base is False

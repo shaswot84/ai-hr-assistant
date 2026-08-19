@@ -60,6 +60,7 @@ class GroundingContextBuilder:
             version_number=chunk.version_number,
             document_title=chunk.document_title,
             category=chunk.category,
+            mime_type=chunk.mime_type,
             page=chunk.page,
             section_title=chunk.section_title,
         )

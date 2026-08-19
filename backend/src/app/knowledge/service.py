@@ -5,19 +5,23 @@ It never touches pgvector/FTS/MinIO directly — it only talks to the
 repository (PostgreSQL) and the Model Gateway (embedding + reranking).
 """
 
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from uuid import UUID
 
 from app.config.settings import RetrievalSettings
 from app.knowledge.confidence import ConfidenceEstimator, LowConfidenceDetector
-from app.knowledge.contracts import KnowledgeResult, RetrievedChunk
+from app.knowledge.contracts import KnowledgeResult, RestrictedDocument, RetrievedChunk
 from app.knowledge.grounding import GroundingContextBuilder
+from app.knowledge.markers import renumber_markers
 from app.knowledge.models import DocumentCategory
 from app.knowledge.ranking import reciprocal_rank_fusion
 from app.knowledge.repository import HybridRetrievalRepository, RetrievalHit
 from app.knowledge.reranker import PassThroughReranker
 from app.model_gateway.interfaces import LLM, Embedder, Reranker
+
+logger = logging.getLogger(__name__)
 
 CURRENT_ONLY = True
 
@@ -75,9 +79,9 @@ class KnowledgeService:
         query: str,
         *,
         category: DocumentCategory | None = None,
-        document_type: str | None = None,
         current_only: bool = CURRENT_ONLY,
         top_k: int | None = None,
+        access_roles: list[str] | None = None,
     ) -> KnowledgeResult:
         """Run the full retrieval pipeline for a query and return evidence.
 
@@ -90,12 +94,36 @@ class KnowledgeService:
            (small-to-big).
         6. Estimate confidence and apply the low-confidence gate.
         7. Build grounded context + citations.
+
+        ``access_roles`` gates every leg to documents whose ``role_access``
+        allowlist contains the requester's role(s); ``None`` disables access
+        control (HR admin / unrestricted callers). When access control is on
+        and NO accessible evidence is found, a cheap BM25 probe runs to
+        surface ``restricted`` matches — documents the query hit but the
+        requester cannot see (identity only, never content) — so the agent
+        can reply "you cannot access this" instead of pretending the
+        document does not exist.
+
+        An empty knowledge base (no INDEXED documents) short-circuits before
+        embedding: the result carries ``empty_knowledge_base=True`` so the
+        agent can say "no documents yet" without a wasted (or, when the
+        embedder is unreachable, failing) model call. A failed embedding
+        call is also degraded to an empty result instead of raising — search
+        must never hard-fail because the embedder is down.
         """
         top_k = top_k or self._settings.top_k
+
+        if not await self._repository.has_indexed_documents():
+            return KnowledgeResult(grounded_context="", empty_knowledge_base=True)
+
         # nomic-embed-text is trained with task prefixes; matching the query
         # prefix against the document prefix used at ingestion improves
         # semantic retrieval substantially.
-        query_embedding = (await self._embedder.embed([query], prefix="search_query: "))[0]
+        try:
+            query_embedding = (await self._embedder.embed([query], prefix="search_query: "))[0]
+        except Exception:
+            logger.warning("query embedding failed; serving an empty result", exc_info=True)
+            return KnowledgeResult(grounded_context="", low_confidence=True)
 
         # Run the legs sequentially: the repository is bound to a single
         # AsyncSession, which SQLAlchemy forbids using concurrently
@@ -103,14 +131,18 @@ class KnowledgeService:
         # already-computed query embedding, so there is nothing left to
         # parallelize at this layer.
         bm25_hits = await self._repository.bm25_search(
-            query, top_k, current_only=current_only, category=category, document_type=document_type
+            query,
+            top_k,
+            current_only=current_only,
+            category=category,
+            access_roles=access_roles,
         )
         vector_hits = await self._repository.vector_search(
             query_embedding,
             top_k,
             current_only=current_only,
             category=category,
-            document_type=document_type,
+            access_roles=access_roles,
         )
 
         # De-duplicate by chunk id so a chunk present in both legs is one row.
@@ -147,12 +179,19 @@ class KnowledgeService:
 
         grounded_context, citations = self._grounding.build(final)
 
+        restricted: list[RestrictedDocument] = []
+        if access_roles is not None and not citations:
+            restricted = await self._repository.restricted_matches(
+                query, access_roles, current_only=current_only
+            )
+
         return KnowledgeResult(
             grounded_context=grounded_context,
             citations=citations,
             confidence=confidence,
             chunks=final,
             low_confidence=low_confidence,
+            restricted=restricted,
         )
 
     async def generate_answer(
@@ -179,9 +218,12 @@ class KnowledgeService:
         if history:
             user = f"CONVERSATION HISTORY:\n{history}\n\n{user}"
         try:
-            return await self._llm.complete(_GENERATION_SYSTEM, user)
+            answer = await self._llm.complete(_GENERATION_SYSTEM, user)
         except Exception:  # noqa: BLE001 - never fail search because of the LLM
             return None
+        # The search UI serves every citation as a source chip; keep markers
+        # aligned with that set (identity renumber) and drop out-of-range ones.
+        return renumber_markers(answer, list(range(1, len(result.citations) + 1)))
 
     async def stream_answer(
         self, query: str, result: KnowledgeResult, *, history: str | None = None
@@ -227,6 +269,7 @@ class KnowledgeService:
                     version_number=hit.version_number,
                     document_title=hit.document_title,
                     category=hit.category,
+                    mime_type=hit.mime_type or "",
                     page=hit.page,
                     section_title=hit.section_title,
                     text=hit.content,
@@ -281,6 +324,7 @@ class KnowledgeService:
                 version_number=c.version_number,
                 document_title=c.document_title,
                 category=c.category,
+                mime_type=c.mime_type,
                 page=c.page,
                 section_title=c.section_title,
                 text=c.text,
@@ -315,6 +359,7 @@ class KnowledgeService:
                 version_number=c.version_number,
                 document_title=c.document_title,
                 category=c.category,
+                mime_type=c.mime_type,
                 page=c.page,
                 section_title=c.section_title,
                 text=c.text,

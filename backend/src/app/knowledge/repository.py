@@ -7,13 +7,14 @@ ingestion job so provenance (parser/chunking/embedding) rides along with
 every hit.
 """
 
+import json
 from dataclasses import dataclass, field
 from uuid import UUID
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.knowledge.contracts import IngestionProvenance
+from app.knowledge.contracts import IngestionProvenance, RestrictedDocument
 from app.knowledge.models import DocumentCategory
 
 
@@ -44,6 +45,7 @@ class RetrievalHit:
     section_title: str | None
     content: str
     score: float
+    mime_type: str | None = None
     provenance: IngestionProvenance = field(default_factory=IngestionProvenance)
 
     @property
@@ -67,6 +69,7 @@ _SELECT_COLS = """
         d.document_id,
         v.document_version_id,
         v.version_number,
+        v.mime_type,
         d.title,
         d.category,
         c.page_number,
@@ -98,13 +101,17 @@ class HybridRetrievalRepository:
         *,
         current_only: bool = True,
         category: DocumentCategory | None = None,
-        document_type: str | None = None,
+        access_roles: list[str] | None = None,
     ) -> list[RetrievalHit]:
         """Lexical leg: PostgreSQL Full-Text Search (BM25 via ``ts_rank``).
 
         Only embeddable (leaf) rows are searched: document/section context rows
         are not indexed for retrieval, so a whole page that merely mentions a
         phrase cannot crowd out the focused leaf that states it.
+
+        ``access_roles`` restricts results to documents whose ``role_access``
+        allowlist contains every requester role; ``None`` disables the filter
+        (HR admin / callers not applying access control).
         """
         sql = text(
             _SELECT_COLS
@@ -118,7 +125,7 @@ class HybridRetrievalRepository:
               AND to_tsvector('english', c.processed_content)
                   @@ plainto_tsquery('english', :query)
               AND (:current_only = FALSE OR v.is_current = TRUE)
-              {self._filter_clause(category, document_type)}
+              {self._filter_clause(category, access_roles)}
             ORDER BY score DESC
             LIMIT :limit"""
         )
@@ -127,7 +134,7 @@ class HybridRetrievalRepository:
             "current_only": current_only,
             "limit": limit,
         }
-        self._add_filter_params(params, category, document_type)
+        self._add_filter_params(params, category, access_roles)
         return await self._fetch(sql, params)
 
     async def vector_search(
@@ -137,7 +144,7 @@ class HybridRetrievalRepository:
         *,
         current_only: bool = True,
         category: DocumentCategory | None = None,
-        document_type: str | None = None,
+        access_roles: list[str] | None = None,
     ) -> list[RetrievalHit]:
         """Semantic leg: pgvector cosine-distance search (``<=>``).
 
@@ -153,7 +160,7 @@ class HybridRetrievalRepository:
               AND d.deleted_at IS NULL
               AND c.embedding IS NOT NULL
               AND (:current_only = FALSE OR v.is_current = TRUE)
-              {self._filter_clause(category, document_type)}
+              {self._filter_clause(category, access_roles)}
             ORDER BY c.embedding <=> (:query_embedding)::vector ASC
             LIMIT :limit"""
         )
@@ -162,7 +169,7 @@ class HybridRetrievalRepository:
             "current_only": current_only,
             "limit": limit,
         }
-        self._add_filter_params(params, category, document_type)
+        self._add_filter_params(params, category, access_roles)
         return await self._fetch(sql, params)
 
     async def fetch_parent_context(self, chunk_ids: list[UUID]) -> dict[UUID, str]:
@@ -206,6 +213,7 @@ class HybridRetrievalRepository:
                     category=row["category"].value
                     if isinstance(row["category"], DocumentCategory)
                     else str(row["category"]),
+                    mime_type=row["mime_type"],
                     page=row["page_number"],
                     section_title=row["section_title"],
                     content=row["content"],
@@ -224,22 +232,97 @@ class HybridRetrievalRepository:
 
     @staticmethod
     def _filter_clause(
-        category: DocumentCategory | None, document_type: str | None
+        category: DocumentCategory | None,
+        access_roles: list[str] | None,
     ) -> str:
         """Build the optional WHERE fragment for metadata filters."""
         clauses: list[str] = []
         if category is not None:
             clauses.append("d.category = :category")
-        if document_type:
-            clauses.append("d.document_type = :document_type")
+        if access_roles is not None:
+            clauses.append("d.role_access @> (:role_access)::jsonb")
         return (" AND " + " AND ".join(clauses)) if clauses else ""
 
     @staticmethod
     def _add_filter_params(
-        params: dict, category: DocumentCategory | None, document_type: str | None
+        params: dict,
+        category: DocumentCategory | None,
+        access_roles: list[str] | None,
     ) -> None:
         """Register the bound params for the metadata filters, if present."""
         if category is not None:
             params["category"] = category.value
-        if document_type:
-            params["document_type"] = document_type
+        if access_roles is not None:
+            params["role_access"] = json.dumps(access_roles)
+
+    async def restricted_matches(
+        self,
+        query: str,
+        access_roles: list[str],
+        *,
+        limit: int = 5,
+        current_only: bool = True,
+    ) -> list[RestrictedDocument]:
+        """Documents matching the query that the requester may NOT access.
+
+        The probe mirrors the BM25 leg but inverts the access gate
+        (``NOT (d.role_access @> :role_access::jsonb)``). It returns titles
+        and the documents' allowlists only — never content — so the caller
+        can reply "you cannot access this" without leaking the file's text.
+        """
+        sql = text(
+            """
+            SELECT DISTINCT d.title, d.role_access
+            FROM document_chunk c
+            JOIN document_version v ON v.document_version_id = c.document_version_id
+            JOIN document d ON d.document_id = v.document_id
+            JOIN ingestion_job j ON j.document_version_id = v.document_version_id
+            WHERE j.status = 'INDEXED'
+              AND v.status = 'INDEXED'
+              AND d.deleted_at IS NULL
+              AND c.embeddable = TRUE
+              AND to_tsvector('english', c.processed_content)
+                  @@ plainto_tsquery('english', :query)
+              AND (:current_only = FALSE OR v.is_current = TRUE)
+              AND NOT (d.role_access @> (:role_access)::jsonb)
+            ORDER BY d.title
+            LIMIT :limit
+            """
+        )
+        params = {
+            "query": query,
+            "current_only": current_only,
+            "limit": limit,
+            "role_access": json.dumps(access_roles),
+        }
+        result = await self._session.execute(sql, params)
+        return [
+            RestrictedDocument(
+                title=row["title"],
+                allowed_roles=[str(r) for r in row["role_access"]],
+            )
+            for row in result.mappings()
+        ]
+
+    async def has_indexed_documents(self) -> bool:
+        """True when at least one INDEXED document version is servable.
+
+        A cheap existence probe (no ranking, no embedding) used to short-
+        circuit retrieval when the knowledge base is empty — the caller can
+        reply "no documents yet" without ever touching the embedder.
+        """
+        sql = text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM document d
+                JOIN document_version v ON v.document_id = d.document_id
+                JOIN ingestion_job j ON j.document_version_id = v.document_version_id
+                WHERE j.status = 'INDEXED'
+                  AND v.status = 'INDEXED'
+                  AND d.deleted_at IS NULL
+            )
+            """
+        )
+        result = await self._session.execute(sql)
+        return bool(result.scalar_one())

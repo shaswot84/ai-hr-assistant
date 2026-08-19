@@ -56,7 +56,6 @@ async def test_repository_serves_only_indexed_current_chunks(db_session):
 
     doc = Document(
         title="Leave Policy",
-        document_type="policy",
         category=DocumentCategory.POLICY,
         description="Annual leave rules",
         status="INDEXED",
@@ -149,7 +148,6 @@ async def test_repository_excludes_non_indexed(db_session):
 
     doc = Document(
         title="Pending Doc",
-        document_type="policy",
         category=DocumentCategory.POLICY,
         status="PROCESSING",
     )
@@ -203,7 +201,6 @@ async def test_repository_expands_leaf_to_parent_section(db_session):
 
     doc = Document(
         title="Hybrid Work Policy",
-        document_type="policy",
         category=DocumentCategory.POLICY,
         status="INDEXED",
     )
@@ -283,3 +280,182 @@ async def test_repository_expands_leaf_to_parent_section(db_session):
     # whole-document text is never fed to the LLM).
     assert await repo.fetch_parent_context([section_row.chunk_id]) == {}
     assert await repo.fetch_parent_context([]) == {}
+
+
+async def _indexed_doc(
+    db_session,
+    title: str,
+    *,
+    role_access: list[str],
+    content: str,
+    first: float = 1.0,
+):
+    """Insert one INDEXED document + current version + chunk + job."""
+    from app.knowledge.models import (
+        DocumentChunk,
+        DocumentVersion,
+        IngestionJob,
+        IngestionStatus,
+    )
+
+    doc = Document(
+        title=title,
+        category=DocumentCategory.POLICY,
+        status="INDEXED",
+        role_access=role_access,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    version = DocumentVersion(
+        document_id=doc.document_id,
+        version_number=1,
+        object_key=f"documents/{title}.pdf",
+        original_filename=f"{title}.pdf",
+        mime_type="application/pdf",
+        file_size=1000,
+        checksum=title,
+        is_current=True,
+        status="INDEXED",
+    )
+    db_session.add(version)
+    await db_session.flush()
+    chunk = DocumentChunk(
+        document_version_id=version.document_version_id,
+        chunk_index=0,
+        content=content,
+        processed_content=content,
+        embedding=make_embedding(first),
+    )
+    db_session.add(chunk)
+    await db_session.flush()
+    job = IngestionJob(
+        document_version_id=version.document_version_id,
+        status=IngestionStatus.INDEXED,
+        embedding_model="nomic-embed-text",
+        chunking_strategy="structure_aware_v1",
+    )
+    db_session.add(job)
+    await db_session.flush()
+    return doc, chunk
+
+
+@pytest.mark.asyncio
+async def test_repository_filters_by_access_roles(db_session):
+    """Both legs only serve documents whose role_access contains the requester."""
+    from app.knowledge.repository import HybridRetrievalRepository
+
+    await _indexed_doc(
+        db_session,
+        "General Company Info",
+        role_access=["VISITOR", "CANDIDATE", "EMPLOYEE", "HR_ADMIN"],
+        content="Summit Technologies is a software company.",
+        first=1.0,
+    )
+    await _indexed_doc(
+        db_session,
+        "Employee Leave Policy",
+        role_access=["EMPLOYEE", "HR_ADMIN"],
+        content="Employees accrue leave per month.",
+        first=2.0,
+    )
+    await _indexed_doc(
+        db_session,
+        "Confidential Compensation",
+        role_access=["HR_ADMIN"],
+        content="Compensation bands are confidential.",
+        first=3.0,
+    )
+    repo = HybridRetrievalRepository(db_session)
+
+    bm25 = await repo.bm25_search("company leave compensation", limit=10, access_roles=["VISITOR"])
+    titles = {h.document_title for h in bm25}
+    assert titles == {"General Company Info"}
+
+    vector = await repo.vector_search(make_embedding(1.0), limit=10, access_roles=["EMPLOYEE"])
+    vector_titles = {h.document_title for h in vector}
+    assert vector_titles == {"General Company Info", "Employee Leave Policy"}
+
+    unrestricted = await repo.vector_search(make_embedding(1.0), limit=10)
+    assert {h.document_title for h in unrestricted} == {
+        "General Company Info",
+        "Employee Leave Policy",
+        "Confidential Compensation",
+    }
+
+
+@pytest.mark.asyncio
+async def test_repository_restricted_matches_probe(db_session):
+    """restricted_matches returns only excluded docs, identity metadata only."""
+    from app.knowledge.repository import HybridRetrievalRepository
+
+    await _indexed_doc(
+        db_session,
+        "General Company Info",
+        role_access=["VISITOR", "CANDIDATE", "EMPLOYEE", "HR_ADMIN"],
+        content="Summit Technologies is a software company.",
+        first=1.0,
+    )
+    await _indexed_doc(
+        db_session,
+        "Confidential Compensation",
+        role_access=["HR_ADMIN"],
+        content="Compensation bands are confidential.",
+        first=3.0,
+    )
+    repo = HybridRetrievalRepository(db_session)
+
+    restricted = await repo.restricted_matches("company compensation", access_roles=["VISITOR"])
+
+    assert [d.title for d in restricted] == ["Confidential Compensation"]
+    assert restricted[0].allowed_roles == ["HR_ADMIN"]
+    # Never content: RestrictedDocument has no content field by construction.
+    assert not hasattr(restricted[0], "content")
+
+
+@pytest.mark.asyncio
+async def test_repository_has_indexed_documents(db_session):
+    """has_indexed_documents reflects the presence of INDEXED, non-deleted docs."""
+    from app.knowledge.repository import HybridRetrievalRepository
+
+    repo = HybridRetrievalRepository(db_session)
+    assert await repo.has_indexed_documents() is False
+
+    await _indexed_doc(
+        db_session,
+        "General Company Info",
+        role_access=["VISITOR", "CANDIDATE", "EMPLOYEE", "HR_ADMIN"],
+        content="Summit Technologies is a software company.",
+        first=1.0,
+    )
+    assert await repo.has_indexed_documents() is True
+
+    # A pending-only document does not make the knowledge base non-empty.
+    await _indexed_doc(db_session, "Pending Doc", role_access=["HR_ADMIN"], content="x.", first=2.0)
+    pending = Document(
+        title="Pending Only",
+        category=DocumentCategory.POLICY,
+        status="PENDING",
+    )
+    db_session.add(pending)
+    await db_session.flush()
+    version = DocumentVersion(
+        document_id=pending.document_id,
+        version_number=1,
+        object_key="documents/pending-only.pdf",
+        original_filename="pending-only.pdf",
+        mime_type="application/pdf",
+        file_size=1,
+        checksum="pending-only",
+        is_current=True,
+        status="PENDING",
+    )
+    db_session.add(version)
+    await db_session.flush()
+    job = IngestionJob(
+        document_version_id=version.document_version_id,
+        status=IngestionStatus.PENDING,
+    )
+    db_session.add(job)
+    await db_session.flush()
+
+    assert await repo.has_indexed_documents() is True

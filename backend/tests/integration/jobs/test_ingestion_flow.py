@@ -141,7 +141,7 @@ async def test_end_to_end_register_process_index_search(db_session):
     uploaded = await register_document(
         db_session, store,
         filename="annual_leave.md", data=data,
-        category=DocumentCategory.POLICY, document_type="policy",
+        category=DocumentCategory.POLICY,
     )
     assert uploaded["status"] == "PENDING"
     assert uploaded["object_key"] in store.objects
@@ -167,6 +167,7 @@ async def test_end_to_end_register_process_index_search(db_session):
     assert version.status == "INDEXED" and version.is_current is True
     document = await db_session.get(Document, uploaded["document_id"])
     assert document.status == "INDEXED"
+    assert document.role_access == ["HR_ADMIN", "EMPLOYEE", "CANDIDATE", "VISITOR"]
 
     # Chunk tree: leaf rows embedded, context rows NULL embeddings.
     chunks = (

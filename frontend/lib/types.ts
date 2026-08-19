@@ -178,13 +178,15 @@ export type KnowledgeDocumentStatus =
   | "FAILED"
   | "DELETED";
 
+export type KnowledgeAccessRole = "HR_ADMIN" | "EMPLOYEE" | "CANDIDATE" | "VISITOR";
+
 export interface KnowledgeDocumentSummary {
   document_id: string;
   title: string;
-  document_type: string;
   category: string;
   description: string | null;
   status: KnowledgeDocumentStatus;
+  role_access: KnowledgeAccessRole[];
   versions: number;
   current_chunks: number;
   created_at: string | null;
@@ -224,10 +226,10 @@ export interface KnowledgeVersion {
 export interface KnowledgeDocumentDetail {
   document_id: string;
   title: string;
-  document_type: string;
   category: string;
   description: string | null;
   status: KnowledgeDocumentStatus;
+  role_access: KnowledgeAccessRole[];
   current_chunks: number;
   created_at: string | null;
   updated_at: string | null;
@@ -274,6 +276,7 @@ export interface KnowledgeCitation {
   version_number: number;
   document_title: string;
   category: string;
+  document_type?: string;
   page: number | null;
   section_title: string | null;
 }
@@ -312,6 +315,7 @@ export interface ChatCitation {
   version_number: number;
   document_title: string;
   category: string;
+  document_type?: string;
   page: number | null;
   section_title: string | null;
 }

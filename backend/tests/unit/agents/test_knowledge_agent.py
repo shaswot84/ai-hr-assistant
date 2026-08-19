@@ -18,13 +18,14 @@ from app.agents.knowledge_agent.agent import (
     KnowledgeTurn,
     balance_relevant,
     fallback_message,
+    renumber_markers,
     rewrite_query,
     stream_knowledge_turn,
-    strip_invalid_markers,
     verified_citations,
 )
 from app.contracts.auth import UserContext
 from app.knowledge.contracts import Citation, KnowledgeResult
+from app.knowledge.markers import strip_invalid_markers
 from app.model_gateway.interfaces import LLM
 from app.safety.contracts import (
     FindingSeverity,
@@ -75,11 +76,13 @@ class FakeKnowledgeService:
         self.result = result
         self.answer = answer
         self.retrieve_queries: list[str] = []
+        self.retrieve_kwargs: list[dict] = []
         self.stream_queries: list[str] = []
         self.stream_histories: list[str | None] = []
 
     async def retrieve(self, query: str, **kwargs) -> KnowledgeResult:
         self.retrieve_queries.append(query)
+        self.retrieve_kwargs.append(kwargs)
         return self.result
 
     async def stream_answer(self, query: str, result: KnowledgeResult, *, history=None):
@@ -234,6 +237,105 @@ async def test_stream_knowledge_turn_rewrites_then_retrieves():
     assert state_update["messages"][-1].content == "Grounded answer from the policy. [1]"
 
 
+# --- role-based access control --------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_knowledge_turn_forwards_role_access():
+    """The turn retrieves with the actor's role access tag."""
+    service = FakeKnowledgeService(make_result())
+
+    await stream_knowledge_turn(
+        service=service, llm=None, query="leave policy", history=[], writer=EventCollector()
+    )
+    assert service.retrieve_kwargs[-1]["access_roles"] == ["VISITOR"]
+
+    candidate = UserContext(
+        subject="c-1", email="c@x.com", display_name="C", coarse_role="CANDIDATE"
+    )
+    await stream_knowledge_turn(
+        service=service,
+        llm=None,
+        query="leave policy",
+        history=[],
+        writer=EventCollector(),
+        actor=candidate,
+    )
+    assert service.retrieve_kwargs[-1]["access_roles"] == ["CANDIDATE"]
+
+    hr = UserContext(subject="h-1", email="h@x.com", display_name="H", coarse_role="HR_ADMIN")
+    await stream_knowledge_turn(
+        service=service,
+        llm=None,
+        query="leave policy",
+        history=[],
+        writer=EventCollector(),
+        actor=hr,
+    )
+    assert service.retrieve_kwargs[-1]["access_roles"] is None
+
+
+@pytest.mark.asyncio
+async def test_stream_knowledge_turn_replies_denial_for_restricted():
+    """A query matching only inaccessible documents gets a deterministic
+    denial reply naming the allowed roles — never an LLM answer."""
+    from app.knowledge.contracts import RestrictedDocument
+
+    result = make_result()
+    result = KnowledgeResult(
+        grounded_context="",
+        citations=[],
+        confidence=0.0,
+        chunks=[],
+        low_confidence=True,
+        restricted=[
+            RestrictedDocument(title="Compensation Bands", allowed_roles=["HR_ADMIN", "EMPLOYEE"]),
+        ],
+    )
+    service = FakeKnowledgeService(result)
+    writer = EventCollector()
+
+    state = await stream_knowledge_turn(
+        service=service,
+        llm=FakeLLM("rewritten"),
+        query="what are the compensation bands",
+        history=[],
+        writer=writer,
+        actor=_employee(),
+    )
+
+    assert state["answer"] == "You cannot access this file. Only EMPLOYEE, HR_ADMIN can see it."
+    assert state["citations"] == []
+    assert state["safety"] == "PASS"
+    assert service.stream_queries == []  # never generated from restricted content
+
+
+@pytest.mark.asyncio
+async def test_stream_knowledge_turn_empty_knowledge_base_message():
+    """An empty knowledge base yields a deterministic 'no documents' reply,
+    never an LLM generation or a generic failure."""
+    from app.agents.knowledge_agent.agent import EMPTY_KB_MESSAGE
+
+    result = KnowledgeResult(grounded_context="", empty_knowledge_base=True)
+    service = FakeKnowledgeService(result)
+    writer = EventCollector()
+
+    state = await stream_knowledge_turn(
+        service=service,
+        llm=FakeLLM("rewritten"),
+        query="what is the leave policy",
+        history=[],
+        writer=writer,
+    )
+
+    assert state["answer"] == EMPTY_KB_MESSAGE
+    assert state["citations"] == []
+    assert state["safety"] == "PASS"
+    assert service.stream_queries == []  # never generated for an empty KB
+    assert writer.events[-1] == {"type": "message", "text": EMPTY_KB_MESSAGE}
+    assert [e["type"] for e in writer.events] == ["retrieval", "message"]
+
+
 # --- balance reconciliation (policy + real balance) -------------------------
 
 
@@ -383,6 +485,40 @@ async def test_strip_invalid_markers():
     """Markers for never-retrieved sources are removed from the text."""
     stripped = strip_invalid_markers("One claim [1] and a bogus one [9].", citation_count=1)
     assert stripped == "One claim [1] and a bogus one ."
+
+    # Comma / range forms no longer slip through the single-number regex.
+    assert strip_invalid_markers("Claims [1, 9] and [7].", citation_count=1) == "Claims [1] and ."
+    assert strip_invalid_markers("Range [1-3].", citation_count=1) == "Range [1]."
+
+
+@pytest.mark.asyncio
+async def test_renumber_markers_dense():
+    """Markers are renumbered densely against the kept citation set."""
+    # 5 chunks grounded, only 1, 2 and 5 are actually cited -> markers 1..3.
+    assert renumber_markers("See [1] and [5].", [1, 2, 5]) == "See [1] and [3]."
+    assert renumber_markers("[1, 5]", [1, 2, 5]) == "[1, 3]"
+    # Out-of-range markers vanish; an empty group is removed entirely.
+    assert renumber_markers("Says [7].", [1, 2, 5]) == "Says ."
+    # A kept contiguous span stays a range; ranges of kept indexes stay valid.
+    assert renumber_markers("[1-5]", [1, 2, 5]) == "[1-3]"
+    # Cross-bracket range: both sides map monotonically.
+    assert renumber_markers("([1] - [5])", [1, 2, 5]) == "([1] - [3])"
+
+
+@pytest.mark.asyncio
+async def test_verified_citations_parses_range_markers():
+    """Range/comma markers count toward verification too."""
+    c1, c2 = make_result().citations[0], make_result().citations[0]
+    result = KnowledgeResult(
+        grounded_context="",
+        citations=[c1, c2],
+        confidence=0.9,
+        chunks=[],
+        low_confidence=False,
+    )
+    assert verified_citations("Both blocks [1, 2].", result.citations) == [c1, c2]
+    assert verified_citations("Range [1-2].", result.citations) == [c1, c2]
+    assert verified_citations("Out of range [3].", result.citations) == []
 
 
 @pytest.mark.asyncio

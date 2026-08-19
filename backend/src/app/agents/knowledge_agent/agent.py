@@ -29,7 +29,6 @@ prompt fragility for no benefit today.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -45,13 +44,13 @@ from app.agents.leave_agent.tools import (
 )
 from app.capabilities.leave import LeaveService
 from app.contracts.auth import UserContext
+from app.knowledge.access import access_roles_for
 from app.knowledge.contracts import Citation, KnowledgeResult
+from app.knowledge.markers import parse_marker_set, renumber_markers
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.interfaces import LLM
 from app.safety.contracts import GuardVerdict, OutputContext
 from app.safety.interfaces import ResponseGuard
-
-_MARKER_RE = re.compile(r"\[(\d{1,3})\]")
 
 _REFUSAL_PHRASES = (
     "i couldn't find enough evidence",
@@ -160,6 +159,27 @@ REFUSAL_MESSAGE = (
     "specific policy, procedure, or guideline."
 )
 
+# Deterministic reply when the knowledge base has no INDEXED documents at
+# all — distinct from a low-confidence refusal so an empty system never
+# reads as a retrieval failure.
+EMPTY_KB_MESSAGE = (
+    "The knowledge base is empty — no documents have been uploaded yet. "
+    "Ask an HR admin to upload policies, procedures, or guidelines, and "
+    "I can answer questions from them."
+)
+
+
+def denied_message(result: KnowledgeResult) -> str:
+    """Deterministic access-denial reply for restricted matches.
+
+    The query hit document(s) the requester cannot access; the reply names
+    the allowlist roles of the matched documents (identity only — never the
+    content) so the user knows the file exists but is out of their reach.
+    """
+    roles = sorted({role for doc in result.restricted for role in doc.allowed_roles})
+    role_label = ", ".join(roles) if roles else "HR_ADMIN"
+    return f"You cannot access this file. Only {role_label} can see it."
+
 
 @dataclass
 class KnowledgeTurn:
@@ -178,19 +198,10 @@ def verified_citations(text: str, citations: list[Citation]) -> list[Citation]:
     count, and only for indices within the retrieved set. Out-of-range
     markers (never-retrieved sources) are excluded.
     """
-    markers = {int(m) for m in _MARKER_RE.findall(text)}
+    markers = parse_marker_set(text)
     if not markers:
         return []
     return [c for i, c in enumerate(citations, start=1) if i in markers]
-
-
-def strip_invalid_markers(text: str, citation_count: int) -> str:
-    """Remove ``[N]`` markers that reference sources never retrieved."""
-
-    def _keep(match: re.Match[str]) -> str:
-        return match.group(0) if int(match.group(1)) <= citation_count else ""
-
-    return _MARKER_RE.sub(_keep, text)
 
 
 def _is_refusal(text: str) -> bool:
@@ -292,9 +303,13 @@ async def _track_and_guard(
                 )
                 verdict = rechecked.verdict
 
-    # Never persist markers for sources that were never retrieved.
-    final = strip_invalid_markers(draft, len(result.citations))
-    return final, verified_citations(final, result.citations), verdict.value
+    # Persist markers ONLY for citations the answer actually cited, and
+    # renumber them densely (1..k) so marker N always indexes the k-th served
+    # citation — never a chunk that was retrieved but not cited.
+    verified = verified_citations(draft, result.citations)
+    keep = [i for i, c in enumerate(result.citations, start=1) if c in verified]
+    final = renumber_markers(draft, keep)
+    return final, verified, verdict.value
 
 
 async def stream_knowledge_turn(
@@ -327,8 +342,38 @@ async def stream_knowledge_turn(
     context) — see ``_employee_balance_block``.
     """
     rewritten = await rewrite_query(llm, query, history)
-    result = await service.retrieve(rewritten)
+    result = await service.retrieve(rewritten, access_roles=access_roles_for(actor))
     writer({"type": "retrieval", "rewritten_query": rewritten, "result": result})
+
+    if result.empty_knowledge_base:
+        # No documents indexed at all: deterministic "empty knowledge base"
+        # reply, never a connection-looking failure.
+        message = EMPTY_KB_MESSAGE
+        writer({"type": "message", "text": message})
+        return {
+            "messages": [AIMessage(content=message)],
+            "knowledge_result": result,
+            "answer": message,
+            "citations": [],
+            "confidence": result.confidence,
+            "agent": "knowledge",
+            "safety": GuardVerdict.PASS.value,
+        }
+
+    if result.restricted:
+        # The query matched only documents the requester cannot access:
+        # reply with a deterministic denial naming the allowed roles.
+        message = denied_message(result)
+        writer({"type": "message", "text": message})
+        return {
+            "messages": [AIMessage(content=message)],
+            "knowledge_result": result,
+            "answer": message,
+            "citations": [],
+            "confidence": result.confidence,
+            "agent": "knowledge",
+            "safety": GuardVerdict.PASS.value,
+        }
 
     history_block = history_text(history, max_tokens=history_max_tokens)
     balance_block = _employee_balance_block(actor, leave_service, query)

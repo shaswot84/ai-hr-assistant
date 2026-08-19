@@ -68,7 +68,9 @@ class FakeKnowledgeService:
             yield self.answer
 
 
-def make_result(*, low_confidence: bool = False) -> KnowledgeResult:
+def make_result(
+    *, low_confidence: bool = False, empty_knowledge_base: bool = False
+) -> KnowledgeResult:
     """A confident retrieval result with one citation (unless low confidence)."""
     citation = Citation(
         chunk_id=uuid.uuid4(),
@@ -82,10 +84,11 @@ def make_result(*, low_confidence: bool = False) -> KnowledgeResult:
     )
     return KnowledgeResult(
         grounded_context="Annual leave accrues at 1.5 days per month. (Leave Policy)",
-        citations=[] if low_confidence else [citation],
+        citations=[] if low_confidence or empty_knowledge_base else [citation],
         confidence=0.92,
         chunks=[],
         low_confidence=low_confidence,
+        empty_knowledge_base=empty_knowledge_base,
     )
 
 
@@ -125,6 +128,16 @@ def low_confidence_graph_builder(session, user=None):
 
     service = FakeKnowledgeService(
         make_result(low_confidence=True), answer="should not be used"
+    )
+    return build_supervisor_graph(llm=FakeLLM("knowledge"), knowledge_service=service)
+
+
+def empty_knowledge_base_graph_builder(session, user=None):
+    """A graph whose knowledge node finds an empty knowledge base."""
+    from app.agents.supervisor.graph import build_supervisor_graph
+
+    service = FakeKnowledgeService(
+        make_result(empty_knowledge_base=True), answer="should not be used"
     )
     return build_supervisor_graph(llm=FakeLLM("knowledge"), knowledge_service=service)
 
@@ -560,6 +573,27 @@ async def test_chat_stream_low_confidence_streams_message_not_tokens(chat_env, m
     assert "should not be used" not in events[3]["text"]
     assert events[-1]["low_confidence"] is True
     assert events[-1]["message"] == events[3]["text"]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_empty_knowledge_base_streams_message(chat_env, monkeypatch):
+    """An empty knowledge base streams the deterministic 'no documents' message."""
+    from app.agents.knowledge_agent.agent import EMPTY_KB_MESSAGE
+
+    monkeypatch.setattr(chat_module, "build_chat_graph", empty_knowledge_base_graph_builder)
+
+    async with chat_env.client.stream(
+        "POST", "/api/chat/stream", json={"message": "what is the leave policy"}
+    ) as resp:
+        events = await _sse_events(resp)
+
+    types = [e["type"] for e in events]
+    assert types == ["turn_started", "route", "retrieval", "message", "done"]
+    assert events[3]["text"] == EMPTY_KB_MESSAGE
+    assert "should not be used" not in events[3]["text"]
+    assert events[-1]["message"] == EMPTY_KB_MESSAGE
+    assert events[-1]["citations"] == []
+    assert events[-1]["low_confidence"] is False
 
 
 @pytest.mark.asyncio

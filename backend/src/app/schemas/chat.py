@@ -25,6 +25,7 @@ class CitationOut(BaseModel):
     version_number: int
     document_title: str
     category: str
+    document_type: str = ""
     page: int | None = None
     section_title: str | None = None
 

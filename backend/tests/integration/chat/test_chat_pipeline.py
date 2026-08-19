@@ -114,7 +114,6 @@ async def _ingest_corpus(session, store, embedder) -> list[str]:
             filename=path.name,
             data=path.read_bytes(),
             category=DocumentCategory.POLICY,
-            document_type="policy",
         )
         assert uploaded["status"] == "PENDING"
         claimed = await claim_next_jobs(session, limit=10)

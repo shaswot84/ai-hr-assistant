@@ -28,11 +28,13 @@ from sqlalchemy import (
     Uuid,
     text,
 )
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.config.settings import get_settings
 from app.db.base import Base
+from app.knowledge.access import ALL_ACCESS_ROLES
 
 # Read once so the embedding column width matches the configured model.
 _EMBEDDING_DIM = get_settings().embedding.dimension
@@ -81,12 +83,18 @@ class Document(Base):
 
     document_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
-    document_type: Mapped[str] = mapped_column(String(50), nullable=False)
     category: Mapped[DocumentCategory] = mapped_column(
         Enum(DocumentCategory, name="document_category"), nullable=False
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Exact allowlist of roles that may retrieve this document (set by the
+    # uploader at submit time; HR_ADMIN is always present).
+    role_access: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(postgresql.JSONB(), "postgresql"),
+        default=list(ALL_ACCESS_ROLES),
+        nullable=False,
+    )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # References application_user.user_id; FK added once identity tables exist.
     created_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
