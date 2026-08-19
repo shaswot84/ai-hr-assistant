@@ -45,6 +45,7 @@ class RetrievalHit:
     section_title: str | None
     content: str
     score: float
+    mime_type: str | None = None
     provenance: IngestionProvenance = field(default_factory=IngestionProvenance)
 
     @property
@@ -68,6 +69,7 @@ _SELECT_COLS = """
         d.document_id,
         v.document_version_id,
         v.version_number,
+        v.mime_type,
         d.title,
         d.category,
         c.page_number,
@@ -211,6 +213,7 @@ class HybridRetrievalRepository:
                     category=row["category"].value
                     if isinstance(row["category"], DocumentCategory)
                     else str(row["category"]),
+                    mime_type=row["mime_type"],
                     page=row["page_number"],
                     section_title=row["section_title"],
                     content=row["content"],

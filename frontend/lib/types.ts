@@ -276,6 +276,7 @@ export interface KnowledgeCitation {
   version_number: number;
   document_title: string;
   category: string;
+  document_type?: string;
   page: number | null;
   section_title: string | null;
 }
@@ -314,6 +315,7 @@ export interface ChatCitation {
   version_number: number;
   document_title: string;
   category: string;
+  document_type?: string;
   page: number | null;
   section_title: string | null;
 }

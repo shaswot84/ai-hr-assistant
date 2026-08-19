@@ -18,13 +18,14 @@ from app.agents.knowledge_agent.agent import (
     KnowledgeTurn,
     balance_relevant,
     fallback_message,
+    renumber_markers,
     rewrite_query,
     stream_knowledge_turn,
-    strip_invalid_markers,
     verified_citations,
 )
 from app.contracts.auth import UserContext
 from app.knowledge.contracts import Citation, KnowledgeResult
+from app.knowledge.markers import strip_invalid_markers
 from app.model_gateway.interfaces import LLM
 from app.safety.contracts import (
     FindingSeverity,
@@ -484,6 +485,40 @@ async def test_strip_invalid_markers():
     """Markers for never-retrieved sources are removed from the text."""
     stripped = strip_invalid_markers("One claim [1] and a bogus one [9].", citation_count=1)
     assert stripped == "One claim [1] and a bogus one ."
+
+    # Comma / range forms no longer slip through the single-number regex.
+    assert strip_invalid_markers("Claims [1, 9] and [7].", citation_count=1) == "Claims [1] and ."
+    assert strip_invalid_markers("Range [1-3].", citation_count=1) == "Range [1]."
+
+
+@pytest.mark.asyncio
+async def test_renumber_markers_dense():
+    """Markers are renumbered densely against the kept citation set."""
+    # 5 chunks grounded, only 1, 2 and 5 are actually cited -> markers 1..3.
+    assert renumber_markers("See [1] and [5].", [1, 2, 5]) == "See [1] and [3]."
+    assert renumber_markers("[1, 5]", [1, 2, 5]) == "[1, 3]"
+    # Out-of-range markers vanish; an empty group is removed entirely.
+    assert renumber_markers("Says [7].", [1, 2, 5]) == "Says ."
+    # A kept contiguous span stays a range; ranges of kept indexes stay valid.
+    assert renumber_markers("[1-5]", [1, 2, 5]) == "[1-3]"
+    # Cross-bracket range: both sides map monotonically.
+    assert renumber_markers("([1] - [5])", [1, 2, 5]) == "([1] - [3])"
+
+
+@pytest.mark.asyncio
+async def test_verified_citations_parses_range_markers():
+    """Range/comma markers count toward verification too."""
+    c1, c2 = make_result().citations[0], make_result().citations[0]
+    result = KnowledgeResult(
+        grounded_context="",
+        citations=[c1, c2],
+        confidence=0.9,
+        chunks=[],
+        low_confidence=False,
+    )
+    assert verified_citations("Both blocks [1, 2].", result.citations) == [c1, c2]
+    assert verified_citations("Range [1-2].", result.citations) == [c1, c2]
+    assert verified_citations("Out of range [3].", result.citations) == []
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ from app.config.settings import RetrievalSettings
 from app.knowledge.confidence import ConfidenceEstimator, LowConfidenceDetector
 from app.knowledge.contracts import KnowledgeResult, RestrictedDocument, RetrievedChunk
 from app.knowledge.grounding import GroundingContextBuilder
+from app.knowledge.markers import renumber_markers
 from app.knowledge.models import DocumentCategory
 from app.knowledge.ranking import reciprocal_rank_fusion
 from app.knowledge.repository import HybridRetrievalRepository, RetrievalHit
@@ -120,7 +121,7 @@ class KnowledgeService:
         # semantic retrieval substantially.
         try:
             query_embedding = (await self._embedder.embed([query], prefix="search_query: "))[0]
-        except Exception:  # noqa: BLE001 - a down embedder degrades to an empty result
+        except Exception:
             logger.warning("query embedding failed; serving an empty result", exc_info=True)
             return KnowledgeResult(grounded_context="", low_confidence=True)
 
@@ -217,9 +218,12 @@ class KnowledgeService:
         if history:
             user = f"CONVERSATION HISTORY:\n{history}\n\n{user}"
         try:
-            return await self._llm.complete(_GENERATION_SYSTEM, user)
+            answer = await self._llm.complete(_GENERATION_SYSTEM, user)
         except Exception:  # noqa: BLE001 - never fail search because of the LLM
             return None
+        # The search UI serves every citation as a source chip; keep markers
+        # aligned with that set (identity renumber) and drop out-of-range ones.
+        return renumber_markers(answer, list(range(1, len(result.citations) + 1)))
 
     async def stream_answer(
         self, query: str, result: KnowledgeResult, *, history: str | None = None
@@ -265,6 +269,7 @@ class KnowledgeService:
                     version_number=hit.version_number,
                     document_title=hit.document_title,
                     category=hit.category,
+                    mime_type=hit.mime_type or "",
                     page=hit.page,
                     section_title=hit.section_title,
                     text=hit.content,
@@ -319,6 +324,7 @@ class KnowledgeService:
                 version_number=c.version_number,
                 document_title=c.document_title,
                 category=c.category,
+                mime_type=c.mime_type,
                 page=c.page,
                 section_title=c.section_title,
                 text=c.text,
@@ -353,6 +359,7 @@ class KnowledgeService:
                 version_number=c.version_number,
                 document_title=c.document_title,
                 category=c.category,
+                mime_type=c.mime_type,
                 page=c.page,
                 section_title=c.section_title,
                 text=c.text,

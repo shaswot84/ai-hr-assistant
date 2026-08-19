@@ -7,6 +7,34 @@ the Knowledge Service, and the agent — keeping them decoupled.
 from dataclasses import dataclass, field
 from uuid import UUID
 
+# anydoc format string (stored in document_version.mime_type) -> display label.
+FILE_TYPE_LABELS: dict[str, str] = {
+    "pdf": "PDF",
+    "md": "Markdown",
+    "markdown": "Markdown",
+    "doc": "Word",
+    "docx": "Word",
+    "odt": "Word",
+    "xls": "Excel",
+    "xlsx": "Excel",
+    "ods": "Excel",
+    "csv": "CSV",
+    "ppt": "PowerPoint",
+    "pptx": "PowerPoint",
+    "odp": "PowerPoint",
+    "html": "HTML",
+    "htm": "HTML",
+    "txt": "Text",
+    "rtf": "Text",
+}
+
+
+def friendly_file_type(mime_type: str | None) -> str:
+    """Map an anydoc format string to a human-friendly label (PDF, Word, ...)."""
+    if not mime_type:
+        return ""
+    return FILE_TYPE_LABELS.get(mime_type.strip().lower(), mime_type.upper())
+
 
 @dataclass(frozen=True)
 class IngestedChunk:
@@ -51,6 +79,7 @@ class RetrievedChunk:
     version_number: int
     document_title: str
     category: str
+    mime_type: str = ""
     page: int | None = None
     section_title: str | None = None
     text: str = ""
@@ -73,6 +102,7 @@ class Citation:
     version_number: int
     document_title: str
     category: str
+    mime_type: str = ""
     page: int | None = None
     section_title: str | None = None
 

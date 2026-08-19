@@ -105,7 +105,6 @@ function CitationChips({ citations }: { citations: ChatCitation[] }) {
                 <span className="font-medium text-zinc-900 truncate max-w-[140px]">
                   {c.document_title}
                 </span>
-                {c.page && <span className="text-zinc-600">p.{c.page}</span>}
                 <svg className={`h-3 w-3 text-zinc-400 transition-transform ${isOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                 </svg>
@@ -123,7 +122,7 @@ function CitationChips({ citations }: { citations: ChatCitation[] }) {
             <div className="space-y-0.5">
               <div><span className="font-medium text-zinc-800">Document:</span> {c.document_title}</div>
               <div><span className="font-medium text-zinc-800">Version:</span> v{c.version_number}</div>
-              <div><span className="font-medium text-zinc-800">Page:</span> {c.page ?? "—"}</div>
+              <div><span className="font-medium text-zinc-800">Type:</span> {c.document_type || "—"}</div>
               <div><span className="font-medium text-zinc-800">Section:</span> {c.section_title || "—"}</div>
             </div>
           </div>

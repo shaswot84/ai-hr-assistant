@@ -38,7 +38,7 @@ from app.contracts.auth import UserContext
 from app.db.session import get_session
 from app.domain.conversation import ConversationMessage
 from app.domain.identity import ApplicationUser
-from app.knowledge.contracts import Citation, KnowledgeResult
+from app.knowledge.contracts import Citation, KnowledgeResult, friendly_file_type
 from app.knowledge.repository import HybridRetrievalRepository
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.factory import build_embedder, build_llm, build_reranker
@@ -198,6 +198,7 @@ def _serialize_citation(citation: Citation) -> dict:
         "version_number": citation.version_number,
         "document_title": citation.document_title,
         "category": citation.category,
+        "document_type": friendly_file_type(citation.mime_type),
         "page": citation.page,
         "section_title": citation.section_title,
     }

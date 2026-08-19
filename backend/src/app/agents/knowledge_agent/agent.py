@@ -29,7 +29,6 @@ prompt fragility for no benefit today.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -47,12 +46,11 @@ from app.capabilities.leave import LeaveService
 from app.contracts.auth import UserContext
 from app.knowledge.access import access_roles_for
 from app.knowledge.contracts import Citation, KnowledgeResult
+from app.knowledge.markers import parse_marker_set, renumber_markers
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.interfaces import LLM
 from app.safety.contracts import GuardVerdict, OutputContext
 from app.safety.interfaces import ResponseGuard
-
-_MARKER_RE = re.compile(r"\[(\d{1,3})\]")
 
 _REFUSAL_PHRASES = (
     "i couldn't find enough evidence",
@@ -200,19 +198,10 @@ def verified_citations(text: str, citations: list[Citation]) -> list[Citation]:
     count, and only for indices within the retrieved set. Out-of-range
     markers (never-retrieved sources) are excluded.
     """
-    markers = {int(m) for m in _MARKER_RE.findall(text)}
+    markers = parse_marker_set(text)
     if not markers:
         return []
     return [c for i, c in enumerate(citations, start=1) if i in markers]
-
-
-def strip_invalid_markers(text: str, citation_count: int) -> str:
-    """Remove ``[N]`` markers that reference sources never retrieved."""
-
-    def _keep(match: re.Match[str]) -> str:
-        return match.group(0) if int(match.group(1)) <= citation_count else ""
-
-    return _MARKER_RE.sub(_keep, text)
 
 
 def _is_refusal(text: str) -> bool:
@@ -314,9 +303,13 @@ async def _track_and_guard(
                 )
                 verdict = rechecked.verdict
 
-    # Never persist markers for sources that were never retrieved.
-    final = strip_invalid_markers(draft, len(result.citations))
-    return final, verified_citations(final, result.citations), verdict.value
+    # Persist markers ONLY for citations the answer actually cited, and
+    # renumber them densely (1..k) so marker N always indexes the k-th served
+    # citation — never a chunk that was retrieved but not cited.
+    verified = verified_citations(draft, result.citations)
+    keep = [i for i, c in enumerate(result.citations, start=1) if c in verified]
+    final = renumber_markers(draft, keep)
+    return final, verified, verdict.value
 
 
 async def stream_knowledge_turn(

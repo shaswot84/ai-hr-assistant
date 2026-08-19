@@ -34,7 +34,7 @@ from app.db.session import get_session
 from app.integrations.object_store import ObjectStoreError, S3ObjectStore
 from app.jobs.ingestion_worker import retry_job as retry_ingestion_job
 from app.knowledge.access import ALL_ACCESS_ROLES, access_roles_for, validate_access_roles
-from app.knowledge.contracts import KnowledgeResult
+from app.knowledge.contracts import KnowledgeResult, friendly_file_type
 from app.knowledge.ingestion.orchestrator import (
     DocumentNotFoundError,
     clear_all_documents,
@@ -305,6 +305,7 @@ def _serialize_search_result(query: str, result: KnowledgeResult) -> dict:
                 "version_number": c.version_number,
                 "document_title": c.document_title,
                 "category": c.category,
+                "document_type": friendly_file_type(c.mime_type),
                 "page": c.page,
                 "section_title": c.section_title,
             }
