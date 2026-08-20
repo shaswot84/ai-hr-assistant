@@ -45,7 +45,7 @@ def _to_request_out(svc: LeaveService, request: LeaveRequest) -> LeaveRequestOut
         start_date=request.start_date,
         end_date=request.end_date,
         total_days=request.total_days,
-        is_half_day=request.is_half_day,
+        is_half_day=bool(request.is_half_day),
         half_day_period=request.half_day_period,
         reason=request.reason,
         status=request.status,

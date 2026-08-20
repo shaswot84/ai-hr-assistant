@@ -108,6 +108,7 @@ services:
       RETRIEVAL_CONFIDENCE_THRESHOLD: "0.4"
     volumes:
       - ./backend/src:/app/src
+      - ./backend/alembic:/app/alembic
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface
       # Manager-editable settings (LLM route/model/key, resume-review prompt)
       # are read AND written directly from this file — read-write only here,

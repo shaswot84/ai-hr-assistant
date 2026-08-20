@@ -735,10 +735,13 @@ class LeaveService:
         if actor.coarse_role not in ("EMPLOYEE", "HR_ADMIN"):
             raise PermissionError_("Only employees and managers can view team calendar.")
 
-        employee = self._identity.get_employee(actor)
         target_dept_id = department_id
         if actor.coarse_role == "EMPLOYEE" and target_dept_id is None:
-            target_dept_id = employee.department_id
+            try:
+                employee = self._identity.get_employee(actor)
+                target_dept_id = employee.department_id
+            except Exception:
+                target_dept_id = None
 
         query_start = start_date or self._clock.today()
         query_end = end_date or (query_start + timedelta(days=30))
@@ -771,7 +774,7 @@ class LeaveService:
                 "start_date": req.start_date,
                 "end_date": req.end_date,
                 "total_days": req.total_days,
-                "is_half_day": req.is_half_day,
+                "is_half_day": bool(req.is_half_day),
                 "half_day_period": req.half_day_period,
                 "status": req.status,
             })
