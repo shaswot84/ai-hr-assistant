@@ -176,7 +176,7 @@ async def test_service_low_confidence_gate():
 
 @pytest.mark.asyncio
 async def test_service_forwards_metadata_filters():
-    """Category/document_type/current_only are passed to both retrieval legs."""
+    """Category/current_only are passed to both retrieval legs."""
     repo = FakeRepository(
         bm25_hits=[make_hit("a", "x", category="POLICY")],
         vector_hits=[make_hit("a", "x", category="POLICY")],
@@ -184,11 +184,10 @@ async def test_service_forwards_metadata_filters():
     service = KnowledgeService(repo, FakeEmbedder())
 
     await service.retrieve(
-        "query", category=DocumentCategory.POLICY, document_type="policy", current_only=False
+        "query", category=DocumentCategory.POLICY, current_only=False
     )
 
     assert repo.last_kwargs["bm25"]["category"] == DocumentCategory.POLICY
-    assert repo.last_kwargs["bm25"]["document_type"] == "policy"
     assert repo.last_kwargs["bm25"]["current_only"] is False
     assert repo.last_kwargs["vector"]["category"] == DocumentCategory.POLICY
 
