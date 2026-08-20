@@ -234,6 +234,10 @@ export function ChatWidgetRenderer({ widget, onAction, disabled = false }: ChatW
       return <ApplyVacancyWidget widget={widget} onAction={onAction} disabled={disabled} />;
     case "applications_list":
       return <ApplicationsListWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "company_holidays":
+      return <CompanyHolidaysWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "team_out_of_office":
+      return <TeamOutOfOfficeWidget widget={widget} onAction={onAction} disabled={disabled} />;
     default:
       return null;
   }
@@ -257,6 +261,10 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
 
   const [selectedStart, setSelectedStart] = useState<string | null>(widget.start_date || null);
   const [selectedEnd, setSelectedEnd] = useState<string | null>(widget.end_date || null);
+  const [isHalfDay, setIsHalfDay] = useState<boolean>(Boolean(widget.is_half_day));
+  const [halfDayPeriod, setHalfDayPeriod] = useState<"MORNING" | "AFTERNOON">(
+    widget.half_day_period || "MORNING"
+  );
   const [reason, setReason] = useState<string>("");
 
   const year = currentMonthDate.getFullYear();
@@ -295,6 +303,7 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
   };
 
   const calculateDays = (start: string, end: string) => {
+    if (isHalfDay) return 0.5;
     const s = new Date(start);
     const e = new Date(end);
     const diff = Math.round((e.getTime() - s.getTime()) / (1000 * 3600 * 24)) + 1;
@@ -303,6 +312,12 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
 
   const handleDateClick = (iso: string) => {
     if (disabled || iso < initialMinDate) return;
+
+    if (isHalfDay) {
+      setSelectedStart(iso);
+      setSelectedEnd(iso);
+      return;
+    }
 
     if (!selectedStart || (selectedStart && selectedEnd)) {
       setSelectedStart(iso);
@@ -338,6 +353,7 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
       setSelectedEnd(iso);
       setCurrentMonthDate(new Date(target.getFullYear(), target.getMonth(), 1));
     } else if (preset === "3_days") {
+      setIsHalfDay(false);
       const s = new Date(base);
       s.setDate(base.getDate() + 1);
       const e = new Date(s);
@@ -346,6 +362,7 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
       setSelectedEnd(e.toISOString().split("T")[0]);
       setCurrentMonthDate(new Date(s.getFullYear(), s.getMonth(), 1));
     } else if (preset === "1_week") {
+      setIsHalfDay(false);
       const s = new Date(base);
       s.setDate(base.getDate() + 1);
       const e = new Date(s);
@@ -361,7 +378,9 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
     let messageText = "";
     const effectiveEnd = selectedEnd || selectedStart;
 
-    if (selectedStart === effectiveEnd) {
+    if (isHalfDay) {
+      messageText = `for half-day on ${selectedStart} (${halfDayPeriod.toLowerCase()})`;
+    } else if (selectedStart === effectiveEnd) {
       messageText = `for ${selectedStart}`;
     } else {
       messageText = `from ${selectedStart} to ${effectiveEnd}`;
@@ -386,45 +405,83 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
         <span className="text-[11px] text-zinc-500 font-medium">
           {selectedStart && (selectedEnd || selectedStart)
             ? `${totalDays} ${totalDays === 1 ? "day" : "days"} selected`
-            : "Click start & end dates"}
+            : "Click date on calendar"}
         </span>
       </div>
 
-      {/* Quick Presets */}
-      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-        <span className="text-[11px] font-medium text-zinc-400 mr-1">Presets:</span>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => applyPreset("tomorrow")}
-          className="px-2.5 py-1 text-xs font-medium rounded-lg bg-zinc-50 hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200/80 transition-colors disabled:opacity-50 cursor-pointer"
-        >
-          Tomorrow
-        </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => applyPreset("next_monday")}
-          className="px-2.5 py-1 text-xs font-medium rounded-lg bg-zinc-50 hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200/80 transition-colors disabled:opacity-50 cursor-pointer"
-        >
-          Next Monday
-        </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => applyPreset("3_days")}
-          className="px-2.5 py-1 text-xs font-medium rounded-lg bg-zinc-50 hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200/80 transition-colors disabled:opacity-50 cursor-pointer"
-        >
-          3 Days
-        </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => applyPreset("1_week")}
-          className="px-2.5 py-1 text-xs font-medium rounded-lg bg-zinc-50 hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200/80 transition-colors disabled:opacity-50 cursor-pointer"
-        >
-          1 Week
-        </button>
+      {/* Half Day Switch & Quick Presets */}
+      <div className="flex items-center justify-between gap-2 p-2 bg-zinc-50 rounded-lg border border-zinc-200/70">
+        <label className="flex items-center gap-2 text-xs font-medium text-zinc-700 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={isHalfDay}
+            disabled={disabled}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setIsHalfDay(checked);
+              if (checked && selectedStart) {
+                setSelectedEnd(selectedStart);
+              }
+            }}
+            className="rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
+          />
+          <span>Half-Day (0.5 day)</span>
+        </label>
+        {isHalfDay ? (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => setHalfDayPeriod("MORNING")}
+              className={`px-2 py-0.5 text-[11px] font-medium rounded ${
+                halfDayPeriod === "MORNING"
+                  ? "bg-blue-600 text-white"
+                  : "bg-white text-zinc-600 border border-zinc-200"
+              }`}
+            >
+              Morning
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => setHalfDayPeriod("AFTERNOON")}
+              className={`px-2 py-0.5 text-[11px] font-medium rounded ${
+                halfDayPeriod === "AFTERNOON"
+                  ? "bg-blue-600 text-white"
+                  : "bg-white text-zinc-600 border border-zinc-200"
+              }`}
+            >
+              Afternoon
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-1">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => applyPreset("tomorrow")}
+              className="px-2 py-0.5 text-[11px] font-medium rounded bg-white hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              Tomorrow
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => applyPreset("next_monday")}
+              className="px-2 py-0.5 text-[11px] font-medium rounded bg-white hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              Next Mon
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => applyPreset("3_days")}
+              className="px-2 py-0.5 text-[11px] font-medium rounded bg-white hover:bg-blue-50 text-zinc-700 hover:text-blue-700 border border-zinc-200 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              3 Days
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Month Navigation */}
@@ -474,7 +531,7 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
             const isStart = iso === selectedStart;
             const isEnd = iso === selectedEnd;
             const isInRange = Boolean(
-              selectedStart && selectedEnd && iso > selectedStart && iso < selectedEnd
+              !isHalfDay && selectedStart && selectedEnd && iso > selectedStart && iso < selectedEnd
             );
 
             let cellClass = "h-8 w-full flex items-center justify-center text-xs rounded-lg transition-all ";
@@ -507,15 +564,19 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
       {/* Date Summary and Reason Input */}
       <div className="space-y-2 pt-1 border-t border-zinc-100">
         <div className="flex items-center justify-between text-xs">
-          <span className="text-zinc-500 font-medium">Selected Range:</span>
+          <span className="text-zinc-500 font-medium">Selected:</span>
           <span className="font-semibold text-zinc-900">
             {selectedStart ? (
-              <>
-                {formatDisplayDate(selectedStart)}
-                {selectedEnd && selectedEnd !== selectedStart
-                  ? ` → ${formatDisplayDate(selectedEnd)}`
-                  : ""}
-              </>
+              isHalfDay ? (
+                `${formatDisplayDate(selectedStart)} (0.5 day - ${halfDayPeriod.toLowerCase()})`
+              ) : (
+                <>
+                  {formatDisplayDate(selectedStart)}
+                  {selectedEnd && selectedEnd !== selectedStart
+                    ? ` → ${formatDisplayDate(selectedEnd)}`
+                    : ""}
+                </>
+              )
             ) : (
               <span className="italic text-zinc-400">None selected</span>
             )}
@@ -527,7 +588,7 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
             type="text"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="Reason for leave (optional, e.g. Personal errand)"
+            placeholder="Reason for leave (optional, e.g. Personal appointment)"
             disabled={disabled}
             className="w-full text-xs px-3 py-1.5 rounded-lg border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-zinc-800 placeholder:text-zinc-400 bg-white"
           />
@@ -542,9 +603,89 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
           onClick={handleContinue}
           className="w-full inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors disabled:opacity-50 cursor-pointer"
         >
-          <span>Continue with Selected Dates ({totalDays} {totalDays === 1 ? "day" : "days"})</span>
+          <span>Continue ({totalDays} {totalDays === 1 ? "day" : "days"})</span>
           <ArrowRightIcon className="w-3.5 h-3.5" />
         </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Company Holidays Widget
+ */
+function CompanyHolidaysWidget({ widget }: ChatWidgetProps) {
+  const holidays = widget.holidays || [];
+  return (
+    <div className="mt-3.5 p-4 rounded-xl bg-white border border-indigo-200 shadow-sm w-full max-w-xl space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-900">
+          <CalendarIcon className="w-4 h-4 text-indigo-600" />
+          <span>Official Company Holidays ({holidays.length})</span>
+        </div>
+      </div>
+      {holidays.length === 0 ? (
+        <p className="text-xs text-zinc-500">No company holidays scheduled.</p>
+      ) : (
+        <div className="divide-y divide-zinc-100 border border-zinc-100 rounded-lg overflow-hidden">
+          {holidays.map((h: any, idx: number) => (
+            <div key={idx} className="p-2.5 flex items-center justify-between text-xs hover:bg-zinc-50/50">
+              <div>
+                <p className="font-semibold text-zinc-900">{h.name}</p>
+                {h.description && <p className="text-[11px] text-zinc-500">{h.description}</p>}
+              </div>
+              <div className="text-right">
+                <span className="font-medium text-zinc-700">{h.date || h.holiday_date}</span>
+                {h.is_recurring_yearly && (
+                  <span className="block text-[10px] text-indigo-600 font-medium">Annual</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Team Out of Office Widget
+ */
+function TeamOutOfOfficeWidget({ widget }: ChatWidgetProps) {
+  const entries = widget.entries || [];
+  return (
+    <div className="mt-3.5 p-4 rounded-xl bg-white border border-amber-200 shadow-sm w-full max-w-xl space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-900">
+          <ClockIcon className="w-4 h-4 text-amber-600" />
+          <span>Team Out-of-Office ({entries.length} absent)</span>
+        </div>
+      </div>
+      {entries.length === 0 ? (
+        <p className="text-xs text-zinc-500">No team members are currently scheduled out of office.</p>
+      ) : (
+        <div className="divide-y divide-zinc-100 border border-zinc-100 rounded-lg overflow-hidden">
+          {entries.map((e: any, idx: number) => (
+            <div key={idx} className="p-2.5 flex items-center justify-between text-xs hover:bg-zinc-50/50">
+              <div>
+                <p className="font-semibold text-zinc-900">{e.employee_name}</p>
+                <p className="text-[11px] text-zinc-500">
+                  {e.department_name || "Team"} · {e.leave_type_name}
+                </p>
+              </div>
+              <div className="text-right">
+                <span className="font-medium text-zinc-700">
+                  {e.start_date} {e.start_date !== e.end_date ? `– ${e.end_date}` : ""}
+                </span>
+                <span className="block text-[10px] text-amber-700 font-medium">
+                  {e.is_half_day && e.half_day_period
+                    ? `0.5 day (${e.half_day_period.toLowerCase()})`
+                    : `${e.total_days} day(s)`}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

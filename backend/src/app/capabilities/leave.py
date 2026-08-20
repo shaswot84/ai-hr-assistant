@@ -9,9 +9,14 @@ from sqlalchemy.orm import Session
 
 from app.contracts.auth import UserContext
 from app.domain.identity import ApplicationUser, Department, Designation, Employee, Person
-from app.domain.leave import LeaveBalance, LeaveRequest, LeaveType
+from app.domain.leave import CompanyHoliday, LeaveBalance, LeaveRequest, LeaveType
 from app.repositories.audit import AuditRepo
-from app.repositories.leave import LeaveBalanceRepo, LeaveRequestRepo, LeaveTypeRepo
+from app.repositories.leave import (
+    CompanyHolidayRepo,
+    LeaveBalanceRepo,
+    LeaveRequestRepo,
+    LeaveTypeRepo,
+)
 from app.repositories.outbox import OutboxRepo
 from app.services.identity import IdentityService
 from app.shared.clock import Clock, get_clock
@@ -44,6 +49,7 @@ class LeaveService:
         self._leave_types = LeaveTypeRepo(db)
         self._balances = LeaveBalanceRepo(db)
         self._requests = LeaveRequestRepo(db)
+        self._holidays = CompanyHolidayRepo(db)
         self._outbox = OutboxRepo(db, clock=self._clock)
         self._audit = AuditRepo(db, clock=self._clock)
         self._identity = IdentityService(db)
@@ -94,6 +100,70 @@ class LeaveService:
     def list_leave_types(self) -> list[LeaveType]:
         """List active leave types — every role can read these (needed to build the request form)."""
         return self._leave_types.list_active()
+
+    # ---- company holidays (manager-configured, employee-readable) ---
+
+    def create_company_holiday(
+        self,
+        actor: UserContext,
+        *,
+        name: str,
+        holiday_date: date,
+        description: str | None = None,
+        is_recurring_yearly: bool = False,
+    ) -> CompanyHoliday:
+        """Create a new official company holiday (manager-only)."""
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can create company holidays.")
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("Holiday name cannot be empty.")
+        existing = self._holidays.get_by_date(holiday_date)
+        if existing is not None:
+            raise ValueError(
+                f"A company holiday already exists on {holiday_date} ('{existing.name}')."
+            )
+
+        now = self._clock.now()
+        holiday = CompanyHoliday(
+            name=clean_name,
+            holiday_date=holiday_date,
+            description=description.strip() if description else None,
+            is_recurring_yearly=is_recurring_yearly,
+            created_at=now,
+            updated_at=now,
+        )
+        self._holidays.create(holiday)
+        self._audit.record(
+            actor_user_id=self._actor_user_id(actor),
+            action="COMPANY_HOLIDAY_CREATED",
+            target_type="company_holiday",
+            target_id=holiday.holiday_id,
+            new_state={"name": holiday.name, "holiday_date": str(holiday.holiday_date)},
+        )
+        self._db.commit()
+        return holiday
+
+    def list_company_holidays(self, year: int | None = None) -> list[CompanyHoliday]:
+        """List official company holidays, optionally filtering for a given year."""
+        return self._holidays.list_all(year)
+
+    def delete_company_holiday(self, actor: UserContext, holiday_id: uuid.UUID) -> None:
+        """Delete a company holiday (manager-only)."""
+        if actor.coarse_role != "HR_ADMIN":
+            raise PermissionError_("Only managers can delete company holidays.")
+        holiday = self._holidays.get(holiday_id)
+        if holiday is None:
+            raise ValueError("Company holiday not found.")
+        self._holidays.delete(holiday)
+        self._audit.record(
+            actor_user_id=self._actor_user_id(actor),
+            action="COMPANY_HOLIDAY_DELETED",
+            target_type="company_holiday",
+            target_id=holiday.holiday_id,
+            previous_state={"name": holiday.name, "holiday_date": str(holiday.holiday_date)},
+        )
+        self._db.commit()
 
     # ---- balances ------------------------------------------------------
 
@@ -221,6 +291,80 @@ class LeaveService:
             self._balances.create(balance)
         return balance
 
+    # ---- working days calculation ---------------------------------------
+
+    def calculate_working_days(
+        self,
+        start_date: date,
+        end_date: date,
+        *,
+        is_half_day: bool = False,
+        half_day_period: str | None = None,
+    ) -> tuple[Decimal, list[CompanyHoliday]]:
+        """Calculate working days between start_date and end_date (inclusive),
+        excluding weekends (Saturday & Sunday) and official company holidays.
+
+        Returns (total_working_days, holidays_in_range).
+        """
+        if end_date < start_date:
+            raise ValueError("End date must be on or after the start date.")
+
+        years = set(range(start_date.year, end_date.year + 1))
+        all_holidays: list[CompanyHoliday] = []
+        for y in years:
+            all_holidays.extend(self._holidays.list_all(y))
+
+        unique_holidays = {h.holiday_id: h for h in all_holidays}.values()
+        holiday_map: dict[date, CompanyHoliday] = {}
+        for h in unique_holidays:
+            if h.is_recurring_yearly:
+                for y in years:
+                    try:
+                        rec_date = date(y, h.holiday_date.month, h.holiday_date.day)
+                        holiday_map[rec_date] = h
+                    except ValueError:
+                        pass
+            else:
+                holiday_map[h.holiday_date] = h
+
+        if is_half_day:
+            if start_date != end_date:
+                raise ValueError("Half-day leave start and end dates must be the same.")
+            if start_date.weekday() >= 5:
+                raise ValueError("Cannot request half-day leave on a weekend.")
+            if start_date in holiday_map:
+                h = holiday_map[start_date]
+                raise ValueError(
+                    f"Cannot request leave on a company holiday: {h.name} ({start_date})."
+                )
+            if half_day_period not in ("MORNING", "AFTERNOON"):
+                raise ValueError("Half-day period must be either 'MORNING' or 'AFTERNOON'.")
+            return Decimal("0.5"), []
+
+        working_days = 0
+        holidays_in_range: list[CompanyHoliday] = []
+        seen_holidays: set[uuid.UUID] = set()
+
+        cur = start_date
+        while cur <= end_date:
+            is_weekend = cur.weekday() >= 5
+            holiday = holiday_map.get(cur)
+            if not is_weekend:
+                if holiday is not None:
+                    if holiday.holiday_id not in seen_holidays:
+                        holidays_in_range.append(holiday)
+                        seen_holidays.add(holiday.holiday_id)
+                else:
+                    working_days += 1
+            cur += timedelta(days=1)
+
+        if working_days == 0:
+            raise ValueError(
+                "Selected date range contains no working days (only weekends or company holidays)."
+            )
+
+        return Decimal(working_days), holidays_in_range
+
     # ---- requests --------------------------------------------------------
 
     def request_leave(
@@ -230,9 +374,11 @@ class LeaveService:
         leave_type_id: uuid.UUID,
         start_date: date,
         end_date: date,
-        reason: str | None,
+        is_half_day: bool = False,
+        half_day_period: str | None = None,
+        reason: str | None = None,
     ) -> LeaveRequest:
-        """Submit a leave request; validates dates, max-consecutive-days, and balance before creating it."""
+        """Submit a leave request; validates working days, max-consecutive-days, and balance before creating it."""
         if actor.coarse_role not in ("EMPLOYEE", "HR_ADMIN"):
             raise PermissionError_("Only employees can request leave.")
         employee = self._identity.get_employee(actor)
@@ -244,12 +390,17 @@ class LeaveService:
         if start_date < self._clock.today():
             raise ValueError("Leave cannot start in the past.")
 
-        total_days = Decimal((end_date - start_date).days + 1)
+        total_days, _ = self.calculate_working_days(
+            start_date, end_date, is_half_day=is_half_day, half_day_period=half_day_period
+        )
+
         self.check_request_conflicts(
             actor,
             leave_type_id=leave_type_id,
             start_date=start_date,
             end_date=end_date,
+            is_half_day=is_half_day,
+            half_day_period=half_day_period,
         )
 
         year = start_date.year
@@ -270,6 +421,8 @@ class LeaveService:
             start_date=start_date,
             end_date=end_date,
             total_days=total_days,
+            is_half_day=is_half_day,
+            half_day_period=half_day_period if is_half_day else None,
             reason=reason,
             status="PENDING",
             version=1,
@@ -277,6 +430,10 @@ class LeaveService:
             updated_at=now,
         )
         self._requests.create(request)
+
+        duration_desc = f"{total_days} day(s)"
+        if is_half_day and half_day_period:
+            duration_desc = f"0.5 day ({half_day_period.lower()})"
 
         self._outbox.enqueue(
             "SEND_LEAVE_REQUEST_RECEIVED",
@@ -286,7 +443,7 @@ class LeaveService:
                 "subject": f"Leave request received: {request_number}",
                 "body": (
                     f"Your {leave_type.leave_name} request ({start_date} to {end_date}, "
-                    f"{total_days} day(s)) has been submitted and is pending approval."
+                    f"{duration_desc}) has been submitted and is pending approval."
                 ),
             },
             aggregate_type="leave_request",
@@ -303,7 +460,7 @@ class LeaveService:
                     "body": (
                         f"{self._employee_display_name(employee)} submitted a "
                         f"{leave_type.leave_name} request ({start_date} to {end_date}, "
-                        f"{total_days} day(s)). Review it in the manager portal."
+                        f"{duration_desc}). Review it in the manager portal."
                     ),
                 },
                 aggregate_type="leave_request",
@@ -327,16 +484,13 @@ class LeaveService:
         leave_type_id: uuid.UUID,
         start_date: date,
         end_date: date,
+        is_half_day: bool = False,
+        half_day_period: str | None = None,
     ) -> None:
         """Reject a request that collides with the employee's live leave:
         dates already covered by an existing PENDING/APPROVED request (you
         can't apply for the same day twice), or a consecutive same-type run
         that exceeds the type's max-consecutive-days cap.
-
-        The same checks `request_leave` runs before creating a request;
-        exposed so the agent can fail fast at stage time, before asking the
-        employee to confirm a submission that could not succeed. Raises
-        ValueError with the same messages `request_leave` would.
         """
         employee = self._identity.get_employee(actor)
         leave_type = self._leave_types.get(leave_type_id)
@@ -344,15 +498,30 @@ class LeaveService:
             raise ValueError("Leave type not found.")
 
         active_requests = self._active_requests(employee.employee_id)
-        total_days = Decimal((end_date - start_date).days + 1)
+        total_days, _ = self.calculate_working_days(
+            start_date, end_date, is_half_day=is_half_day, half_day_period=half_day_period
+        )
         if leave_type.max_consecutive_days and total_days > leave_type.max_consecutive_days:
             raise ValueError(
                 f"{leave_type.leave_name} cannot be taken for more than "
                 f"{leave_type.max_consecutive_days} consecutive day(s)."
             )
 
-        overlap = self._overlapping_request(active_requests, start_date, end_date)
+        overlap = self._overlapping_request(
+            active_requests,
+            start_date,
+            end_date,
+            is_half_day=is_half_day,
+            half_day_period=half_day_period,
+        )
         if overlap is not None:
+            if overlap.is_half_day and is_half_day and overlap.start_date == start_date:
+                period_str = f" ({overlap.half_day_period})" if overlap.half_day_period else ""
+                raise ValueError(
+                    f"Dates overlap your existing "
+                    f"{self._leave_name_of(overlap)} request "
+                    f"({overlap.start_date}{period_str})."
+                )
             raise ValueError(
                 f"Dates overlap your existing "
                 f"{self._leave_name_of(overlap)} request "
@@ -548,6 +717,66 @@ class LeaveService:
         self._db.commit()
         return request
 
+    # ---- team out of office / calendar -------------------------------
+
+    def list_team_out_of_office(
+        self,
+        actor: UserContext,
+        *,
+        department_id: uuid.UUID | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        """List team members who are out of office (approved/pending leaves) in a date window.
+
+        For employees, defaults to their own department.
+        For managers, can query across all departments or a specific department.
+        """
+        if actor.coarse_role not in ("EMPLOYEE", "HR_ADMIN"):
+            raise PermissionError_("Only employees and managers can view team calendar.")
+
+        employee = self._identity.get_employee(actor)
+        target_dept_id = department_id
+        if actor.coarse_role == "EMPLOYEE" and target_dept_id is None:
+            target_dept_id = employee.department_id
+
+        query_start = start_date or self._clock.today()
+        query_end = end_date or (query_start + timedelta(days=30))
+
+        requests = self._requests.list_team_out_of_office(
+            department_id=target_dept_id,
+            start_date=query_start,
+            end_date=query_end,
+        )
+
+        results = []
+        for req in requests:
+            req_emp = self._db.get(Employee, req.employee_id)
+            if not req_emp:
+                continue
+            person = self._db.get(Person, req_emp.person_id)
+            emp_name = f"{person.first_name} {person.last_name}".strip() if person else "Unknown"
+            dept = self._db.get(Department, req_emp.department_id) if req_emp.department_id else None
+            dept_name = dept.name if dept else None
+            leave_type = self._leave_types.get(req.leave_type_id)
+            leave_name = leave_type.leave_name if leave_type else "Unknown"
+
+            results.append({
+                "leave_request_id": req.leave_request_id,
+                "employee_id": req.employee_id,
+                "employee_name": emp_name,
+                "department_id": req_emp.department_id,
+                "department_name": dept_name,
+                "leave_type_name": leave_name,
+                "start_date": req.start_date,
+                "end_date": req.end_date,
+                "total_days": req.total_days,
+                "is_half_day": req.is_half_day,
+                "half_day_period": req.half_day_period,
+                "status": req.status,
+            })
+        return results
+
     # ---- helpers -----------------------------------------------------
 
     def _active_requests(self, employee_id: uuid.UUID) -> list[LeaveRequest]:
@@ -560,12 +789,31 @@ class LeaveService:
         ]
 
     def _overlapping_request(
-        self, requests: list[LeaveRequest], start_date: date, end_date: date
+        self,
+        requests: list[LeaveRequest],
+        start_date: date,
+        end_date: date,
+        *,
+        is_half_day: bool = False,
+        half_day_period: str | None = None,
     ) -> LeaveRequest | None:
-        """Return the first request whose date range intersects [start_date, end_date]."""
+        """Return the first request whose date range and period intersects."""
         for existing in requests:
             if existing.start_date <= end_date and existing.end_date >= start_date:
-                return existing
+                # If neither is a half-day, or either is a full-day, it's a conflict
+                if not existing.is_half_day or not is_half_day:
+                    return existing
+                # Both are half-days. If on the same date:
+                if existing.start_date == start_date:
+                    # Overlap if both have the same period (e.g. MORNING & MORNING) or either unspecified
+                    if (
+                        not existing.half_day_period
+                        or not half_day_period
+                        or existing.half_day_period == half_day_period
+                    ):
+                        return existing
+                else:
+                    return existing
         return None
 
     def _consecutive_run_days(

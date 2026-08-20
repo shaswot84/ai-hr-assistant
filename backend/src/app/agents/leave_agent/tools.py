@@ -147,6 +147,8 @@ class SubmitLeaveRequestArgs(_StrictArgs):
     leave_type_name: str
     start_date: date
     end_date: date
+    is_half_day: bool = False
+    half_day_period: str | None = None
     reason: str | None = None
 
 
@@ -170,6 +172,16 @@ class ListAllEmployeeBalancesArgs(_StrictArgs):
     year: int | None = None
 
 
+class ListCompanyHolidaysArgs(_StrictArgs):
+    year: int | None = None
+
+
+class GetTeamOutOfOfficeArgs(_StrictArgs):
+    start_date: date | None = None
+    end_date: date | None = None
+    department_id: uuid.UUID | None = None
+
+
 _ARGS_MODELS: dict[str, type[_StrictArgs]] = {
     "get_leave_balance": GetLeaveBalanceArgs,
     "list_leave_types": ListLeaveTypesArgs,
@@ -181,6 +193,8 @@ _ARGS_MODELS: dict[str, type[_StrictArgs]] = {
     "get_employee_leave_balance": GetEmployeeLeaveBalanceArgs,
     "list_all_employee_balances": ListAllEmployeeBalancesArgs,
     "decide_leave_request": DecideLeaveRequestArgs,
+    "list_company_holidays": ListCompanyHolidaysArgs,
+    "get_team_out_of_office": GetTeamOutOfOfficeArgs,
 }
 
 
@@ -328,6 +342,8 @@ def preflight_submit(
     leave_type_name: str,
     start_date: date,
     end_date: date,
+    is_half_day: bool = False,
+    half_day_period: str | None = None,
 ) -> None:
     """Fail fast BEFORE a submission is staged/confirmed.
 
@@ -336,9 +352,7 @@ def preflight_submit(
     words. Raises ToolError with the exact reason the request can't
     succeed (insufficient balance, unknown type, broken date range,
     dates overlapping an existing request, or a consecutive run past the
-    type's cap), so the employee learns "you have 0.0 days of Unpaid
-    Leave" or "those dates overlap your existing Sick Leave request" the
-    moment they give dates, instead of after confirming.
+    type's cap).
     """
     _require_employee_access(actor)
     if end_date < start_date:
@@ -350,6 +364,8 @@ def preflight_submit(
         leave_type_id=leave_type.leave_type_id,
         start_date=start_date,
         end_date=end_date,
+        is_half_day=is_half_day,
+        half_day_period=half_day_period,
     )
 
     rows = _call_service(service.list_my_balance, actor, start_date.year)
@@ -359,7 +375,13 @@ def preflight_submit(
             f"You don't have a {leave_type.leave_name} balance for {start_date.year}."
         )
     remaining = row["remaining_days"]
-    total_days = Decimal((end_date - start_date).days + 1)
+    total_days, _ = _call_service(
+        service.calculate_working_days,
+        start_date,
+        end_date,
+        is_half_day=is_half_day,
+        half_day_period=half_day_period,
+    )
     if total_days > remaining:
         raise ToolError(
             f"Not enough {leave_type.leave_name} balance: "
@@ -536,6 +558,8 @@ def submit_leave_request(
     leave_type_name: str,
     start_date: date,
     end_date: date,
+    is_half_day: bool = False,
+    half_day_period: str | None = None,
     reason: str | None = None,
 ) -> dict:
     """Submit a new leave request. Caller (agent.py) must have already staged
@@ -548,9 +572,62 @@ def submit_leave_request(
         leave_type_id=leave_type.leave_type_id,
         start_date=start_date,
         end_date=end_date,
+        is_half_day=is_half_day,
+        half_day_period=half_day_period,
         reason=reason,
     )
     return _serialize_request(request, leave_type.leave_name, service=service)
+
+
+def list_company_holidays(
+    service: LeaveService,
+    actor: UserContext,
+    *,
+    year: int | None = None,
+) -> list[dict]:
+    """List official company holidays."""
+    holidays = _call_service(service.list_company_holidays, year)
+    return [
+        {
+            "name": h.name,
+            "holiday_date": h.holiday_date.isoformat(),
+            "description": h.description,
+            "is_recurring_yearly": h.is_recurring_yearly,
+        }
+        for h in holidays
+    ]
+
+
+def get_team_out_of_office(
+    service: LeaveService,
+    actor: UserContext,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    department_id: uuid.UUID | None = None,
+) -> list[dict]:
+    """List team members out of office in a date window."""
+    entries = _call_service(
+        service.list_team_out_of_office,
+        actor,
+        start_date=start_date,
+        end_date=end_date,
+        department_id=department_id,
+    )
+    return [
+        {
+            "employee_name": e["employee_name"],
+            "department_name": e["department_name"],
+            "leave_type_name": e["leave_type_name"],
+            "start_date": e["start_date"].isoformat(),
+            "end_date": e["end_date"].isoformat(),
+            "total_days": str(e["total_days"]),
+            "is_half_day": e["is_half_day"],
+            "half_day_period": e["half_day_period"],
+            "status": e["status"],
+        }
+        for e in entries
+    ]
 
 
 def cancel_leave_request(
@@ -669,10 +746,30 @@ def format_tool_result(tool_name: str, result: Any) -> str:
             f"{result['start_date']} to {result['end_date']} ({result['total_days']} day(s)) — {result['status']}"
         )
 
+    if tool_name == "list_company_holidays":
+        if not result:
+            return "There are no official company holidays scheduled."
+        lines = [f"• **{h['name']}**: {h['holiday_date']}" + (f" ({h['description']})" if h.get('description') else "") for h in result]
+        return "Official Company Holidays:\n" + "\n".join(lines)
+
+    if tool_name == "get_team_out_of_office":
+        if not result:
+            return "No team members are currently scheduled out of office."
+        lines = []
+        for e in result:
+            dur = f"{e['total_days']} day(s)"
+            if e.get("is_half_day") and e.get("half_day_period"):
+                dur = f"0.5 day ({e['half_day_period'].lower()})"
+            lines.append(f"• **{e['employee_name']}** ({e.get('department_name') or 'Team'}): {e['leave_type_name']} from {e['start_date']} to {e['end_date']} ({dur}) — {e['status']}")
+        return "Team Out of Office:\n" + "\n".join(lines)
+
     if tool_name == "submit_leave_request":
+        dur = f"{result['total_days']} day(s)"
+        if result.get("is_half_day") and result.get("half_day_period"):
+            dur = f"0.5 day ({result['half_day_period'].lower()})"
         return (
             f"Done — submitted {result['leave_type_name']} request {result['request_number']} "
-            f"for {result['start_date']} to {result['end_date']} ({result['total_days']} day(s)). "
+            f"for {result['start_date']} to {result['end_date']} ({dur}). "
             f"Status: {result['status']}."
         )
 
@@ -744,6 +841,8 @@ TOOLS: dict[str, ToolSpec] = {
             "leave_type_name": "string, required — e.g. 'Annual Leave', 'Sick'",
             "start_date": "string (YYYY-MM-DD), required",
             "end_date": "string (YYYY-MM-DD), required",
+            "is_half_day": "boolean, optional — true if half day",
+            "half_day_period": "string, optional — 'MORNING' or 'AFTERNOON'",
             "reason": "string, optional",
         },
         handler=submit_leave_request,
@@ -784,5 +883,22 @@ TOOLS: dict[str, ToolSpec] = {
         },
         handler=decide_leave_request,
         requires_confirmation=True,
+    ),
+    "list_company_holidays": ToolSpec(
+        name="list_company_holidays",
+        description="List official company holidays and office closures.",
+        parameters={"year": "integer, optional — defaults to current year"},
+        handler=list_company_holidays,
+        requires_confirmation=False,
+    ),
+    "get_team_out_of_office": ToolSpec(
+        name="get_team_out_of_office",
+        description="Check who is out of office in the team / department for upcoming dates.",
+        parameters={
+            "start_date": "string (YYYY-MM-DD), optional",
+            "end_date": "string (YYYY-MM-DD), optional",
+        },
+        handler=get_team_out_of_office,
+        requires_confirmation=False,
     ),
 }

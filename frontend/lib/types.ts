@@ -468,6 +468,8 @@ export interface LeaveRequest {
   start_date: string;
   end_date: string;
   total_days: string;
+  is_half_day?: boolean;
+  half_day_period?: "MORNING" | "AFTERNOON" | null;
   reason: string | null;
   status: LeaveRequestStatus;
   submitted_at: string;
@@ -484,5 +486,48 @@ export interface LeaveRequestCreateBody {
   leave_type_id: string;
   start_date: string;
   end_date: string;
+  is_half_day?: boolean;
+  half_day_period?: "MORNING" | "AFTERNOON" | null;
   reason?: string | null;
+}
+
+export interface CompanyHoliday {
+  holiday_id: string;
+  name: string;
+  holiday_date: string;
+  description: string | null;
+  is_recurring_yearly: boolean;
+  created_at: string;
+}
+
+export interface CompanyHolidayCreateBody {
+  name: string;
+  holiday_date: string;
+  description?: string | null;
+  is_recurring_yearly?: boolean;
+}
+
+export interface WorkingDaysCalculation {
+  start_date: string;
+  end_date: string;
+  total_working_days: number | string;
+  calendar_days: number;
+  weekend_days: number;
+  holiday_days: number;
+  holidays_in_range: CompanyHoliday[];
+}
+
+export interface TeamMemberOutOfOffice {
+  leave_request_id: string;
+  employee_id: string;
+  employee_name: string;
+  department_id: string | null;
+  department_name: string | null;
+  leave_type_name: string;
+  start_date: string;
+  end_date: string;
+  total_days: string | number;
+  is_half_day: boolean;
+  half_day_period: string | null;
+  status: LeaveRequestStatus;
 }

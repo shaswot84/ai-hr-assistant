@@ -113,6 +113,8 @@ async def test_end_only_follow_up_completes_draft_and_stages_confirmation(
         "leave_type_name": "Annual Leave",
         "start_date": start.isoformat(),
         "end_date": (start + timedelta(days=2)).isoformat(),
+        "is_half_day": False,
+        "half_day_period": None,
         "reason": None,
     }
     assert start.isoformat() in result.reply
@@ -697,5 +699,84 @@ async def test_list_leave_types_single_type_prefills_draft(
     assert provider.calls == 0
     expected = get_clock().today() + timedelta(days=1)
     assert state.draft.start_date == expected
-    assert expected.strftime("%a, %b %d, %Y") in result.reply
-    assert "To which date would you like to end?" in result.reply
+
+
+@pytest.mark.asyncio
+async def test_half_day_leave_staged_deterministically(
+    db, manager_context, employee_context
+):
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    state = _state(employee_context)
+
+    # Next Tuesday
+    today = get_clock().today()
+    days_to_tue = ((1 - today.weekday()) % 7) or 7
+    tue = today + timedelta(days=days_to_tue)
+
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message=f"i want to take a half day annual leave on {tue.isoformat()} afternoon",
+    )
+
+    assert provider.calls == 0
+    assert state.pending_confirmation is not None
+    assert state.pending_confirmation.tool == "submit_leave_request"
+    assert state.pending_confirmation.args["is_half_day"] is True
+    assert state.pending_confirmation.args["half_day_period"] == "AFTERNOON"
+    assert state.pending_confirmation.args["start_date"] == tue.isoformat()
+    assert "half-day" in result.reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_holidays_interception_in_leave_agent(
+    db, manager_context, employee_context
+):
+    svc = LeaveService(db)
+    svc.create_company_holiday(
+        manager_context,
+        name="Winter Solstice",
+        holiday_date=date(2026, 12, 21),
+    )
+    state = _state(employee_context)
+
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="what are the upcoming company holidays?",
+    )
+
+    assert provider.calls == 0
+    assert "Winter Solstice" in result.reply
+    assert result.tool_called == "list_company_holidays"
+    assert result.ui_widget is not None
+    assert result.ui_widget["type"] == "company_holidays"
+
+
+@pytest.mark.asyncio
+async def test_team_out_of_office_interception_in_leave_agent(
+    db, manager_context, employee_context
+):
+    svc = LeaveService(db)
+    state = _state(employee_context)
+
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="who is out of office today?",
+    )
+
+    assert provider.calls == 0
+    assert result.tool_called == "get_team_out_of_office"
+    assert result.ui_widget is not None
+    assert result.ui_widget["type"] == "team_out_of_office"

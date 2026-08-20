@@ -2,6 +2,8 @@ import type {
   Application,
   ApplicationDetail,
   ApplicationStatusView,
+  CompanyHoliday,
+  CompanyHolidayCreateBody,
   Department,
   Designation,
   Employee,
@@ -25,8 +27,10 @@ import type {
   LeaveTypeCreateBody,
   LlmConfig,
   ScoringKeyword,
+  TeamMemberOutOfOffice,
   UserContext,
   Vacancy,
+  WorkingDaysCalculation,
   ChatCitation,
   ChatConversation,
   ChatMessage,
@@ -348,6 +352,44 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ action }),
     }),
+
+  listCompanyHolidays: (year?: number) =>
+    request<CompanyHoliday[]>(`/api/leave/holidays${year ? `?year=${year}` : ""}`),
+
+  createCompanyHoliday: (body: CompanyHolidayCreateBody) =>
+    request<CompanyHoliday>("/api/leave/holidays", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  deleteCompanyHoliday: (holidayId: string) =>
+    request<{ success: boolean }>(`/api/leave/holidays/${holidayId}`, {
+      method: "DELETE",
+    }),
+
+  calculateWorkingDays: (body: {
+    start_date: string;
+    end_date: string;
+    is_half_day?: boolean;
+    half_day_period?: string | null;
+  }) =>
+    request<WorkingDaysCalculation>("/api/leave/calculate-days", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  teamOutOfOffice: (params?: {
+    department_id?: string;
+    start_date?: string;
+    end_date?: string;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.department_id) q.set("department_id", params.department_id);
+    if (params?.start_date) q.set("start_date", params.start_date);
+    if (params?.end_date) q.set("end_date", params.end_date);
+    const qs = q.toString();
+    return request<TeamMemberOutOfOffice[]>(`/api/leave/team-out-of-office${qs ? `?${qs}` : ""}`);
+  },
 
   // ---- chat (assistant) ----------------------------------------------
 

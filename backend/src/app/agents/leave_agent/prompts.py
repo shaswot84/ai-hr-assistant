@@ -228,15 +228,15 @@ def build_turn_prompt(
 
 
 def summarize_for_confirmation(tool_name: str, args: dict) -> str:
-    """Plain-language summary of a staged write action, for the confirmation prompt.
-
-    Not fed to the model — this is a deterministic fallback agent.py can use
-    to double-check or override the model's own phrasing, so the summary the
-    employee sees is never solely dependent on the LLM getting it right.
-    """
+    """Plain-language summary of a staged write action, for the confirmation prompt."""
     if tool_name == "submit_leave_request":
         reason = f", reason: {args['reason']}" if args.get("reason") else ""
         article = "an" if args["leave_type_name"][:1].lower() in "aeiou" else "a"
+        if args.get("is_half_day"):
+            period = f" ({args.get('half_day_period', 'morning').lower()})"
+            return (
+                f"Submit {article} half-day {args['leave_type_name']} request on {args['start_date']}{period}{reason}?"
+            )
         return (
             f"Submit {article} {args['leave_type_name']} request from {args['start_date']} "
             f"to {args['end_date']}{reason}?"

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_current_user, require_role
 from app.capabilities.leave import LeaveService, PermissionError_
@@ -11,6 +12,8 @@ from app.db.sync_session import get_db
 from app.domain.identity import Employee, Person
 from app.domain.leave import LeaveRequest
 from app.schemas.leave import (
+    CompanyHolidayCreate,
+    CompanyHolidayOut,
     LeaveBalanceOut,
     LeaveDecisionRequest,
     LeaveRequestCreate,
@@ -18,6 +21,9 @@ from app.schemas.leave import (
     LeaveRequestOut,
     LeaveTypeCreate,
     LeaveTypeOut,
+    TeamMemberOutOfOfficeOut,
+    WorkingDaysCalculationOut,
+    WorkingDaysCalculationRequest,
 )
 
 router = APIRouter(prefix="/api/leave", tags=["leave"])
@@ -39,6 +45,8 @@ def _to_request_out(svc: LeaveService, request: LeaveRequest) -> LeaveRequestOut
         start_date=request.start_date,
         end_date=request.end_date,
         total_days=request.total_days,
+        is_half_day=request.is_half_day,
+        half_day_period=request.half_day_period,
         reason=request.reason,
         status=request.status,
         submitted_at=request.submitted_at,
@@ -93,6 +101,122 @@ def create_leave_type(
         raise HTTPException(status_code=409, detail=str(err)) from err
 
 
+# ---- company holidays ----------------------------------------------------
+
+
+@router.get("/holidays", response_model=list[CompanyHolidayOut])
+def list_company_holidays(
+    year: int | None = Query(default=None),
+    user: UserContext = Depends(get_current_user),
+    svc: LeaveService = Depends(_svc),
+):
+    """List official company holidays (accessible by all users)."""
+    return svc.list_company_holidays(year)
+
+
+@router.post("/holidays", response_model=CompanyHolidayOut, status_code=status.HTTP_201_CREATED)
+def create_company_holiday(
+    body: CompanyHolidayCreate,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: LeaveService = Depends(_svc),
+):
+    """Create an official company holiday (manager-only)."""
+    try:
+        return svc.create_company_holiday(
+            user,
+            name=body.name,
+            holiday_date=body.holiday_date,
+            description=body.description,
+            is_recurring_yearly=body.is_recurring_yearly,
+        )
+    except PermissionError_ as err:
+        raise HTTPException(status_code=403, detail=str(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
+
+
+@router.delete("/holidays/{holiday_id}")
+def delete_company_holiday(
+    holiday_id: uuid.UUID,
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: LeaveService = Depends(_svc),
+):
+    """Delete a company holiday (manager-only)."""
+    try:
+        svc.delete_company_holiday(user, holiday_id)
+        return {"success": True}
+    except PermissionError_ as err:
+        raise HTTPException(status_code=403, detail=str(err)) from err
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+
+
+# ---- working days calculation -------------------------------------------
+
+
+@router.post("/calculate-days", response_model=WorkingDaysCalculationOut)
+def calculate_leave_days(
+    body: WorkingDaysCalculationRequest,
+    user: UserContext = Depends(require_role("EMPLOYEE", "HR_ADMIN")),
+    svc: LeaveService = Depends(_svc),
+):
+    """Preview working days, weekend exclusions, and company holidays for a date range."""
+    try:
+        total_working, holidays_in_range = svc.calculate_working_days(
+            body.start_date,
+            body.end_date,
+            is_half_day=body.is_half_day,
+            half_day_period=body.half_day_period,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+
+    calendar_days = (body.end_date - body.start_date).days + 1 if not body.is_half_day else 1
+    weekend_days = 0
+    if not body.is_half_day:
+        cur = body.start_date
+        while cur <= body.end_date:
+            if cur.weekday() >= 5:
+                weekend_days += 1
+            cur += timedelta(days=1)
+
+    return WorkingDaysCalculationOut(
+        start_date=body.start_date,
+        end_date=body.end_date,
+        total_working_days=total_working,
+        calendar_days=calendar_days,
+        weekend_days=weekend_days,
+        holiday_days=len(holidays_in_range),
+        holidays_in_range=[
+            CompanyHolidayOut.model_validate(h) for h in holidays_in_range
+        ],
+    )
+
+
+# ---- team out of office / calendar ---------------------------------------
+
+
+@router.get("/team-out-of-office", response_model=list[TeamMemberOutOfOfficeOut])
+def list_team_out_of_office(
+    department_id: uuid.UUID | None = Query(default=None),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    user: UserContext = Depends(require_role("EMPLOYEE", "HR_ADMIN")),
+    svc: LeaveService = Depends(_svc),
+):
+    """List team members out of office in a given date window."""
+    try:
+        entries = svc.list_team_out_of_office(
+            user,
+            department_id=department_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        return [TeamMemberOutOfOfficeOut(**e) for e in entries]
+    except PermissionError_ as err:
+        raise HTTPException(status_code=403, detail=str(err)) from err
+
+
 # ---- balance --------------------------------------------------------------
 
 
@@ -136,6 +260,8 @@ def create_leave_request(
             leave_type_id=body.leave_type_id,
             start_date=body.start_date,
             end_date=body.end_date,
+            is_half_day=body.is_half_day,
+            half_day_period=body.half_day_period,
             reason=body.reason,
         )
     except PermissionError_ as err:
@@ -227,3 +353,4 @@ def decide_leave_request(
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
     return _to_request_detail_out(svc, request)
+

@@ -50,6 +50,8 @@ class LeaveRequestCreate(BaseModel):
     leave_type_id: uuid.UUID
     start_date: date
     end_date: date
+    is_half_day: bool = False
+    half_day_period: str | None = Field(default=None, max_length=20)
     reason: str | None = Field(default=None, max_length=500)
 
 
@@ -63,6 +65,8 @@ class LeaveRequestOut(BaseModel):
     start_date: date
     end_date: date
     total_days: Decimal
+    is_half_day: bool = False
+    half_day_period: str | None = None
     reason: str | None
     status: str
     submitted_at: datetime
@@ -80,3 +84,64 @@ class LeaveDecisionRequest(BaseModel):
     """Request payload for a manager's leave decision."""
 
     action: str  # "approve" | "reject"
+
+
+class CompanyHolidayCreate(BaseModel):
+    """Request payload for creating an official company holiday."""
+
+    name: str = Field(min_length=1, max_length=100)
+    holiday_date: date
+    description: str | None = Field(default=None, max_length=255)
+    is_recurring_yearly: bool = False
+
+
+class CompanyHolidayOut(BaseModel):
+    """API representation of an official company holiday."""
+
+    holiday_id: uuid.UUID
+    name: str
+    holiday_date: date
+    description: str | None = None
+    is_recurring_yearly: bool = False
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class WorkingDaysCalculationRequest(BaseModel):
+    """Request payload to calculate working days for a proposed date range."""
+
+    start_date: date
+    end_date: date
+    is_half_day: bool = False
+    half_day_period: str | None = None
+
+
+class WorkingDaysCalculationOut(BaseModel):
+    """Working days calculation breakdown."""
+
+    start_date: date
+    end_date: date
+    total_working_days: Decimal
+    calendar_days: int
+    weekend_days: int
+    holiday_days: int
+    holidays_in_range: list[CompanyHolidayOut]
+
+
+class TeamMemberOutOfOfficeOut(BaseModel):
+    """Team member out-of-office entry for team calendar."""
+
+    leave_request_id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_name: str
+    department_id: uuid.UUID | None = None
+    department_name: str | None = None
+    leave_type_name: str
+    start_date: date
+    end_date: date
+    total_days: Decimal
+    is_half_day: bool = False
+    half_day_period: str | None = None
+    status: str
+

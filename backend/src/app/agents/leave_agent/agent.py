@@ -19,7 +19,7 @@ from typing import Any
 
 from app.agents.context import is_history_question
 from app.agents.leave_agent import prompts
-from app.agents.leave_agent.dates import extract_dates, format_short, resolve_end_date
+from app.agents.leave_agent.dates import extract_dates, extract_half_day_info, format_short, resolve_end_date
 from app.agents.leave_agent.state import DraftRequest, LeaveAgentState
 from app.agents.leave_agent.tools import (
     TOOLS,
@@ -28,8 +28,10 @@ from app.agents.leave_agent.tools import (
     format_tool_result,
     get_employee_leave_balance,
     get_leave_balance,
+    get_team_out_of_office,
     hr_pending_request_lines,
     list_all_employee_balances,
+    list_company_holidays,
     list_leave_requests,
     list_leave_types,
     list_my_leave_requests,
@@ -157,6 +159,8 @@ def _leave_date_picker_widget(draft: DraftRequest, today: date | None = None) ->
         "leave_type_name": draft.leave_type_name,
         "start_date": draft.start_date.isoformat() if draft.start_date else None,
         "end_date": draft.end_date.isoformat() if draft.end_date else None,
+        "is_half_day": draft.is_half_day,
+        "half_day_period": draft.half_day_period,
         "min_date": today.isoformat() if today else None,
     }
 
@@ -183,6 +187,16 @@ async def handle_turn(
     clock = clock or get_clock()
 
     intercepted = _intercept_list_requests(state, service, actor, user_message, clock=clock)
+    if intercepted is not None:
+        state.add_turn("employee", user_message, clock=clock)
+        return intercepted
+
+    intercepted = _intercept_holidays_question(state, service, actor, user_message, clock=clock)
+    if intercepted is not None:
+        state.add_turn("employee", user_message, clock=clock)
+        return intercepted
+
+    intercepted = _intercept_team_calendar_question(state, service, actor, user_message, clock=clock)
     if intercepted is not None:
         state.add_turn("employee", user_message, clock=clock)
         return intercepted
@@ -457,6 +471,86 @@ def _intercept_list_requests(
     return None
 
 
+def _intercept_holidays_question(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    user_message: str,
+    *,
+    clock: Clock,
+) -> AgentTurnResult | None:
+    """Answer questions about company holidays / office closures deterministically."""
+    lowered = user_message.lower()
+    holiday_phrases = (
+        "company holiday",
+        "company holidays",
+        "public holiday",
+        "public holidays",
+        "office closure",
+        "office closures",
+        "official holiday",
+        "official holidays",
+        "holiday calendar",
+        "holidays this year",
+        "upcoming holidays",
+        "next holiday",
+    )
+    if not any(phrase in lowered for phrase in holiday_phrases):
+        return None
+    try:
+        result = list_company_holidays(service, actor)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock)
+    text = format_tool_result("list_company_holidays", result)
+    return _reply(
+        state,
+        text,
+        clock=clock,
+        tool_called="list_company_holidays",
+        tool_result=result,
+        ui_widget={"type": "company_holidays", "holidays": result},
+    )
+
+
+def _intercept_team_calendar_question(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    user_message: str,
+    *,
+    clock: Clock,
+) -> AgentTurnResult | None:
+    """Answer questions about team out of office / absences deterministically."""
+    lowered = user_message.lower()
+    team_phrases = (
+        "who is out of office",
+        "who is off today",
+        "who is on leave",
+        "who is away",
+        "team out of office",
+        "team calendar",
+        "team absence",
+        "team absences",
+        "department leave",
+        "out of office",
+    )
+    if not any(phrase in lowered for phrase in team_phrases):
+        return None
+    try:
+        result = get_team_out_of_office(service, actor)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock)
+    text = format_tool_result("get_team_out_of_office", result)
+    return _reply(
+        state,
+        text,
+        clock=clock,
+        tool_called="get_team_out_of_office",
+        tool_result=result,
+        ui_widget={"type": "team_out_of_office", "entries": result},
+    )
+
+
 def _intercept_types_question(
     state: LeaveAgentState,
     service: LeaveService,
@@ -559,7 +653,9 @@ def _draft_canonical(draft: DraftRequest) -> dict:
     return {
         "leave_type_name": draft.leave_type_name,
         "start_date": draft.start_date.isoformat(),
-        "end_date": draft.end_date.isoformat(),
+        "end_date": draft.end_date.isoformat() if draft.end_date else draft.start_date.isoformat(),
+        "is_half_day": draft.is_half_day,
+        "half_day_period": draft.half_day_period,
         "reason": draft.reason,
     }
 
@@ -588,6 +684,8 @@ def _stage_draft(
             leave_type_name=preflight_args["leave_type_name"],
             start_date=preflight_args["start_date"],
             end_date=preflight_args["end_date"],
+            is_half_day=preflight_args.get("is_half_day", False),
+            half_day_period=preflight_args.get("half_day_period"),
         )
     except ToolError as err:
         return _reply(state, str(err), clock=clock)
@@ -730,12 +828,20 @@ def _intercept_draft_turn(
         )
 
     start, end = extract_dates(user_message, today)
+    is_half, period = extract_half_day_info(user_message)
 
     draft = state.draft
     if draft is None:
         if not _is_request_intent(user_message) or start is None:
             return None
         draft = DraftRequest()
+
+    if is_half:
+        draft.is_half_day = True
+        draft.half_day_period = period or "MORNING"
+        if start is not None:
+            draft.start_date = start
+            draft.end_date = start
 
     if actor.coarse_role == "HR_ADMIN":
         # HR has no leave of their own: a date-bearing application (or a
@@ -1227,6 +1333,10 @@ async def _handle_read(
         ui_widget = {"type": "all_employee_balances", "employees": result, "year": args.get("year", clock.today().year)}
     elif tool_name == "get_leave_request":
         ui_widget = {"type": "single_leave_request", "request": result}
+    elif tool_name == "list_company_holidays":
+        ui_widget = {"type": "company_holidays", "holidays": result}
+    elif tool_name == "get_team_out_of_office":
+        ui_widget = {"type": "team_out_of_office", "entries": result}
 
     if tool_name == "list_leave_types":
         override = _list_types_reply_override(user_message)

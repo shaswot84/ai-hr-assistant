@@ -136,6 +136,8 @@ async def test_draft_restored_after_cache_miss(db, manager_context, employee_con
         "leave_type_name": "Annual Leave",
         "start_date": start.isoformat(),
         "end_date": (start + timedelta(days=2)).isoformat(),
+        "is_half_day": False,
+        "half_day_period": None,
         "reason": None,
     }
 
@@ -428,5 +430,12 @@ async def test_workflow_persistence_leaves_transcript_untouched(
     ]
 
     row = _workflow_row(db, conversation_id, employee_context)
-    assert set(row.draft_request) == {"leave_type_name", "start_date", "end_date", "reason"}
+    assert set(row.draft_request) == {
+        "leave_type_name",
+        "start_date",
+        "end_date",
+        "is_half_day",
+        "half_day_period",
+        "reason",
+    }
     assert row.pending_confirmation is None

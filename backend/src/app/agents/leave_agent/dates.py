@@ -173,6 +173,23 @@ def extract_dates(text: str, today: date) -> tuple[date | None, date | None]:
     return start, None
 
 
+def extract_half_day_info(text: str) -> tuple[bool, str | None]:
+    """Detect if the message mentions half-day leave and resolve the period ('MORNING' | 'AFTERNOON')."""
+    lowered = text.lower()
+    has_half = bool(
+        re.search(r"\b(half\s*day|0\.5\s*days?|half-day)\b", lowered)
+        or re.search(r"\b(morning|afternoon|first\s*half|second\s*half)\b", lowered)
+    )
+    if not has_half:
+        return False, None
+
+    if re.search(r"\b(afternoon|second\s*half|pm)\b", lowered):
+        return True, "AFTERNOON"
+    if re.search(r"\b(morning|first\s*half|am)\b", lowered):
+        return True, "MORNING"
+    return True, "MORNING"
+
+
 def format_short(d: date) -> str:
     """A compact, unambiguous display form: ``Fri, Aug 14, 2026``."""
     return d.strftime("%a, %b %d, %Y")

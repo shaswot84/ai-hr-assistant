@@ -465,3 +465,208 @@ def test_leave_request_http_flow(db, client, manager_context, employee_context, 
     assert decision.status_code == 200
     assert decision.json()["status"] == "APPROVED"
     assert decision.json()["employee_email"] == employee_context.email
+
+
+def test_calculate_working_days_weekend_exclusion(db):
+    svc = LeaveService(db)
+    # 2026-08-21 is Friday, 2026-08-24 is Monday
+    fri = date(2026, 8, 21)
+    mon = date(2026, 8, 24)
+    working_days, holidays = svc.calculate_working_days(fri, mon)
+    # Friday and Monday are 2 working days (Sat & Sun excluded)
+    assert working_days == Decimal("2.0")
+    assert len(holidays) == 0
+
+
+def test_calculate_working_days_with_company_holidays(db, manager_context):
+    svc = LeaveService(db)
+    # Create holiday on Monday 2026-08-24
+    svc.create_company_holiday(
+        manager_context,
+        name="Test Monday Holiday",
+        holiday_date=date(2026, 8, 24),
+    )
+
+    fri = date(2026, 8, 21)
+    mon = date(2026, 8, 24)
+    working_days, holidays = svc.calculate_working_days(fri, mon)
+    # Friday is the only working day (Sat, Sun, and Mon holiday excluded)
+    assert working_days == Decimal("1.0")
+    assert len(holidays) == 1
+    assert holidays[0].name == "Test Monday Holiday"
+
+
+def test_calculate_working_days_yearly_recurring_holiday(db, manager_context):
+    svc = LeaveService(db)
+    # Recurring yearly on Nov 15
+    svc.create_company_holiday(
+        manager_context,
+        name="Annual Foundation Day",
+        holiday_date=date(2020, 11, 15),
+        is_recurring_yearly=True,
+    )
+
+    # 2026-11-13 is Friday, 2026-11-15 is Sunday, 2026-11-16 is Monday
+    # 2026-11-15 is a Sunday holiday
+    working_days, holidays = svc.calculate_working_days(date(2026, 11, 13), date(2026, 11, 16))
+    assert working_days == Decimal("2.0")  # Friday and Monday
+
+    # In 2027, Nov 15 is Monday
+    working_days_2027, holidays_2027 = svc.calculate_working_days(date(2027, 11, 12), date(2027, 11, 16))
+    # Friday 12 (1), Sat 13 (0), Sun 14 (0), Mon 15 (holiday 0), Tue 16 (1) -> 2 working days
+    assert working_days_2027 == Decimal("2.0")
+    assert len(holidays_2027) == 1
+
+
+def test_calculate_working_days_half_day(db):
+    svc = LeaveService(db)
+    # 2026-08-25 is Tuesday
+    tue = date(2026, 8, 25)
+    working_days, holidays = svc.calculate_working_days(tue, tue, is_half_day=True, half_day_period="MORNING")
+    assert working_days == Decimal("0.5")
+
+    # Half day on Saturday raises ValueError
+    sat = date(2026, 8, 22)
+    with pytest.raises(ValueError, match="weekend"):
+        svc.calculate_working_days(sat, sat, is_half_day=True, half_day_period="AFTERNOON")
+
+
+def test_half_day_leave_request_flow(db, manager_context, employee_context):
+    svc = LeaveService(db)
+    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(10))
+
+    tue = date(2026, 9, 8)  # Tuesday
+    request = svc.request_leave(
+        employee_context,
+        leave_type_id=leave_type.leave_type_id,
+        start_date=tue,
+        end_date=tue,
+        is_half_day=True,
+        half_day_period="MORNING",
+        reason="Doctor appointment",
+    )
+    assert request.is_half_day is True
+    assert request.half_day_period == "MORNING"
+    assert request.total_days == Decimal("0.5")
+
+    # Approve and verify balance deduction
+    svc.decide_request(manager_context, request.leave_request_id, approve=True)
+    rows = svc.list_my_balance(employee_context, year=2026)
+    row = next(r for r in rows if r["leave_type"].leave_type_id == leave_type.leave_type_id)
+    assert row["used_days"] == Decimal("0.5")
+    assert row["remaining_days"] == Decimal("9.5")
+
+
+def test_half_day_non_colliding_morning_and_afternoon(db, manager_context, employee_context):
+    svc = LeaveService(db)
+    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(10))
+
+    wed = date(2026, 9, 9)
+    # Morning request
+    req1 = svc.request_leave(
+        employee_context,
+        leave_type_id=leave_type.leave_type_id,
+        start_date=wed,
+        end_date=wed,
+        is_half_day=True,
+        half_day_period="MORNING",
+    )
+    assert req1.status == "PENDING"
+
+    # Afternoon request on same day -> allowed!
+    req2 = svc.request_leave(
+        employee_context,
+        leave_type_id=leave_type.leave_type_id,
+        start_date=wed,
+        end_date=wed,
+        is_half_day=True,
+        half_day_period="AFTERNOON",
+    )
+    assert req2.status == "PENDING"
+
+    # Duplicate morning request on same day -> blocked!
+    with pytest.raises(ValueError, match="overlap"):
+        svc.request_leave(
+            employee_context,
+            leave_type_id=leave_type.leave_type_id,
+            start_date=wed,
+            end_date=wed,
+            is_half_day=True,
+            half_day_period="MORNING",
+        )
+
+    # Full-day request on same day -> blocked!
+    with pytest.raises(ValueError, match="overlap"):
+        svc.request_leave(
+            employee_context,
+            leave_type_id=leave_type.leave_type_id,
+            start_date=wed,
+            end_date=wed,
+            is_half_day=False,
+        )
+
+
+def test_company_holiday_and_team_calendar_http(
+    db, client, manager_context, employee_context, employee_password, manager_password
+):
+    # 1. Login as manager and create a holiday
+    mgr_login = client.post(
+        "/api/auth/login",
+        json={"email": manager_context.email, "password": manager_password},
+    )
+    mgr_token = mgr_login.json()["access_token"]
+
+    holiday_res = client.post(
+        "/api/leave/holidays",
+        headers={"Authorization": f"Bearer {mgr_token}"},
+        json={
+            "name": "Spring Gala Day",
+            "holiday_date": "2026-04-10",
+            "description": "Annual company celebration closure.",
+            "is_recurring_yearly": True,
+        },
+    )
+    assert holiday_res.status_code == 201
+    holiday_id = holiday_res.json()["holiday_id"]
+
+    # 2. Login as employee and list holidays
+    emp_login = client.post(
+        "/api/auth/login",
+        json={"email": employee_context.email, "password": employee_password},
+    )
+    emp_token = emp_login.json()["access_token"]
+
+    holidays_list = client.get("/api/leave/holidays", headers={"Authorization": f"Bearer {emp_token}"})
+    assert holidays_list.status_code == 200
+    assert any(h["holiday_id"] == holiday_id for h in holidays_list.json())
+
+    # 3. Test calculate-days preview endpoint
+    calc_res = client.post(
+        "/api/leave/calculate-days",
+        headers={"Authorization": f"Bearer {emp_token}"},
+        json={
+            "start_date": "2026-04-09",
+            "end_date": "2026-04-13",
+        },
+    )
+    assert calc_res.status_code == 200
+    calc_data = calc_res.json()
+    # 2026-04-09 (Thu), 2026-04-10 (Fri holiday), 2026-04-11 (Sat), 2026-04-12 (Sun), 2026-04-13 (Mon)
+    # Total calendar days = 5, weekend days = 2, holiday days = 1, total working days = 2 (Thu + Mon)
+    assert Decimal(calc_data["total_working_days"]) == Decimal("2")
+    assert calc_data["calendar_days"] == 5
+    assert calc_data["weekend_days"] == 2
+    assert calc_data["holiday_days"] == 1
+
+    # 4. Test team out of office endpoint
+    team_res = client.get("/api/leave/team-out-of-office", headers={"Authorization": f"Bearer {emp_token}"})
+    assert team_res.status_code == 200
+    assert isinstance(team_res.json(), list)
+
+    # 5. Manager deletes holiday
+    del_res = client.delete(
+        f"/api/leave/holidays/{holiday_id}",
+        headers={"Authorization": f"Bearer {mgr_token}"},
+    )
+    assert del_res.status_code == 200
+
