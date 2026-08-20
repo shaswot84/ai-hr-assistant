@@ -50,6 +50,12 @@ class ListManagerApplicationsArgs(BaseModel):
     vacancy_title: str | None = None
 
 
+class WithdrawApplicationArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vacancy_title: str | None = None
+    application_id: str | None = None
+
+
 # ---- Tool Implementations ------------------------------------------------
 
 
@@ -74,6 +80,55 @@ def list_my_applications_tool(
     if actor is None or actor.coarse_role != "CANDIDATE":
         raise ToolError("Only candidates can view their applications.")
     return _call_service(service.list_my_applications, actor)
+
+
+def withdraw_application_tool(
+    service: RecruitmentService,
+    actor: UserContext | None,
+    vacancy_title: str | None = None,
+    application_id: str | None = None,
+) -> Application:
+    if actor is None or actor.coarse_role != "CANDIDATE":
+        raise ToolError("Only candidates can withdraw their applications.")
+
+    if application_id:
+        try:
+            app_uuid = uuid.UUID(str(application_id))
+        except (ValueError, TypeError) as err:
+            raise ToolError(f"Invalid application id: {application_id}") from err
+        return _call_service(service.withdraw_application, actor, app_uuid)
+
+    apps = _call_service(service.list_my_applications, actor)
+    withdrawable = [a for a in apps if a.application_status in ("APPLIED", "SHORTLISTED")]
+
+    if vacancy_title:
+        normalized = re.sub(r"[^a-z0-9 ]", "", vacancy_title.lower())
+        matched = [
+            a
+            for a in withdrawable
+            if a.vacancy
+            and (
+                re.sub(r"[^a-z0-9 ]", "", a.vacancy.title.lower()) in normalized
+                or normalized in re.sub(r"[^a-z0-9 ]", "", a.vacancy.title.lower())
+            )
+        ]
+        if not matched:
+            raise ToolError(
+                f"I couldn't find an active application for {vacancy_title!r} to withdraw."
+            )
+        if len(matched) > 1:
+            raise ToolError(
+                f"Multiple active applications match {vacancy_title!r}. Please be more specific."
+            )
+        return _call_service(service.withdraw_application, actor, matched[0].application_id)
+
+    if len(withdrawable) == 1:
+        return _call_service(service.withdraw_application, actor, withdrawable[0].application_id)
+    if len(withdrawable) == 0:
+        raise ToolError("You don't have any active applications to withdraw.")
+    raise ToolError(
+        "You have multiple active applications. Please specify which position you want to withdraw from."
+    )
 
 
 def list_manager_applications_tool(
@@ -255,6 +310,7 @@ def format_help_reply(vacancies: list[Vacancy]) -> str:
         "- **View Open Vacancies**: Ask *'What jobs are open?'* to explore available roles.",
         "- **Apply for Vacancies**: Ask *'How do I apply for [Job Title]?'* or click Apply to submit your resume directly.",
         "- **Check Application Status**: Ask *'What's the status of my application?'* to track your progress.",
+        "- **Withdraw Application**: Ask *'Withdraw my application for [Job Title]'* to withdraw an active application.",
     ]
     if vacancies:
         lines.extend(["", "Currently open roles:", vacancy_lines(vacancies)])

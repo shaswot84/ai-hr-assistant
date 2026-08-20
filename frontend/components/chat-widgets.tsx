@@ -2133,7 +2133,7 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 /**
  * 12. Applications List Widget
  */
-function ApplicationsListWidget({ widget }: ChatWidgetProps) {
+function ApplicationsListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const applications = widget.applications || [];
   if (applications.length === 0) return null;
 
@@ -2149,11 +2149,13 @@ function ApplicationsListWidget({ widget }: ChatWidgetProps) {
           const status = app.application_status || "APPLIED";
           const isShortlisted = status === "SHORTLISTED";
           const isRejected = status === "REJECTED";
+          const isWithdrawn = status === "WITHDRAWN";
+          const canWithdraw = (status === "APPLIED" || status === "SHORTLISTED") && !!onAction;
 
           return (
             <div
               key={app.application_id}
-              className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white p-3.5 shadow-sm transition-all hover:border-zinc-300"
+              className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-3.5 shadow-sm transition-all hover:border-zinc-300"
             >
               <div className="space-y-0.5">
                 <div className="flex items-center gap-2">
@@ -2166,6 +2168,8 @@ function ApplicationsListWidget({ widget }: ChatWidgetProps) {
                         ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                         : isRejected
                         ? "bg-rose-50 text-rose-700 border-rose-200"
+                        : isWithdrawn
+                        ? "bg-zinc-100 text-zinc-600 border-zinc-200"
                         : "bg-blue-50 text-blue-700 border-blue-200"
                     }`}
                   >
@@ -2177,6 +2181,17 @@ function ApplicationsListWidget({ widget }: ChatWidgetProps) {
                   Applied: {app.applied_at ? new Date(app.applied_at).toLocaleDateString() : "Recently"}
                 </p>
               </div>
+
+              {canWithdraw && (
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onAction?.(`Withdraw my application for ${app.vacancy_title}`)}
+                  className="shrink-0 rounded-lg border border-red-200 bg-red-50/50 px-2.5 py-1 text-xs font-medium text-red-600 transition hover:bg-red-100/70 hover:border-red-300 disabled:opacity-50"
+                >
+                  Withdraw
+                </button>
+              )}
             </div>
           );
         })}

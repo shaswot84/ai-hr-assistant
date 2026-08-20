@@ -124,6 +124,7 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
         vacancy_title=application.vacancy.title if application.vacancy else None,
         application_status=application.application_status,
         applied_at=application.applied_at,
+        withdrawn_at=application.withdrawn_at,
         evaluated=evaluation is not None,
         evaluation=(
             EvaluationOut(
@@ -163,6 +164,7 @@ def _to_status_out(application) -> ApplicationStatusOut:
         vacancy_title=application.vacancy.title if application.vacancy else None,
         application_status=application.application_status,
         applied_at=application.applied_at,
+        withdrawn_at=application.withdrawn_at,
     )
 
 
@@ -477,6 +479,25 @@ def my_application(
         application = svc.get_my_application(user, application_id)
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
+    return _to_status_out(application)
+
+
+@router.post("/applications/mine/{application_id}/withdraw", response_model=ApplicationStatusOut)
+@router.post("/applications/{application_id}/withdraw", response_model=ApplicationStatusOut)
+def withdraw_application(
+    application_id: uuid.UUID,
+    user: UserContext = Depends(require_role("CANDIDATE")),
+    svc: RecruitmentService = Depends(_svc),
+):
+    """Withdraw one of the current candidate's own active applications."""
+    try:
+        application = svc.withdraw_application(user, application_id)
+    except PermissionError_ as err:
+        raise HTTPException(status_code=403, detail=str(err)) from err
+    except ValueError as err:
+        if str(err) == "Application not found.":
+            raise HTTPException(status_code=404, detail=str(err)) from err
+        raise HTTPException(status_code=400, detail=str(err)) from err
     return _to_status_out(application)
 
 

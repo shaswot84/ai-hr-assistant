@@ -141,6 +141,7 @@ export interface ApplicationStatusView {
   vacancy_title: string | null;
   application_status: ApplicationStatus;
   applied_at: string;
+  withdrawn_at?: string | null;
 }
 
 /** Manager-facing view of an application, including its AI screening result. */
@@ -150,6 +151,7 @@ export interface Application {
   vacancy_title: string | null;
   application_status: ApplicationStatus;
   applied_at: string;
+  withdrawn_at?: string | null;
   evaluated: boolean;
   evaluation: Evaluation | null;
 }

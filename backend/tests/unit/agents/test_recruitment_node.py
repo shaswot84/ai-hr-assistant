@@ -66,6 +66,15 @@ class FakeRecruitmentService:
     def list_my_applications(self, actor):
         return self.applications
 
+    def withdraw_application(self, actor, application_id):
+        if actor is None or actor.coarse_role != "CANDIDATE":
+            raise PermissionError("Only candidates can withdraw their applications.")
+        app = next((a for a in self.applications if a.application_id == application_id), None)
+        if app is None:
+            raise ValueError("Application not found.")
+        app.application_status = "WITHDRAWN"
+        return app
+
 
 def _candidate() -> UserContext:
     return UserContext(subject="cand-1", email="c@x.com", display_name="C", coarse_role="CANDIDATE")
@@ -223,3 +232,36 @@ async def test_node_state_shape():
     assert state["confidence"] == 0.0
     assert state["safety"] == "PASS"
     assert state["ui_widget"] is not None
+
+
+@pytest.mark.asyncio
+async def test_candidate_withdraw_application():
+    vacancies, apps = _seeded()
+    service = FakeRecruitmentService(vacancies, apps)
+    state, events = await _run(_candidate(), service, "withdraw my application for data analyst")
+
+    assert "withdrawn" in state["answer"].lower()
+    assert "Data Analyst" in state["answer"]
+    assert state["ui_widget"] is not None
+    assert state["ui_widget"]["type"] == "applications_list"
+    assert apps[0].application_status == "WITHDRAWN"
+
+
+@pytest.mark.asyncio
+async def test_candidate_withdraw_no_active_applications():
+    vacancies, _ = _seeded()
+    service = FakeRecruitmentService(vacancies, [])
+    state, events = await _run(_candidate(), service, "withdraw my application")
+
+    assert "don't have any active applications" in state["answer"].lower()
+
+
+@pytest.mark.asyncio
+async def test_non_candidate_withdraw_blocked():
+    employee = UserContext(
+        subject="emp-1", email="e@x.com", display_name="E", coarse_role="EMPLOYEE"
+    )
+    service = FakeRecruitmentService(*_seeded())
+    state, events = await _run(employee, service, "withdraw my application")
+
+    assert "Only candidates" in state["answer"]

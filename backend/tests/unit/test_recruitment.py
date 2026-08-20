@@ -611,3 +611,87 @@ def test_apply_accepts_real_resume_upload(
     )
     assert res.status_code == 201
     assert res.json()["application_status"] == "APPLIED"
+
+
+def test_withdraw_application_from_applied(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    assert application.application_status == "APPLIED"
+
+    withdrawn = svc.withdraw_application(candidate_context, application.application_id)
+    assert withdrawn.application_status == "WITHDRAWN"
+    assert withdrawn.withdrawn_at is not None
+
+    jobs = db.scalars(
+        select(OutboxJob).where(OutboxJob.aggregate_id == application.application_id)
+    ).all()
+    by_type = {j.job_type: j for j in jobs}
+    assert "SEND_APPLICATION_WITHDRAWN" in by_type
+    assert by_type["SEND_APPLICATION_WITHDRAWN"].payload["to_email"] == candidate_context.email
+    assert "withdrawn" in by_type["SEND_APPLICATION_WITHDRAWN"].payload["subject"].lower()
+
+
+def test_withdraw_application_from_shortlisted(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    svc.decide_application(manager_context, application.application_id, approve=True)
+    assert application.application_status == "SHORTLISTED"
+
+    withdrawn = svc.withdraw_application(candidate_context, application.application_id)
+    assert withdrawn.application_status == "WITHDRAWN"
+    assert withdrawn.withdrawn_at is not None
+
+
+def test_withdraw_already_withdrawn_fails(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    svc.withdraw_application(candidate_context, application.application_id)
+
+    with pytest.raises(ValueError, match="already withdrawn"):
+        svc.withdraw_application(candidate_context, application.application_id)
+
+
+def test_withdraw_rejected_application_fails(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    svc.decide_application(manager_context, application.application_id, approve=False)
+    assert application.application_status == "REJECTED"
+
+    with pytest.raises(ValueError, match="Cannot withdraw"):
+        svc.withdraw_application(candidate_context, application.application_id)
+
+
+def test_withdraw_application_permission_check(db, manager_context, candidate_context):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+
+    with pytest.raises(PermissionError_, match="Only candidates"):
+        svc.withdraw_application(manager_context, application.application_id)
+
+
+def test_withdraw_application_api_endpoint(
+    db, client, manager_context, candidate_context, candidate_password
+):
+    svc = RecruitmentService(db)
+    vacancy = _create_vacancy(svc, manager_context)
+    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": candidate_context.email, "password": candidate_password},
+    )
+    token = login.json()["access_token"]
+
+    res = client.post(
+        f"/api/applications/mine/{application.application_id}/withdraw",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["application_status"] == "WITHDRAWN"
+    assert data["withdrawn_at"] is not None

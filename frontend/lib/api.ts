@@ -165,6 +165,11 @@ export const api = {
   myApplication: (applicationId: string) =>
     request<ApplicationStatusView>(`/api/applications/mine/${applicationId}`),
 
+  withdrawApplication: (applicationId: string) =>
+    request<ApplicationStatusView>(`/api/applications/mine/${applicationId}/withdraw`, {
+      method: "POST",
+    }),
+
   apply: (vacancyId: string, file: File) => {
     const formData = new FormData();
     formData.append("file", file);

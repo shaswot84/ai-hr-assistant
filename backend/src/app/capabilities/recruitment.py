@@ -19,6 +19,7 @@ from app.shared.clock import Clock, get_clock
 # for this week's flow (no re-review), so a decision can never be replayed
 # into a second candidate-facing email or leave a stale rejected_at behind.
 DECIDABLE_STATUSES = {"APPLIED"}
+WITHDRAWABLE_STATUSES = {"APPLIED", "SHORTLISTED"}
 
 
 class PermissionError_(Exception):
@@ -372,6 +373,62 @@ class RecruitmentService:
         application = self._applications.get_for_candidate(application_id, candidate.candidate_id)
         if application is None:
             raise ValueError("Application not found.")
+        return application
+
+    def withdraw_application(
+        self, actor: UserContext, application_id: uuid.UUID
+    ) -> Application:
+        """Withdraw one of the current candidate's own active applications.
+
+        Allowed only from open states (APPLIED or SHORTLISTED). Sets status to
+        WITHDRAWN and withdrawn_at timestamp, enqueues a SEND_APPLICATION_WITHDRAWN
+        notification email, and logs an audit trail event.
+        """
+        if actor.coarse_role != "CANDIDATE":
+            raise PermissionError_("Only candidates can withdraw their applications.")
+        candidate = self._identity.get_candidate(actor)
+        application = self._applications.get_for_candidate(application_id, candidate.candidate_id)
+        if application is None:
+            raise ValueError("Application not found.")
+        if application.application_status == "WITHDRAWN":
+            raise ValueError("Application is already withdrawn.")
+        if application.application_status not in WITHDRAWABLE_STATUSES:
+            raise ValueError(
+                f"Cannot withdraw application with status {application.application_status}."
+            )
+
+        now = self._clock.now()
+        previous_status = application.application_status
+        application.application_status = "WITHDRAWN"
+        application.withdrawn_at = now
+        application.updated_at = now
+        self._applications.save(application)
+
+        vacancy_title = application.vacancy.title if application.vacancy else "the position"
+        self._outbox.enqueue(
+            "SEND_APPLICATION_WITHDRAWN",
+            {
+                "application_id": str(application.application_id),
+                "to_email": self._candidate_email(application),
+                "subject": f"Application withdrawn: {vacancy_title}",
+                "body": (
+                    f"Your application for {vacancy_title} has been withdrawn. "
+                    "Thank you for your interest and we wish you the best in your job search."
+                ),
+            },
+            aggregate_type="application",
+            aggregate_id=application.application_id,
+        )
+        self._audit.record(
+            actor_user_id=self._actor_user_id(actor),
+            action="APPLICATION_WITHDRAWN",
+            target_type="application",
+            target_id=application.application_id,
+            previous_state={"status": previous_status},
+            new_state={"status": application.application_status},
+        )
+
+        self._db.commit()
         return application
 
     def list_all_applications(self, actor: UserContext) -> list[Application]:
