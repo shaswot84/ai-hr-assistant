@@ -379,13 +379,25 @@ export function AssistantChat() {
       const list = await api.listConversations();
       // The API already orders by last activity, but sort here too so the
       // rail is always most-recent-first regardless of backend behavior.
-      setConversations(
-        [...list].sort(
-          (a, b) =>
-            new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime() ||
-            b.conversation_id.localeCompare(a.conversation_id)
-        )
+      const sorted = [...list].sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime() ||
+          b.conversation_id.localeCompare(a.conversation_id)
       );
+      setConversations(sorted);
+      setActiveId((currentActive) => {
+        if (!currentActive) return null;
+        const exists = sorted.some((c) => c.conversation_id === currentActive);
+        if (!exists) {
+          try {
+            localStorage.removeItem(LAST_ACTIVE_KEY);
+          } catch {
+            // ignore
+          }
+          return null;
+        }
+        return currentActive;
+      });
     } catch {
       // offline / not authed; keep current
     }
@@ -470,6 +482,17 @@ export function AssistantChat() {
       })
       .catch((err) => {
         if (cancelled) return;
+        if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
+          setActiveId(null);
+          setMessages([]);
+          setError(null);
+          try {
+            localStorage.removeItem(LAST_ACTIVE_KEY);
+          } catch {
+            // ignore
+          }
+          return;
+        }
         setError(err instanceof ApiError ? err.detail : "Failed to load conversation.");
       })
       .finally(() => {
