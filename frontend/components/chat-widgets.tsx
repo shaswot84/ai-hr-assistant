@@ -380,8 +380,6 @@ function LeaveDatePickerWidget({ widget, onAction, disabled }: ChatWidgetProps) 
 
     if (isHalfDay) {
       messageText = `for half-day on ${selectedStart} (${halfDayPeriod.toLowerCase()})`;
-    } else if (selectedStart === effectiveEnd) {
-      messageText = `for ${selectedStart}`;
     } else {
       messageText = `from ${selectedStart} to ${effectiveEnd}`;
     }

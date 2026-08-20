@@ -119,30 +119,67 @@ def _looks_like_day_phrase(text: str) -> bool:
     return len(words) <= 2
 
 
+_SAME_DAY_PHRASES = (
+    "same day",
+    "same date",
+    "same",
+    "1 day",
+    "one day",
+    "single day",
+    "1-day",
+    "just 1 day",
+    "only 1 day",
+    "just today",
+    "just tomorrow",
+    "that day",
+    "just that day",
+)
+
+
 def resolve_end_date(text: str, start: date, today: date) -> date | None:
     """Resolve the end date mentioned in ``text``, given the start date.
 
-    Supports an explicit date, "for N days" (start + N - 1), or a short
-    weekday phrase ("friday", "next friday") anchored on ``start``. A
-    resolved end before ``start`` is treated as unknown (fail closed) —
-    "from next monday to friday" must not resolve to a friday before the
-    monday.
+    Supports an explicit date (>= start), "same day" / "1 day", "for N days",
+    a weekday phrase anchored on ``start``, or a relative day word ("tomorrow", "today") >= start.
     """
     lowered = text.strip().lower()
+
+    # 1. Same-day / 1-day phrases
+    if any(re.search(rf"\b{re.escape(p)}\b", lowered) for p in _SAME_DAY_PHRASES):
+        return start
+
+    # 2. Explicit date
     explicit = _parse_explicit(lowered)
     if explicit is not None:
         return explicit if explicit >= start else None
+
+    # 3. "for N days" or "N days"
     m = _FOR_DAYS_RE.search(lowered)
     if m is not None:
-        return start + timedelta(days=int(m.group(1)) - 1)
+        days_count = int(m.group(1))
+        return start + timedelta(days=max(0, days_count - 1))
+
+    m_days = re.search(r"\b(\d+)\s+days?\b", lowered)
+    if m_days is not None and _looks_like_day_phrase(lowered):
+        days_count = int(m_days.group(1))
+        return start + timedelta(days=max(0, days_count - 1))
+
     if not _looks_like_day_phrase(lowered):
         return None
+
+    # 4. Weekdays anchored on start (e.g. "from next monday to friday")
     m = _NEXT_WEEKDAY_RE.search(lowered)
     if m is not None:
         return start + _weekday_delta(m.group(1), start, force_next=True)
     m = _WEEKDAY_RE.search(lowered)
     if m is not None:
         return start + _weekday_delta(m.group(1), start)
+
+    # 5. Relative day ("tomorrow", "today", "day after tomorrow", "in N days")
+    rel = _resolve_relative_day(lowered, today)
+    if rel is not None:
+        return rel if rel >= start else None
+
     return None
 
 
@@ -150,8 +187,8 @@ def extract_dates(text: str, today: date) -> tuple[date | None, date | None]:
     """Both dates from one message, when present: ``(start, end)``.
 
     Handles "from monday to friday", "tomorrow for 3 days", "next monday to
-    next friday", "on 2026-08-14 for 2 days", ... Either half may be
-    ``None`` when it cannot be resolved — never guessed.
+    next friday", "on 2026-08-14 for 2 days", "1 day annual leave tomorrow", ...
+    Either half may be ``None`` when it cannot be resolved — never guessed.
     """
     lowered = text.lower()
     m = _RANGE_RE.search(lowered)
@@ -161,9 +198,19 @@ def extract_dates(text: str, today: date) -> tuple[date | None, date | None]:
             return None, None
         return start, resolve_end_date(m.group(2), start, today)
 
+    # Check for single-day leave indicators in the initial request
+    is_single_day = bool(
+        re.search(r"\b(1\s*day|one\s*day|single\s*day|1-day|same\s*day|day\s*off)\b", lowered)
+        or re.search(r"\btake\s+.+?\s+off\b", lowered)
+    )
+
     start = resolve_start_date(lowered, today)
     if start is None:
         return None, None
+
+    if is_single_day:
+        return start, start
+
     fm = _FOR_DAYS_RE.search(lowered)
     if fm is not None:
         return start, start + timedelta(days=int(fm.group(1)) - 1)

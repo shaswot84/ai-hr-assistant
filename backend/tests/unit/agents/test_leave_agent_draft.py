@@ -780,3 +780,75 @@ async def test_team_out_of_office_interception_in_leave_agent(
     assert result.tool_called == "get_team_out_of_office"
     assert result.ui_widget is not None
     assert result.ui_widget["type"] == "team_out_of_office"
+
+
+@pytest.mark.asyncio
+async def test_single_day_leave_staged_in_one_turn(
+    db, manager_context, employee_context
+):
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    state = _state(employee_context)
+
+    # Next Tuesday
+    today = get_clock().today()
+    days_to_tue = ((1 - today.weekday()) % 7) or 7
+    tue = today + timedelta(days=days_to_tue)
+
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message=f"i want to apply for 1 day annual leave on {tue.isoformat()}",
+    )
+
+    assert provider.calls == 0
+    assert state.pending_confirmation is not None
+    assert state.pending_confirmation.tool == "submit_leave_request"
+    assert state.pending_confirmation.args["start_date"] == tue.isoformat()
+    assert state.pending_confirmation.args["end_date"] == tue.isoformat()
+    assert "1 working day" in result.reply.lower() or "1 day" in result.reply.lower() or tue.isoformat() in result.reply
+
+
+@pytest.mark.asyncio
+async def test_single_day_leave_follow_up_with_same_day(
+    db, manager_context, employee_context
+):
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    state = _state(employee_context)
+
+    today = get_clock().today()
+    days_to_tue = ((1 - today.weekday()) % 7) or 7
+    tue = today + timedelta(days=days_to_tue)
+
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+    # Turn 1: Start date only
+    res1 = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message=f"i want annual leave on {tue.isoformat()}",
+    )
+    assert provider.calls == 0
+    assert state.draft is not None
+    assert state.draft.start_date == tue
+    assert state.draft.end_date is None
+
+    # Turn 2: Follow up with "same day" or the same date
+    res2 = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message="same day",
+    )
+    assert provider.calls == 0
+    assert state.draft is None
+    assert state.pending_confirmation is not None
+    assert state.pending_confirmation.tool == "submit_leave_request"
+    assert state.pending_confirmation.args["start_date"] == tue.isoformat()
+    assert state.pending_confirmation.args["end_date"] == tue.isoformat()

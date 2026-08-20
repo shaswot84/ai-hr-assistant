@@ -857,9 +857,14 @@ def _intercept_draft_turn(
         )
 
     if start is None and end is None and state.draft is not None and state.draft.start_date is not None:
-        # An end-only follow-up ("for 3 days", "to friday") resolves against
+        # An end-only follow-up ("for 3 days", "to friday", "same day", "1 day") resolves against
         # the draft's already-known start date, never against the model.
         end = resolve_end_date(user_message, state.draft.start_date, today)
+    elif start is not None and end is None and state.draft is not None and state.draft.start_date is not None:
+        # If the user answered the end-date prompt with a single date (e.g. repeating "tomorrow" or "2026-08-25")
+        if start >= state.draft.start_date:
+            end = start
+            start = None
 
     had_type = draft.leave_type_name is not None
     if draft.leave_type_name is None:

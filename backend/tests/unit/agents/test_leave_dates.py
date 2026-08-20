@@ -116,5 +116,28 @@ def test_extract_dates_fails_closed():
     assert extract_dates("", TODAY) == (None, None)
 
 
+def test_resolve_end_same_day():
+    start = date(2026, 8, 14)
+    assert resolve_end_date("same day", start, TODAY) == start
+    assert resolve_end_date("1 day", start, TODAY) == start
+    assert resolve_end_date("just 1 day", start, TODAY) == start
+    assert resolve_end_date("tomorrow", start, TODAY) == start
+
+
+def test_extract_dates_single_day():
+    assert extract_dates("apply 1 day annual leave tomorrow", TODAY) == (
+        date(2026, 8, 14),
+        date(2026, 8, 14),
+    )
+    assert extract_dates("take tomorrow off", TODAY) == (
+        date(2026, 8, 14),
+        date(2026, 8, 14),
+    )
+    assert extract_dates("from 2026-09-01 to 2026-09-01", TODAY) == (
+        date(2026, 9, 1),
+        date(2026, 9, 1),
+    )
+
+
 def test_format_short():
     assert format_short(date(2026, 8, 14)) == "Fri, Aug 14, 2026"
