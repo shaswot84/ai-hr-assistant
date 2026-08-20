@@ -531,3 +531,38 @@ export interface TeamMemberOutOfOffice {
   half_day_period: string | null;
   status: LeaveRequestStatus;
 }
+
+// ---- audit log viewer --------------------------------------------------
+
+export interface AuditLogEntry {
+  audit_id: string;
+  actor_user_id: string | null;
+  actor_name: string | null;
+  actor_email: string | null;
+  actor_role: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  authorization_result: string;
+  previous_state: Record<string, unknown> | null;
+  new_state: Record<string, unknown> | null;
+  request_id: string | null;
+  created_at: string;
+}
+
+export interface AuditLogsResponse {
+  items: AuditLogEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface AuditFilterOptions {
+  actions: string[];
+  target_types: string[];
+  total_count: number;
+  today_count: number;
+  unique_actors_count: number;
+}
+

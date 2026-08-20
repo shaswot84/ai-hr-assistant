@@ -44,6 +44,7 @@ from app.shared.clock import get_clock
 # full app here would crash collection. Knowledge/RAG has its own test suite
 # with its own (Postgres-backed) fixtures — out of scope for this one.
 def _build_test_app() -> FastAPI:
+    from app.api.routes import audit as audit_router
     from app.api.routes import auth as auth_router
     from app.api.routes import leave as leave_router
     from app.api.routes import people as people_router
@@ -52,6 +53,7 @@ def _build_test_app() -> FastAPI:
 
     app = FastAPI()
     app.include_router(auth_router.router)
+    app.include_router(audit_router.router)
     app.include_router(recruitment_router.router)
     app.include_router(settings_router.router)
     app.include_router(people_router.router)
