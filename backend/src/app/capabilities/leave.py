@@ -334,8 +334,9 @@ class LeaveService:
                 raise ValueError("Cannot request half-day leave on a weekend.")
             if start_date in holiday_map:
                 h = holiday_map[start_date]
+                h_type = "an annual recurring company holiday" if h.is_recurring_yearly else "a custom company holiday created by the company"
                 raise ValueError(
-                    f"Cannot request leave on a company holiday: {h.name} ({start_date})."
+                    f"Cannot request leave on {start_date}: '{h.name}' is {h_type}. The office is closed on this day, so no leave is required."
                 )
             if half_day_period not in ("MORNING", "AFTERNOON"):
                 raise ValueError("Half-day period must be either 'MORNING' or 'AFTERNOON'.")
@@ -358,12 +359,7 @@ class LeaveService:
                     working_days += 1
             cur += timedelta(days=1)
 
-        if working_days == 0:
-            raise ValueError(
-                "Selected date range contains no working days (only weekends or company holidays)."
-            )
-
-        return Decimal(working_days), holidays_in_range
+        return Decimal(str(working_days)), holidays_in_range
 
     # ---- requests --------------------------------------------------------
 
@@ -390,9 +386,22 @@ class LeaveService:
         if start_date < self._clock.today():
             raise ValueError("Leave cannot start in the past.")
 
-        total_days, _ = self.calculate_working_days(
+        total_days, holidays_in_range = self.calculate_working_days(
             start_date, end_date, is_half_day=is_half_day, half_day_period=half_day_period
         )
+        if total_days <= Decimal("0"):
+            if holidays_in_range:
+                h_details = [
+                    f"'{h.name}' ({'annual recurring holiday' if h.is_recurring_yearly else 'custom company holiday created by the company'})"
+                    for h in holidays_in_range
+                ]
+                raise ValueError(
+                    f"The selected period ({start_date} to {end_date}) falls on company holiday(s): {', '.join(h_details)}. "
+                    f"The office is closed on these days, so no leave deduction or request is needed."
+                )
+            raise ValueError(
+                f"The selected period ({start_date} to {end_date}) falls entirely on weekends. No working days to request leave for."
+            )
 
         self.check_request_conflicts(
             actor,

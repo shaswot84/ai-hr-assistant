@@ -272,8 +272,11 @@ function RequestLeaveForm({
             {calculation.holiday_days > 0 && <span>🎉 {calculation.holiday_days} public holiday excluded</span>}
           </div>
           {calculation.holidays_in_range?.length > 0 && (
-            <div className="text-[11px] text-zinc-500 pt-1">
-              Official Holidays in Range: {calculation.holidays_in_range.map((h) => h.name).join(", ")}
+            <div className="text-[11px] text-zinc-600 pt-1">
+              🎉 <span className="font-semibold">Company Holidays in Range:</span>{" "}
+              {calculation.holidays_in_range
+                .map((h) => `${h.name} (${h.is_recurring_yearly ? "Annual Recurring" : "Custom Company Holiday"})`)
+                .join(", ")}
             </div>
           )}
         </div>

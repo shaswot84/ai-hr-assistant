@@ -101,7 +101,11 @@ request, propose approving or rejecting it with decide_leave_request.
 leave types, requests, cancelling, approving, or submitting — DO it in \
 the SAME turn: call the matching read tool, or drive the flow. Never reply with a menu \
 of capabilities when the intent is clear; a menu is only appropriate when you genuinely \
-cannot tell what the user wants."""
+cannot tell what the user wants.
+16. When the employee's requested leave dates fall on or include official company holidays, \
+explicitly mention them in your response (specifying whether each is an annual recurring \
+company holiday or a custom company holiday created by the company) and note that no leave \
+days are deducted for those holidays."""
 
 _RESPONSE_SCHEMA_TEMPLATE = """Respond with a single JSON object of exactly this shape:
 {{
@@ -227,7 +231,13 @@ def build_turn_prompt(
     return "\n".join(parts)
 
 
-def summarize_for_confirmation(tool_name: str, args: dict) -> str:
+def summarize_for_confirmation(
+    tool_name: str,
+    args: dict,
+    *,
+    working_days: Any | None = None,
+    holidays: list[Any] | None = None,
+) -> str:
     """Plain-language summary of a staged write action, for the confirmation prompt."""
     if tool_name == "submit_leave_request":
         reason = f", reason: {args['reason']}" if args.get("reason") else ""
@@ -237,10 +247,20 @@ def summarize_for_confirmation(tool_name: str, args: dict) -> str:
             return (
                 f"Submit {article} half-day {args['leave_type_name']} request on {args['start_date']}{period}{reason}?"
             )
-        return (
+        base = (
             f"Submit {article} {args['leave_type_name']} request from {args['start_date']} "
-            f"to {args['end_date']}{reason}?"
+            f"to {args['end_date']}"
         )
+        if holidays:
+            h_details = []
+            for h in holidays:
+                name = getattr(h, "name", h.get("name") if isinstance(h, dict) else str(h))
+                is_recurring = getattr(h, "is_recurring_yearly", h.get("is_recurring_yearly") if isinstance(h, dict) else False)
+                kind = "annual recurring holiday" if is_recurring else "custom company holiday created by the company"
+                h_details.append(f"'{name}' ({kind})")
+            days_str = f"{working_days} working day" if str(working_days) == "1" else f"{working_days} working days"
+            base += f" ({days_str}, excluding company holiday(s): {', '.join(h_details)})"
+        return f"{base}{reason}?"
     if tool_name == "cancel_leave_request":
         return f"Cancel leave request {args['request_number']}?"
     if tool_name == "decide_leave_request":

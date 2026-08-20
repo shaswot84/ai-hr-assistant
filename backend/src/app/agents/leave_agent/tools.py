@@ -344,15 +344,15 @@ def preflight_submit(
     end_date: date,
     is_half_day: bool = False,
     half_day_period: str | None = None,
-) -> None:
+) -> tuple[Decimal, list[Any]]:
     """Fail fast BEFORE a submission is staged/confirmed.
 
     Called at stage time (agent.py `_handle_stage`) with the employee's
     real balance from `service.list_my_balance` — never from the model's
     words. Raises ToolError with the exact reason the request can't
     succeed (insufficient balance, unknown type, broken date range,
-    dates overlapping an existing request, or a consecutive run past the
-    type's cap).
+    holiday/weekend date, dates overlapping an existing request, or a
+    consecutive run past the type's cap).
     """
     _require_employee_access(actor)
     if end_date < start_date:
@@ -375,18 +375,37 @@ def preflight_submit(
             f"You don't have a {leave_type.leave_name} balance for {start_date.year}."
         )
     remaining = row["remaining_days"]
-    total_days, _ = _call_service(
-        service.calculate_working_days,
-        start_date,
-        end_date,
-        is_half_day=is_half_day,
-        half_day_period=half_day_period,
-    )
+    try:
+        total_days, holidays_in_range = _call_service(
+            service.calculate_working_days,
+            start_date,
+            end_date,
+            is_half_day=is_half_day,
+            half_day_period=half_day_period,
+        )
+    except ValueError as err:
+        raise ToolError(str(err)) from err
+
+    if total_days <= Decimal("0"):
+        if holidays_in_range:
+            h_details = [
+                f"'{h.name}' ({'annual recurring holiday' if h.is_recurring_yearly else 'custom company holiday created by the company'})"
+                for h in holidays_in_range
+            ]
+            raise ToolError(
+                f"You do not need to apply for leave: the requested date(s) ({start_date}{f' to {end_date}' if start_date != end_date else ''}) "
+                f"fall on official company holiday: {'; '.join(h_details)}. The office is closed on this day and 0 leave days will be deducted."
+            )
+        raise ToolError(
+            f"The requested dates ({start_date} to {end_date}) fall entirely on weekends. No leave days will be deducted."
+        )
+
     if total_days > remaining:
         raise ToolError(
             f"Not enough {leave_type.leave_name} balance: "
             f"{remaining} day(s) remaining, {total_days} requested."
         )
+    return total_days, holidays_in_range
 
 
 def mentioned_leave_type(service: LeaveService, text: str) -> str | None:

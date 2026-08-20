@@ -678,7 +678,7 @@ def _stage_draft(
     canonical = _draft_canonical(draft)
     try:
         preflight_args = validate_args("submit_leave_request", canonical)
-        preflight_submit(
+        working_days, holidays_in_range = preflight_submit(
             service,
             actor,
             leave_type_name=preflight_args["leave_type_name"],
@@ -690,7 +690,12 @@ def _stage_draft(
     except ToolError as err:
         return _reply(state, str(err), clock=clock)
 
-    summary = prompts.summarize_for_confirmation("submit_leave_request", canonical)
+    summary = prompts.summarize_for_confirmation(
+        "submit_leave_request",
+        canonical,
+        working_days=working_days,
+        holidays=holidays_in_range,
+    )
     state.stage("submit_leave_request", canonical, summary, clock=clock)
     state.clear_draft(clock=clock)
     return _reply(
@@ -1218,24 +1223,35 @@ async def _handle_stage(
             # Preflight needs real date objects (not ISO strings) and does
             # not take `reason` (the draft always carries one).
             preflight_args = validate_args(tool_name, canonical)
-            preflight_submit(
+            working_days, holidays_in_range = preflight_submit(
                 service,
                 actor,
                 leave_type_name=preflight_args["leave_type_name"],
                 start_date=preflight_args["start_date"],
                 end_date=preflight_args["end_date"],
+                is_half_day=preflight_args.get("is_half_day", False),
+                half_day_period=preflight_args.get("half_day_period"),
+            )
+            summary = prompts.summarize_for_confirmation(
+                tool_name,
+                canonical,
+                working_days=working_days,
+                holidays=holidays_in_range,
             )
         elif tool_name == "cancel_leave_request":
             preflight_cancel(service, actor, canonical["request_number"])
+            summary = prompts.summarize_for_confirmation(tool_name, canonical)
         elif tool_name == "decide_leave_request":
             preflight_hr_reference(service, actor, canonical["request_number"])
+            summary = prompts.summarize_for_confirmation(tool_name, canonical)
+        else:
+            summary = prompts.summarize_for_confirmation(tool_name, canonical)
     except ToolError as err:
         return _reply(state, str(err), clock=clock, raw_model_action=raw_model_action)
 
     # Deterministic summary, not the model's own phrasing for this turn —
     # what the employee is asked to confirm must never depend solely on
     # the model getting the wording right.
-    summary = prompts.summarize_for_confirmation(tool_name, canonical)
     state.stage(tool_name, canonical, summary, clock=clock)
     return _reply(
         state, summary, clock=clock, raw_model_action=raw_model_action,

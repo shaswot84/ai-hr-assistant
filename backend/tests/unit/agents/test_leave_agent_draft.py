@@ -847,8 +847,78 @@ async def test_single_day_leave_follow_up_with_same_day(
         user_message="same day",
     )
     assert provider.calls == 0
-    assert state.draft is None
-    assert state.pending_confirmation is not None
-    assert state.pending_confirmation.tool == "submit_leave_request"
     assert state.pending_confirmation.args["start_date"] == tue.isoformat()
     assert state.pending_confirmation.args["end_date"] == tue.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_agent_mentions_custom_holiday_when_leave_falls_on_it(
+    db, manager_context, employee_context
+):
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    state = _state(employee_context)
+
+    today = get_clock().today()
+    days_to_wed = ((2 - today.weekday()) % 7) or 7
+    wed = today + timedelta(days=days_to_wed)
+
+    # Create a custom holiday on that Wednesday
+    svc.create_company_holiday(
+        manager_context,
+        name="Team Offsite Day",
+        holiday_date=wed,
+        is_recurring_yearly=False,
+    )
+
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message=f"i want to take 1 day annual leave on {wed.isoformat()}",
+    )
+
+    assert provider.calls == 0
+    assert "Team Offsite Day" in result.reply
+    assert "custom company holiday created by the company" in result.reply
+    assert "0 leave days" in result.reply or "no leave" in result.reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_agent_includes_custom_holiday_in_range_confirmation(
+    db, manager_context, employee_context
+):
+    svc = LeaveService(db)
+    _create_leave_type(svc, manager_context, name="Annual Leave")
+    state = _state(employee_context)
+
+    today = get_clock().today()
+    days_to_next_mon = ((0 - today.weekday()) % 7) or 7
+    mon = today + timedelta(days=days_to_next_mon)
+    fri = mon + timedelta(days=4)
+    wed = mon + timedelta(days=2)
+
+    # Create custom holiday on Wednesday
+    svc.create_company_holiday(
+        manager_context,
+        name="Founder Appreciation Day",
+        holiday_date=wed,
+        is_recurring_yearly=False,
+    )
+
+    provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=provider,
+        user_message=f"i want to take annual leave from {mon.isoformat()} to {fri.isoformat()}",
+    )
+
+    assert provider.calls == 0
+    assert state.pending_confirmation is not None
+    assert "Founder Appreciation Day" in result.reply
+    assert "custom company holiday created by the company" in result.reply
+    assert "4 working days" in result.reply

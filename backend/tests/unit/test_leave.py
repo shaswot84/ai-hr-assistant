@@ -670,3 +670,51 @@ def test_company_holiday_and_team_calendar_http(
     )
     assert del_res.status_code == 200
 
+
+def test_leave_request_on_custom_holiday_fails_with_mention(db, manager_context, employee_context):
+    svc = LeaveService(db)
+    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(10))
+
+    # Create a custom one-off holiday on Tuesday 2026-09-15
+    tue = date(2026, 9, 15)
+    svc.create_company_holiday(
+        manager_context,
+        name="Company Retreat Day",
+        holiday_date=tue,
+        is_recurring_yearly=False,
+    )
+
+    with pytest.raises(ValueError, match="Company Retreat Day") as exc_info:
+        svc.request_leave(
+            employee_context,
+            leave_type_id=leave_type.leave_type_id,
+            start_date=tue,
+            end_date=tue,
+        )
+    assert "custom company holiday created by the company" in str(exc_info.value)
+    assert "no leave deduction or request is needed" in str(exc_info.value)
+
+
+def test_leave_request_on_annual_recurring_holiday_fails_with_mention(db, manager_context, employee_context):
+    svc = LeaveService(db)
+    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(10))
+
+    # Create an annual recurring holiday
+    fri = date(2026, 9, 18)
+    svc.create_company_holiday(
+        manager_context,
+        name="Annual Gala Day",
+        holiday_date=fri,
+        is_recurring_yearly=True,
+    )
+
+    with pytest.raises(ValueError, match="Annual Gala Day") as exc_info:
+        svc.request_leave(
+            employee_context,
+            leave_type_id=leave_type.leave_type_id,
+            start_date=fri,
+            end_date=fri,
+        )
+    assert "annual recurring holiday" in str(exc_info.value)
+
+

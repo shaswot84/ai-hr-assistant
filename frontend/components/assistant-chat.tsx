@@ -374,6 +374,21 @@ export function AssistantChat() {
   // below) — prevents a failed regeneration from looping.
   const recoveredRef = useRef<Set<string>>(new Set());
 
+  // Voice Input (Web Speech API Speech-to-Text)
+  const [isListening, setIsListening] = useState(false);
+  const [speechSupported, setSpeechSupported] = useState(true);
+  const [speechInterim, setSpeechInterim] = useState("");
+  const recognitionRef = useRef<any>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const hasSpeech =
+        "SpeechRecognition" in window || "webkitSpeechRecognition" in window;
+      setSpeechSupported(Boolean(hasSpeech));
+    }
+  }, []);
+
   const refreshConversations = useCallback(async () => {
     try {
       const list = await api.listConversations();
@@ -563,6 +578,135 @@ export function AssistantChat() {
   const handleScroll = useCallback(() => {
     setAtBottom(isNearBottom());
   }, [isNearBottom]);
+
+  const stopListening = useCallback(() => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
+    setIsListening(false);
+    setSpeechInterim("");
+  }, []);
+
+  const startListening = useCallback(() => {
+    if (typeof window === "undefined" || streaming) return;
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setError("Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.");
+      return;
+    }
+
+    try {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch {
+          // ignore
+        }
+      }
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = typeof navigator !== "undefined" ? navigator.language || "en-US" : "en-US";
+
+      recognition.onstart = () => {
+        setIsListening(true);
+        setSpeechInterim("");
+        setError(null);
+      };
+
+      recognition.onresult = (event: any) => {
+        let interim = "";
+        let finalTranscript = "";
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const transcript = event.results[i][0]?.transcript || "";
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interim += transcript;
+          }
+        }
+
+        if (interim) {
+          setSpeechInterim(interim);
+        }
+
+        if (finalTranscript) {
+          setInput((prev) => {
+            const trimmed = prev.trim();
+            const separator = trimmed.length > 0 ? " " : "";
+            const updated = trimmed + separator + finalTranscript.trim();
+            writeDraft(activeId ?? "new", updated);
+            return updated;
+          });
+          setSpeechInterim("");
+          if (textareaRef.current) {
+            textareaRef.current.focus();
+          }
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        setIsListening(false);
+        setSpeechInterim("");
+        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          setError("Microphone access was denied. Please allow microphone permissions in your browser.");
+        } else if (event.error === "no-speech") {
+          // Silent timeout or no audio detected
+        } else if (event.error === "network") {
+          setError("Speech recognition network error. Please check your connection.");
+        } else {
+          console.warn("Speech recognition error:", event.error);
+        }
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+        setSpeechInterim("");
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      setIsListening(false);
+      setSpeechInterim("");
+      setError("Failed to start speech recognition.");
+    }
+  }, [streaming, activeId]);
+
+  const toggleVoiceInput = useCallback(() => {
+    if (isListening) {
+      stopListening();
+    } else {
+      startListening();
+    }
+  }, [isListening, startListening, stopListening]);
+
+  // Clean up speech recognition on unmount or when stream begins
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (streaming && isListening) {
+      stopListening();
+    }
+  }, [streaming, isListening, stopListening]);
 
   function selectConversation(id: string) {
     if (streaming) return;
@@ -1099,9 +1243,34 @@ export function AssistantChat() {
           <div className="mx-4 mb-2 notice border-red-200 bg-red-50 text-red-700">{error}</div>
         )}
 
-        <form onSubmit={handleSend} className="border-t border-zinc-200 p-3 sm:p-4">
+        <form onSubmit={handleSend} className="border-t border-zinc-200 p-3 sm:p-4 bg-white/50 backdrop-blur-sm">
+          {isListening && (
+            <div className="flex items-center justify-between gap-2 px-3.5 py-2 mb-2.5 bg-rose-50 border border-rose-200/90 rounded-xl text-rose-700 text-xs shadow-sm animate-fade-in">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="relative flex h-3 w-3 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-rose-600"></span>
+                </span>
+                <span className="font-semibold text-rose-900 shrink-0">Listening…</span>
+                {speechInterim ? (
+                  <span className="italic text-zinc-800 font-medium truncate">&ldquo;{speechInterim}&rdquo;</span>
+                ) : (
+                  <span className="text-rose-600/80 truncate">Speak into your microphone…</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={stopListening}
+                className="shrink-0 text-[11px] font-semibold text-rose-700 hover:text-rose-900 bg-rose-100/90 hover:bg-rose-200 px-2.5 py-1 rounded-lg transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          )}
+
           <div className="flex items-end gap-2">
             <textarea
+              ref={textareaRef}
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);
@@ -1110,6 +1279,7 @@ export function AssistantChat() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
+                  if (isListening) stopListening();
                   handleSend(e);
                 }
               }}
@@ -1119,11 +1289,48 @@ export function AssistantChat() {
               className="input max-h-40 min-h-[44px] flex-1 resize-y"
               aria-label="Message"
             />
+
+            {/* Voice Input (Speech-to-Text) Button */}
+            <button
+              type="button"
+              onClick={toggleVoiceInput}
+              disabled={streaming || !speechSupported}
+              className={`inline-flex items-center justify-center h-[44px] w-[44px] rounded-xl transition-all shrink-0 ${
+                isListening
+                  ? "bg-rose-600 hover:bg-rose-700 text-white shadow-md ring-4 ring-rose-200/80 animate-pulse"
+                  : "border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 hover:border-zinc-300 active:scale-95 shadow-sm"
+              } ${!speechSupported ? "opacity-40 cursor-not-allowed" : ""}`}
+              title={
+                !speechSupported
+                  ? "Voice input not supported in this browser"
+                  : isListening
+                  ? "Listening... Click to stop"
+                  : "Voice input (Speak to Type)"
+              }
+              aria-label={isListening ? "Stop voice input" : "Start voice input"}
+            >
+              {isListening ? (
+                <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+                  <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+                </svg>
+              ) : (
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+                  />
+                </svg>
+              )}
+            </button>
+
             {streaming ? (
               <button
                 type="button"
                 onClick={() => abortRef.current?.abort()}
-                className="btn-secondary shrink-0"
+                className="btn-secondary shrink-0 h-[44px] px-3.5"
               >
                 <span aria-hidden="true" className="h-3 w-3 rounded-[2px] bg-current" />
                 Stop
@@ -1132,7 +1339,7 @@ export function AssistantChat() {
               <button
                 type="submit"
                 disabled={!input.trim()}
-                className="btn-primary shrink-0"
+                className="btn-primary shrink-0 h-[44px] w-[44px] inline-flex items-center justify-center p-0"
                 aria-label="Send"
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
