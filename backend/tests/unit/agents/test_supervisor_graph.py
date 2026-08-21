@@ -344,26 +344,26 @@ class _FakeLeaveType:
 class _FakeRecruitmentService:
     """An empty RecruitmentService stub — enough for the apply deferral path."""
 
-    def list_vacancies(self, actor=None):
+    async def list_vacancies(self, actor=None):
         return []
 
-    def list_all_applications(self, actor):
+    async def list_all_applications(self, actor):
         return []
 
-    def list_vacancy_applications(self, actor, vacancy_id):
+    async def list_vacancy_applications(self, actor, vacancy_id):
         return []
 
-    def list_my_applications(self, actor):
+    async def list_my_applications(self, actor):
         return []
 
 
 class _FakeLeaveService:
     """A LeaveService stub for the knowledge node's balance enrichment."""
 
-    def list_leave_types(self):
+    async def list_leave_types(self):
         return [_FakeLeaveType("Sick Leave")]
 
-    def list_my_balance(self, actor, year=None):
+    async def list_my_balance(self, actor, year=None):
         return [
             {
                 "leave_type": _FakeLeaveType("Sick Leave"),
@@ -373,6 +373,7 @@ class _FakeLeaveService:
                 "remaining_days": "4.5",
             }
         ]
+
 
 
 @pytest.mark.asyncio

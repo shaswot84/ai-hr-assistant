@@ -6,12 +6,12 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_role
 from app.contracts.auth import UserContext
-from app.db.sync_session import get_db
+from app.db.session import get_db
 from app.repositories.audit import AuditRepo
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
@@ -56,7 +56,7 @@ class AuditFiltersOut(BaseModel):
 
 
 @router.get("/logs", response_model=AuditLogsListOut)
-def list_audit_logs(
+async def list_audit_logs(
     page: int = Query(1, ge=1, description="1-indexed page number"),
     page_size: int = Query(25, ge=1, le=200, description="Number of items per page"),
     action: str | None = Query(None, description="Filter by action name"),
@@ -68,12 +68,12 @@ def list_audit_logs(
     start_date: datetime | None = Query(None, description="Earliest created_at timestamp (inclusive)"),
     end_date: datetime | None = Query(None, description="Latest created_at timestamp (inclusive)"),
     user: UserContext = Depends(require_role("HR_ADMIN")),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """List audit log entries with multi-attribute filtering, search, and pagination."""
     repo = AuditRepo(db)
     offset = (page - 1) * page_size
-    items, total = repo.list_logs(
+    items, total = await repo.list_logs(
         action=action,
         target_type=target_type,
         actor_user_id=actor_user_id,
@@ -115,13 +115,13 @@ def list_audit_logs(
 
 
 @router.get("/filters", response_model=AuditFiltersOut)
-def get_audit_filter_options(
+async def get_audit_filter_options(
     user: UserContext = Depends(require_role("HR_ADMIN")),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Fetch distinct actions, target types, and aggregate stats for filter menus."""
     repo = AuditRepo(db)
-    opts = repo.get_filter_options()
+    opts = await repo.get_filter_options()
     return AuditFiltersOut(
         actions=opts["actions"],
         target_types=opts["target_types"],
@@ -132,14 +132,14 @@ def get_audit_filter_options(
 
 
 @router.get("/logs/{audit_id}", response_model=AuditLogItemOut)
-def get_audit_log_detail(
+async def get_audit_log_detail(
     audit_id: uuid.UUID,
     user: UserContext = Depends(require_role("HR_ADMIN")),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Fetch a single enriched audit log entry by its UUID."""
     repo = AuditRepo(db)
-    entry = repo.get_by_id(audit_id)
+    entry = await repo.get_by_id(audit_id)
     if entry is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audit log entry not found")
 
@@ -158,3 +158,4 @@ def get_audit_log_detail(
         request_id=entry.request_id,
         created_at=entry.created_at,
     )
+

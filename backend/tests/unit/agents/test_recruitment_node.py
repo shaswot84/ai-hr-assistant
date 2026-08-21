@@ -52,21 +52,21 @@ class FakeRecruitmentService:
         self.vacancies = vacancies or []
         self.applications = applications or []
 
-    def list_vacancies(self, actor=None):
+    async def list_vacancies(self, actor=None):
         if actor is None or actor.coarse_role == "CANDIDATE":
             return [v for v in self.vacancies if v.status == "OPEN"]
         return self.vacancies
 
-    def list_all_applications(self, actor):
+    async def list_all_applications(self, actor):
         return self.applications
 
-    def list_vacancy_applications(self, actor, vacancy_id):
+    async def list_vacancy_applications(self, actor, vacancy_id):
         return [a for a in self.applications if a.vacancy.vacancy_id == vacancy_id]
 
-    def list_my_applications(self, actor):
+    async def list_my_applications(self, actor):
         return self.applications
 
-    def withdraw_application(self, actor, application_id):
+    async def withdraw_application(self, actor, application_id):
         if actor is None or actor.coarse_role != "CANDIDATE":
             raise PermissionError("Only candidates can withdraw their applications.")
         app = next((a for a in self.applications if a.application_id == application_id), None)

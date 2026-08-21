@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, time, timezone
 from typing import Any
 
-from sqlalchemy import desc, distinct, func, or_, select, cast, String
-from sqlalchemy.orm import Session
+from sqlalchemy import cast, desc, distinct, func, or_, select, String
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.audit import AuditLog
 from app.domain.identity import ApplicationUser, Person
@@ -35,12 +35,12 @@ class EnrichedAuditLog:
 class AuditRepo:
     """Read and write data access for the audit log (see `domain.audit.AuditLog`)."""
 
-    def __init__(self, db: Session, clock: Clock | None = None) -> None:
-        """Bind the repository to a DB session and (optionally) a Clock."""
+    def __init__(self, db: AsyncSession, clock: Clock | None = None) -> None:
+        """Bind the repository to an async DB session and (optionally) a Clock."""
         self._db = db
         self._clock = clock or get_clock()
 
-    def record(
+    async def record(
         self,
         *,
         actor_user_id: uuid.UUID | None,
@@ -63,10 +63,10 @@ class AuditRepo:
             created_at=self._clock.now(),
         )
         self._db.add(entry)
-        self._db.flush()
+        await self._db.flush()
         return entry
 
-    def list_logs(
+    async def list_logs(
         self,
         *,
         action: str | None = None,
@@ -136,11 +136,12 @@ class AuditRepo:
 
         # Count total matching rows
         count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
-        total = self._db.scalar(count_stmt) or 0
+        total = (await self._db.scalar(count_stmt)) or 0
 
         # Fetch page slice
         query = stmt.order_by(desc(AuditLog.created_at)).offset(offset).limit(limit)
-        results = self._db.execute(query).all()
+        exec_res = await self._db.execute(query)
+        results = exec_res.all()
 
         items: list[EnrichedAuditLog] = []
         for log_row, role, first_name, last_name, email in results:
@@ -170,7 +171,7 @@ class AuditRepo:
 
         return items, total
 
-    def get_by_id(self, audit_id: uuid.UUID) -> EnrichedAuditLog | None:
+    async def get_by_id(self, audit_id: uuid.UUID) -> EnrichedAuditLog | None:
         """Fetch a single enriched audit log entry by audit_id."""
         stmt = (
             select(
@@ -184,7 +185,8 @@ class AuditRepo:
             .outerjoin(Person, ApplicationUser.person_id == Person.person_id)
             .where(AuditLog.audit_id == audit_id)
         )
-        row = self._db.execute(stmt).first()
+        exec_res = await self._db.execute(stmt)
+        row = exec_res.first()
         if not row:
             return None
 
@@ -211,11 +213,12 @@ class AuditRepo:
             created_at=log_row.created_at,
         )
 
-    def get_filter_options(self) -> dict[str, Any]:
+    async def get_filter_options(self) -> dict[str, Any]:
         """Return distinct actions, target types, and aggregate stats."""
         # Distinct actions
         actions_stmt = select(distinct(AuditLog.action)).order_by(AuditLog.action)
-        actions = [a for a in self._db.scalars(actions_stmt).all() if a]
+        actions_res = await self._db.scalars(actions_stmt)
+        actions = [a for a in actions_res.all() if a]
 
         # Distinct target types
         targets_stmt = (
@@ -223,24 +226,25 @@ class AuditRepo:
             .where(AuditLog.target_type.is_not(None))
             .order_by(AuditLog.target_type)
         )
-        target_types = [t for t in self._db.scalars(targets_stmt).all() if t]
+        targets_res = await self._db.scalars(targets_stmt)
+        target_types = [t for t in targets_res.all() if t]
 
         # Aggregate counts
         total_stmt = select(func.count(AuditLog.audit_id))
-        total_count = self._db.scalar(total_stmt) or 0
+        total_count = (await self._db.scalar(total_stmt)) or 0
 
         # Today's start in current clock
         now = self._clock.now()
         start_of_today = datetime.combine(now.date(), time.min, tzinfo=now.tzinfo or timezone.utc)
         today_stmt = select(func.count(AuditLog.audit_id)).where(AuditLog.created_at >= start_of_today)
-        today_count = self._db.scalar(today_stmt) or 0
+        today_count = (await self._db.scalar(today_stmt)) or 0
 
         # Unique active actors
         actors_stmt = (
             select(func.count(distinct(AuditLog.actor_user_id)))
             .where(AuditLog.actor_user_id.is_not(None))
         )
-        unique_actors_count = self._db.scalar(actors_stmt) or 0
+        unique_actors_count = (await self._db.scalar(actors_stmt)) or 0
 
         return {
             "actions": actions,
@@ -249,4 +253,5 @@ class AuditRepo:
             "today_count": today_count,
             "unique_actors_count": unique_actors_count,
         }
+
 

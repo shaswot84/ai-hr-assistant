@@ -21,8 +21,8 @@ from app.domain.leave import LeaveRequest
 from app.shared.clock import get_clock
 
 
-def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(20)):
-    return svc.create_leave_type(
+async def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(20)):
+    return await svc.create_leave_type(
         actor,
         leave_name=name,
         description="Planned time off.",
@@ -62,7 +62,7 @@ async def test_relative_start_date_is_answered_without_the_model(
     """"I want annual leave tomorrow" -> deterministic reply with the resolved
     start date and a question for the end date; the model is never called."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
 
@@ -91,7 +91,7 @@ async def test_end_only_follow_up_completes_draft_and_stages_confirmation(
     """After a start date is known, "for 3 days" completes the draft and the
     confirmation is staged deterministically (no model call)."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     start = get_clock().today() + timedelta(days=1)
     state.set_draft(DraftRequest(leave_type_name="Annual Leave", start_date=start), clock=get_clock())
@@ -128,7 +128,7 @@ async def test_full_submit_flow_yes_executes_request(
     """Deterministic draft -> staged confirmation -> "yes" submits the real
     request through the confirmation gate."""
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
+    leave_type = await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     start = get_clock().today() + timedelta(days=7)
     end = start + timedelta(days=1)
@@ -165,7 +165,7 @@ async def test_full_submit_flow_yes_executes_request(
 
     assert provider.calls == 1
     assert result.tool_called == "submit_leave_request"
-    request = db.scalar(select(LeaveRequest))
+    request = await db.scalar(select(LeaveRequest))
     assert request is not None
     assert request.leave_type_id == leave_type.leave_type_id
     assert request.start_date == start
@@ -181,15 +181,16 @@ async def test_list_my_requests_is_deterministic(db, manager_context, employee_c
     """'show my leave requests' is answered from the REAL data without the
     model — list_my_leave_requests is never left to the model to pick."""
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
+    leave_type = await _create_leave_type(svc, manager_context)
     today = get_clock().today()
-    svc.request_leave(
+    await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=today + timedelta(days=5),
         end_date=today + timedelta(days=6),
         reason=None,
     )
+
     state = _state(employee_context)
     provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
 
@@ -213,7 +214,7 @@ async def test_list_my_requests_empty_reply_is_deterministic(
 ):
     """No requests yet -> the deterministic empty reply, no model."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
 
@@ -257,7 +258,7 @@ async def test_cancel_words_drop_the_draft(
     db, manager_context, employee_context
 ):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     state.set_draft(
         DraftRequest(leave_type_name="Annual Leave", start_date=date(2026, 9, 1)),
@@ -285,7 +286,7 @@ async def test_complete_draft_is_authoritative_over_model_stage(
     """If the model stages submit with different dates while a complete draft
     exists, the deterministic draft wins (and preflight runs on it)."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     start = get_clock().today() + timedelta(days=10)
     end = start + timedelta(days=1)
@@ -329,7 +330,7 @@ async def test_balance_check_opens_draft_for_request_intent(
     """After a balance check for a request intent, a usable balance opens the
     deterministic draft (single type -> type is pre-filled)."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     provider = FakeChatProvider(
         {
@@ -363,7 +364,7 @@ async def test_ambiguous_message_does_not_fall_back_to_list_leave_types(
     request start, not a types question) must NOT dump the type list —
     ask what action the employee wants instead."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     state = _state(employee_context)
     provider = FakeChatProvider(
         {
@@ -405,7 +406,7 @@ async def test_new_request_intent_words_are_intercepted_without_model(
     one of them plus a relative date opens the draft deterministically —
     the model is never called and list_leave_types is never dumped."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     state = _state(employee_context)
     provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
 
@@ -431,7 +432,7 @@ async def test_balance_question_does_not_ask_for_dates(
     the balance is answered deterministically: no date question, no draft,
     no model call, even though 'take'/'get' are request-intent words."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     state = _state(employee_context)
     provider = FakeChatProvider(
         {
@@ -473,7 +474,7 @@ async def test_balance_asks_are_answered_deterministically(
     deterministically — the model is never called and no draft opens, so a
     balance ask can never be answered with a request-start question."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     state = _state(employee_context)
     provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
 
@@ -500,8 +501,8 @@ async def test_specific_type_balance_ask_focuses_on_that_type(
     """"how much sick leave do i have" answers with only the named type's
     balance, not the full grid."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
-    _create_leave_type(svc, manager_context, name="Sick Leave", default_days=Decimal(10))
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Sick Leave", default_days=Decimal(10))
     state = _state(employee_context)
     provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
 
@@ -526,8 +527,8 @@ async def test_can_i_get_leave_asks_type_without_list_dump(
     with the type question alone — the raw 'Available leave types:' dump is
     suppressed even when the model calls list_leave_types."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
-    _create_leave_type(svc, manager_context, name="Sick Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Sick Leave")
     state = _state(employee_context)
     provider = FakeChatProvider(
         {
@@ -560,8 +561,8 @@ async def test_types_question_list_is_the_answer_without_draft(
     """A direct question about types is answered by the list itself — no
     'which type' follow-up, no draft, and NO model (the list is deterministic)."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
-    _create_leave_type(svc, manager_context, name="Sick Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Sick Leave")
     state = _state(employee_context)
     provider = FakeChatProvider(
         {
@@ -591,7 +592,7 @@ async def test_no_dates_no_draft_falls_through_to_model(
     db, manager_context, employee_context
 ):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     provider = FakeChatProvider(
         {"reply": "What would you like to do?", "action": "reply", "tool": None, "args": {}}
@@ -619,8 +620,8 @@ async def test_list_leave_types_for_request_intent_opens_draft_and_asks_type(
     type question, the draft opens, and the next "annual leave" is resolved
     by code (no model call)."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
-    _create_leave_type(svc, manager_context, name="Sick Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Sick Leave")
     state = _state(employee_context)
     provider = FakeChatProvider(
         {
@@ -666,7 +667,7 @@ async def test_list_leave_types_single_type_prefills_draft(
     """Only one leave type exists: the draft is opened pre-filled, and a
     follow-up "tomorrow" resolves deterministically."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     state = _state(employee_context)
 
     result = await handle_turn(
@@ -706,7 +707,7 @@ async def test_half_day_leave_staged_deterministically(
     db, manager_context, employee_context
 ):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     state = _state(employee_context)
 
     # Next Tuesday
@@ -737,7 +738,7 @@ async def test_holidays_interception_in_leave_agent(
     db, manager_context, employee_context
 ):
     svc = LeaveService(db)
-    svc.create_company_holiday(
+    await svc.create_company_holiday(
         manager_context,
         name="Winter Solstice",
         holiday_date=date(2026, 12, 21),
@@ -787,7 +788,7 @@ async def test_single_day_leave_staged_in_one_turn(
     db, manager_context, employee_context
 ):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     state = _state(employee_context)
 
     # Next Tuesday
@@ -817,7 +818,7 @@ async def test_single_day_leave_follow_up_with_same_day(
     db, manager_context, employee_context
 ):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     state = _state(employee_context)
 
     today = get_clock().today()
@@ -856,7 +857,7 @@ async def test_agent_mentions_custom_holiday_when_leave_falls_on_it(
     db, manager_context, employee_context
 ):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     state = _state(employee_context)
 
     today = get_clock().today()
@@ -864,7 +865,7 @@ async def test_agent_mentions_custom_holiday_when_leave_falls_on_it(
     wed = today + timedelta(days=days_to_wed)
 
     # Create a custom holiday on that Wednesday
-    svc.create_company_holiday(
+    await svc.create_company_holiday(
         manager_context,
         name="Team Offsite Day",
         holiday_date=wed,
@@ -891,7 +892,7 @@ async def test_agent_includes_custom_holiday_in_range_confirmation(
     db, manager_context, employee_context
 ):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     state = _state(employee_context)
 
     today = get_clock().today()
@@ -901,7 +902,7 @@ async def test_agent_includes_custom_holiday_in_range_confirmation(
     wed = mon + timedelta(days=2)
 
     # Create custom holiday on Wednesday
-    svc.create_company_holiday(
+    await svc.create_company_holiday(
         manager_context,
         name="Founder Appreciation Day",
         holiday_date=wed,

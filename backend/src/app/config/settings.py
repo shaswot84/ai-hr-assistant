@@ -15,14 +15,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class DatabaseSettings(BaseSettings):
-    """Connection to PostgreSQL (asyncpg driver).
-
-    The sync recruitment/auth engine (db/sync_session.py) derives its own
-    +psycopg2 URL from this one at import time — see `_sync_url()` there.
-    """
+    """Connection to PostgreSQL (asyncpg driver) or SQLite (aiosqlite)."""
 
     url: str = "postgresql+asyncpg://hr:hr@localhost:5432/hr_assistant"
     echo: bool = False
+
 
     model_config = SettingsConfigDict(env_prefix="DATABASE_")
 

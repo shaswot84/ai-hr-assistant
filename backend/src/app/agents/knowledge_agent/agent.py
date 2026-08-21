@@ -126,7 +126,7 @@ def balance_relevant(query: str) -> bool:
     return any(phrase in lowered for phrase in _BALANCE_ASK_PHRASES)
 
 
-def _employee_balance_block(
+async def _employee_balance_block(
     actor: UserContext | None,
     leave_service: LeaveService | None,
     query: str,
@@ -142,13 +142,14 @@ def _employee_balance_block(
     if not balance_relevant(query):
         return None
     try:
-        mentioned = mentioned_leave_type(leave_service, query)
-        result = get_leave_balance(leave_service, actor, leave_type_name=mentioned)
+        mentioned = await mentioned_leave_type(leave_service, query)
+        result = await get_leave_balance(leave_service, actor, leave_type_name=mentioned)
     except ToolError:
         return None
     if not result:
         return None
     return format_tool_result("get_leave_balance", result)
+
 
 
 # The honest refusal used whenever the assistant must not answer: low
@@ -376,8 +377,9 @@ async def stream_knowledge_turn(
         }
 
     history_block = history_text(history, max_tokens=history_max_tokens)
-    balance_block = _employee_balance_block(actor, leave_service, query)
+    balance_block = await _employee_balance_block(actor, leave_service, query)
     if balance_block:
+
         history_block = f"{history_block}\n\n{_BALANCE_PROMPT_LABEL}\n{balance_block}"
 
     if result.low_confidence or not result.citations:

@@ -31,6 +31,7 @@ or traceback to the user.
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from dataclasses import dataclass
 from datetime import date
@@ -93,29 +94,18 @@ def _require_hr_access(actor: UserContext) -> None:
         )
 
 
-def _call_service(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Call a LeaveService method with uniform exception translation.
-
-    Every tool's service call goes through this, so IdentityError,
-    PermissionError_, and ValueError are ALWAYS converted to ToolError —
-    not just on the tools someone remembered to guard. No internal
-    exception type or message detail beyond str(err) crosses this
-    boundary.
-    """
+async def _call_service(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Call a LeaveService method with uniform exception translation."""
     try:
-        return fn(*args, **kwargs)
+        res = fn(*args, **kwargs)
+        if inspect.isawaitable(res):
+            return await res
+        return res
     except (IdentityError, PermissionError_, ValueError) as err:
         raise ToolError(str(err)) from err
 
 
 # ---- per-tool argument schemas ---------------------------------------------
-#
-# extra="forbid" rejects any field the model invents that isn't part of the
-# real contract (an employee_id override, a stray "force": true, etc.) —
-# strict-schema validation, not just type coercion. Pydantic also does the
-# type coercion agent.py used to skip entirely: "start_date": "2026-09-01"
-# (a JSON string, which is all the model can ever produce) becomes a real
-# `date` object here, before it ever reaches LeaveService.
 
 
 class _StrictArgs(BaseModel):
@@ -153,8 +143,6 @@ class SubmitLeaveRequestArgs(_StrictArgs):
 
 
 class CancelLeaveRequestArgs(_StrictArgs):
-    # The human-readable LR-YYYY-XXX reference the employee repeats in chat —
-    # never an internal UUID.
     request_number: str
 
 
@@ -212,34 +200,15 @@ def _validate(tool_name: str, raw_args: dict[str, Any]) -> _StrictArgs:
 
 
 def validate_args(tool_name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
-    """Validate + coerce a tool's raw (JSON-shaped) args against its schema.
-
-    Returns a plain dict of real Python values (date objects, UUID
-    objects, ...) ready to pass as **kwargs to the tool handler. Raises
-    ToolError — never a raw pydantic.ValidationError — on any mismatch:
-    wrong type, missing required field, unknown field, unparseable date,
-    malformed UUID.
-    """
     return _validate(tool_name, raw_args).model_dump(mode="python")
 
 
 def canonical_args(tool_name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
-    """Validated args in a JSON-safe, canonical shape — used for the staged
-    vs. confirmed args equality check in agent.py, so two semantically
-    identical but differently-formatted JSON payloads (e.g. trailing
-    whitespace, dict key order) compare equal instead of spuriously
-    mismatching."""
     return _validate(tool_name, raw_args).model_dump(mode="json")
 
 
 # ---- leave-type name resolution --------------------------------------------
 
-# A small, conservative set of common HR synonyms. This is a hint only: an
-# alias is used to find an EXACT (case-insensitive) match among the
-# organization's actual active leave types, never to select a type on its
-# own. If the aliased term doesn't exactly match a real leave type's name,
-# it's discarded and resolution falls through to token matching below —
-# an alias can never invent a match that wouldn't otherwise exist.
 _LEAVE_TYPE_ALIASES: dict[str, str] = {
     "pto": "annual leave",
     "vacation": "annual leave",
@@ -249,19 +218,8 @@ _LEAVE_TYPE_ALIASES: dict[str, str] = {
 }
 
 
-def _resolve_leave_type(service: LeaveService, leave_type_name: str) -> LeaveType:
-    """Resolve a spoken leave-type name to a LeaveType row.
-
-    Order: exact match -> alias-guided exact match -> unique word-token
-    match -> fail closed with the available list. Deliberately NOT raw
-    substring matching (`needle in haystack`) — that would let a short
-    query like "an" match inside "Annual Leave" by character containment
-    alone. Token matching instead splits both sides into whole words and
-    only matches if the query's words are a subset of the type's words,
-    so "sick" matches "Sick Leave" but a stray short fragment can't
-    silently match something unrelated.
-    """
-    types = service.list_leave_types()
+async def _resolve_leave_type(service: LeaveService, leave_type_name: str) -> LeaveType:
+    types = await service.list_leave_types()
     if not types:
         raise ToolError("There are no active leave types configured.")
 
@@ -283,7 +241,7 @@ def _resolve_leave_type(service: LeaveService, leave_type_name: str) -> LeaveTyp
         return token_matches[0]
 
     available = ", ".join(t.leave_name for t in types)
-    if token_matches:  # more than one — genuinely ambiguous, fail closed
+    if token_matches:
         raise ToolError(
             f"'{leave_type_name}' matches more than one leave type "
             f"({', '.join(t.leave_name for t in token_matches)}). Which one did you mean?"
@@ -296,13 +254,12 @@ def _resolve_leave_type(service: LeaveService, leave_type_name: str) -> LeaveTyp
 # ---- result serialization / deterministic formatting -----------------------
 
 
-def _serialize_request(
+async def _serialize_request(
     request: LeaveRequest,
     leave_type_name: str,
     service: LeaveService | None = None,
     include_employee: bool = False,
 ) -> dict[str, Any]:
-    """Convert a LeaveRequest into a JSON-safe dict."""
     data: dict[str, Any] = {
         "leave_request_id": str(request.leave_request_id),
         "request_number": request.request_number,
@@ -317,11 +274,11 @@ def _serialize_request(
     }
     if include_employee and service is not None:
         try:
-            from app.domain.people import Employee, Person
-            employee = service._db.get(Employee, request.employee_id)
+            from app.domain.identity import Employee, Person
+            employee = await service._db.get(Employee, request.employee_id)
             if employee is not None:
                 data["employee_code"] = employee.employee_code
-                person = service._db.get(Person, employee.person_id)
+                person = await service._db.get(Person, employee.person_id)
                 if person is not None:
                     data["employee_name"] = f"{person.first_name} {person.last_name}".strip()
                     data["employee_email"] = person.email
@@ -330,12 +287,12 @@ def _serialize_request(
     return data
 
 
-def _leave_type_name(service: LeaveService, leave_type_id: uuid.UUID) -> str:
-    leave_type = service._leave_types.get(leave_type_id)
+async def _leave_type_name(service: LeaveService, leave_type_id: uuid.UUID) -> str:
+    leave_type = await service._leave_types.get(leave_type_id)
     return leave_type.leave_name if leave_type else "Unknown"
 
 
-def preflight_submit(
+async def preflight_submit(
     service: LeaveService,
     actor: UserContext,
     *,
@@ -345,20 +302,11 @@ def preflight_submit(
     is_half_day: bool = False,
     half_day_period: str | None = None,
 ) -> tuple[Decimal, list[Any]]:
-    """Fail fast BEFORE a submission is staged/confirmed.
-
-    Called at stage time (agent.py `_handle_stage`) with the employee's
-    real balance from `service.list_my_balance` — never from the model's
-    words. Raises ToolError with the exact reason the request can't
-    succeed (insufficient balance, unknown type, broken date range,
-    holiday/weekend date, dates overlapping an existing request, or a
-    consecutive run past the type's cap).
-    """
     _require_employee_access(actor)
     if end_date < start_date:
         raise ToolError("End date must be on or after the start date.")
-    leave_type = _resolve_leave_type(service, leave_type_name)
-    _call_service(
+    leave_type = await _resolve_leave_type(service, leave_type_name)
+    await _call_service(
         service.check_request_conflicts,
         actor,
         leave_type_id=leave_type.leave_type_id,
@@ -368,7 +316,7 @@ def preflight_submit(
         half_day_period=half_day_period,
     )
 
-    rows = _call_service(service.list_my_balance, actor, start_date.year)
+    rows = await _call_service(service.list_my_balance, actor, start_date.year)
     row = next((r for r in rows if r["leave_type"].leave_type_id == leave_type.leave_type_id), None)
     if row is None:
         raise ToolError(
@@ -376,7 +324,7 @@ def preflight_submit(
         )
     remaining = row["remaining_days"]
     try:
-        total_days, holidays_in_range = _call_service(
+        total_days, holidays_in_range = await _call_service(
             service.calculate_working_days,
             start_date,
             end_date,
@@ -408,17 +356,8 @@ def preflight_submit(
     return total_days, holidays_in_range
 
 
-def mentioned_leave_type(service: LeaveService, text: str) -> str | None:
-    """If `text` names exactly one of the employee's active leave types,
-    return its name; None when it names none or several.
-
-    Deterministic helper — lets agent.py focus a get_leave_balance call on
-    a single type ("how many causal leave do I have?") without trusting the
-    model to pass leave_type_name itself. Same conservative matching rules
-    as `_resolve_leave_type`: a type counts only when its full name appears
-    in the text or the text's words are a subset of the type's words.
-    """
-    types = service.list_leave_types()
+async def mentioned_leave_type(service: LeaveService, text: str) -> str | None:
+    types = await service.list_leave_types()
     if not types:
         return None
     lower_text = text.lower()
@@ -434,26 +373,18 @@ def mentioned_leave_type(service: LeaveService, text: str) -> str | None:
 
 
 # ---- reference-based write preflight (deterministic staging) ---------------
-#
-# The agent stages cancels and decisions by request number, never by the
-# model's guess. These helpers verify the reference against the REAL data
-# BEFORE anything is staged, so a wrong number, someone else's request, or a
-# non-pending request is surfaced as a plain-language reply the moment the
-# employee gives the reference.
 
 
-def preflight_cancel(service: LeaveService, actor: UserContext, request_number: str) -> None:
-    """Verify the employee can cancel the referenced request before staging."""
+async def preflight_cancel(service: LeaveService, actor: UserContext, request_number: str) -> None:
     _require_employee_access(actor)
-    request = _call_service(service.get_my_request_by_reference, actor, request_number)
+    request = await _call_service(service.get_my_request_by_reference, actor, request_number)
     if request.status != "PENDING":
         raise ToolError(f"Only pending requests can be cancelled (status={request.status}).")
 
 
-def preflight_hr_reference(service: LeaveService, actor: UserContext, request_number: str) -> LeaveRequest:
-    """Verify a manager's reference-based decision can succeed before staging."""
+async def preflight_hr_reference(service: LeaveService, actor: UserContext, request_number: str) -> LeaveRequest:
     _require_hr_access(actor)
-    request = _call_service(service.get_request_by_number, actor, request_number)
+    request = await _call_service(service.get_request_by_number, actor, request_number)
     if request.status != "PENDING":
         raise ToolError(
             f"Only pending requests can be decided (status={request.status})."
@@ -461,57 +392,39 @@ def preflight_hr_reference(service: LeaveService, actor: UserContext, request_nu
     return request
 
 
-def pending_request_lines(service: LeaveService, actor: UserContext) -> list[str]:
-    """Human-readable lines for the employee's still-pending requests.
-
-    Used when a cancel intent carries no reference yet: the agent lists what
-    CAN be cancelled so the employee picks by number instead of the model
-    guessing one.
-    """
-    requests = _call_service(service.list_my_requests, actor)
+async def pending_request_lines(service: LeaveService, actor: UserContext) -> list[str]:
+    requests = await _call_service(service.list_my_requests, actor)
     pending = [r for r in requests if r.status == "PENDING"]
-    return [
-        f"{r.request_number}: {_leave_type_name(service, r.leave_type_id)}, "
-        f"{r.start_date} to {r.end_date}"
-        for r in pending
-    ]
+    lines = []
+    for r in pending:
+        t_name = await _leave_type_name(service, r.leave_type_id)
+        lines.append(f"{r.request_number}: {t_name}, {r.start_date} to {r.end_date}")
+    return lines
 
 
-def hr_pending_request_lines(service: LeaveService, actor: UserContext) -> list[str]:
-    """Human-readable lines for ALL still-pending requests (HR view).
-
-    Mirrors the employee cancel flow for administrators: a manager asking
-    to act on a request (or just to see what is waiting) gets the real
-    pending list to pick from, instead of being asked to recall a number.
-    """
+async def hr_pending_request_lines(service: LeaveService, actor: UserContext) -> list[str]:
     _require_hr_access(actor)
-    requests = _call_service(service.list_all_requests, actor)
+    requests = await _call_service(service.list_all_requests, actor)
     pending = [r for r in requests if r.status == "PENDING"]
-    return [
-        f"{r.request_number}: {_leave_type_name(service, r.leave_type_id)}, "
-        f"{r.start_date} to {r.end_date}"
-        for r in pending
-    ]
+    lines = []
+    for r in pending:
+        t_name = await _leave_type_name(service, r.leave_type_id)
+        lines.append(f"{r.request_number}: {t_name}, {r.start_date} to {r.end_date}")
+    return lines
 
 
 # ---- read tools (no confirmation) -----------------------------------------
 
 
-def get_leave_balance(
+async def get_leave_balance(
     service: LeaveService,
     actor: UserContext,
     *,
     year: int | None = None,
     leave_type_name: str | None = None,
 ) -> list[dict]:
-    """Return the employee's allocated/used/remaining days per leave type.
-
-    When `leave_type_name` is given, only that type's row is returned so
-    a specific question like "how many unpaid leave do I have?" gets a
-    focused answer instead of the full grid.
-    """
     _require_employee_access(actor)
-    rows = _call_service(service.list_my_balance, actor, year)
+    rows = await _call_service(service.list_my_balance, actor, year)
     serialized = [
         {
             "leave_type_name": row["leave_type"].leave_name,
@@ -528,10 +441,9 @@ def get_leave_balance(
     return serialized
 
 
-def list_leave_types(service: LeaveService, actor: UserContext) -> list[dict]:
-    """List active leave types the employee can request."""
+async def list_leave_types(service: LeaveService, actor: UserContext) -> list[dict]:
     _require_employee_access(actor)
-    types = _call_service(service.list_leave_types)
+    types = await _call_service(service.list_leave_types)
     return [
         {
             "leave_name": t.leave_name,
@@ -543,34 +455,39 @@ def list_leave_types(service: LeaveService, actor: UserContext) -> list[dict]:
     ]
 
 
-def list_my_leave_requests(service: LeaveService, actor: UserContext) -> list[dict]:
-    """List the employee's own leave requests, most recent first."""
+async def list_my_leave_requests(service: LeaveService, actor: UserContext) -> list[dict]:
     _require_employee_access(actor)
-    requests = _call_service(service.list_my_requests, actor)
-    return [_serialize_request(r, _leave_type_name(service, r.leave_type_id), service=service) for r in requests]
+    requests = await _call_service(service.list_my_requests, actor)
+    results = []
+    for r in requests:
+        t_name = await _leave_type_name(service, r.leave_type_id)
+        results.append(await _serialize_request(r, t_name, service=service))
+    return results
 
 
-def list_leave_requests(service: LeaveService, actor: UserContext) -> list[dict]:
-    """List EVERY employee's leave requests with statuses (HR administrators
-    only) — the manager view of what is in the pipeline."""
+async def list_leave_requests(service: LeaveService, actor: UserContext) -> list[dict]:
     _require_hr_access(actor)
-    requests = _call_service(service.list_all_requests, actor)
-    return [_serialize_request(r, _leave_type_name(service, r.leave_type_id), service=service, include_employee=True) for r in requests]
+    requests = await _call_service(service.list_all_requests, actor)
+    results = []
+    for r in requests:
+        t_name = await _leave_type_name(service, r.leave_type_id)
+        results.append(await _serialize_request(r, t_name, service=service, include_employee=True))
+    return results
 
 
-def get_leave_request(service: LeaveService, actor: UserContext, *, leave_request_id: uuid.UUID) -> dict:
-    """Fetch one of the employee's own leave requests by id."""
+async def get_leave_request(service: LeaveService, actor: UserContext, *, leave_request_id: uuid.UUID) -> dict:
     _require_employee_access(actor)
-    request = _call_service(service.get_my_request, actor, leave_request_id)
+    request = await _call_service(service.get_my_request, actor, leave_request_id)
     if request is None:
         raise ToolError("I couldn't find a leave request with that id.")
-    return _serialize_request(request, _leave_type_name(service, request.leave_type_id), service=service)
+    t_name = await _leave_type_name(service, request.leave_type_id)
+    return await _serialize_request(request, t_name, service=service)
 
 
 # ---- write tools (confirmation required by agent.py before calling) -------
 
 
-def submit_leave_request(
+async def submit_leave_request(
     service: LeaveService,
     actor: UserContext,
     *,
@@ -581,11 +498,9 @@ def submit_leave_request(
     half_day_period: str | None = None,
     reason: str | None = None,
 ) -> dict:
-    """Submit a new leave request. Caller (agent.py) must have already staged
-    and confirmed this action with the user before invoking it."""
     _require_employee_access(actor)
-    leave_type = _resolve_leave_type(service, leave_type_name)
-    request = _call_service(
+    leave_type = await _resolve_leave_type(service, leave_type_name)
+    request = await _call_service(
         service.request_leave,
         actor,
         leave_type_id=leave_type.leave_type_id,
@@ -595,17 +510,16 @@ def submit_leave_request(
         half_day_period=half_day_period,
         reason=reason,
     )
-    return _serialize_request(request, leave_type.leave_name, service=service)
+    return await _serialize_request(request, leave_type.leave_name, service=service)
 
 
-def list_company_holidays(
+async def list_company_holidays(
     service: LeaveService,
     actor: UserContext,
     *,
     year: int | None = None,
 ) -> list[dict]:
-    """List official company holidays."""
-    holidays = _call_service(service.list_company_holidays, year)
+    holidays = await _call_service(service.list_company_holidays, year)
     return [
         {
             "name": h.name,
@@ -617,7 +531,7 @@ def list_company_holidays(
     ]
 
 
-def get_team_out_of_office(
+async def get_team_out_of_office(
     service: LeaveService,
     actor: UserContext,
     *,
@@ -625,8 +539,7 @@ def get_team_out_of_office(
     end_date: date | None = None,
     department_id: uuid.UUID | None = None,
 ) -> list[dict]:
-    """List team members out of office in a date window."""
-    entries = _call_service(
+    entries = await _call_service(
         service.list_team_out_of_office,
         actor,
         start_date=start_date,
@@ -649,28 +562,24 @@ def get_team_out_of_office(
     ]
 
 
-def cancel_leave_request(
+async def cancel_leave_request(
     service: LeaveService, actor: UserContext, *, request_number: str
 ) -> dict:
-    """Cancel one of the employee's own still-pending leave requests by its
-    LR-YYYY-XXX reference. Caller (agent.py) must have already staged and
-    confirmed this with the user."""
     _require_employee_access(actor)
-    request = _call_service(service.cancel_request_by_reference, actor, request_number)
-    return _serialize_request(request, _leave_type_name(service, request.leave_type_id), service=service)
+    request = await _call_service(service.cancel_request_by_reference, actor, request_number)
+    t_name = await _leave_type_name(service, request.leave_type_id)
+    return await _serialize_request(request, t_name, service=service)
 
 
-def get_employee_leave_balance(
+async def get_employee_leave_balance(
     service: LeaveService,
     actor: UserContext,
     *,
     employee_code: str,
     year: int | None = None,
 ) -> list[dict]:
-    """Return ANOTHER employee's allocated/used/remaining days per leave type
-    (HR administrators only), identified by employee code."""
     _require_hr_access(actor)
-    rows = _call_service(service.get_employee_balance, actor, employee_code, year)
+    rows = await _call_service(service.get_employee_balance, actor, employee_code, year)
     return [
         {
             "leave_type_name": row["leave_type"].leave_name,
@@ -683,40 +592,32 @@ def get_employee_leave_balance(
     ]
 
 
-def list_all_employee_balances(
+async def list_all_employee_balances(
     service: LeaveService,
     actor: UserContext,
     *,
     year: int | None = None,
 ) -> list[dict]:
-    """Return ALL employees' leave balances across all leave types (HR administrators only)."""
     _require_hr_access(actor)
-    return _call_service(service.list_all_employee_balances, actor, year)
+    return await _call_service(service.list_all_employee_balances, actor, year)
 
 
-def decide_leave_request(
+async def decide_leave_request(
     service: LeaveService,
     actor: UserContext,
     *,
     request_number: str,
     approve: bool,
 ) -> dict:
-    """Approve or reject ANY employee's pending leave request by reference
-    (HR administrators only). Caller (agent.py) must have already staged and
-    confirmed this with the user."""
     _require_hr_access(actor)
-    request = _call_service(
+    request = await _call_service(
         service.decide_request_by_reference, actor, request_number, approve=approve
     )
-    return _serialize_request(request, _leave_type_name(service, request.leave_type_id), service=service, include_employee=True)
+    t_name = await _leave_type_name(service, request.leave_type_id)
+    return await _serialize_request(request, t_name, service=service, include_employee=True)
 
 
 # ---- deterministic reply formatting ----------------------------------------
-#
-# Used for EVERY tool call the agent actually executes, read or write. The
-# model's own `reply` text (written before the tool ran) is never shown to
-# the employee once a tool has executed — only what actually happened,
-# formatted here, ever is.
 
 
 def format_tool_result(tool_name: str, result: Any) -> str:

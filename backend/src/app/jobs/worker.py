@@ -6,10 +6,10 @@ import time
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.capabilities.settings import SettingsService
-from app.db.sync_session import SessionLocal, init_db
+from app.db.session import async_session_factory, init_db
 from app.domain.outbox import OutboxJob
 from app.domain.recruitment import Application, ApplicationEvaluation, Vacancy
 from app.evaluation.resume_structuring import extract_structured_resume
@@ -28,7 +28,7 @@ POLL_INTERVAL_SECONDS = 2.0
 
 
 async def process_job(
-    db: Session, job: OutboxJob, object_store: SyncS3ObjectStore, email: EmailProvider
+    db: AsyncSession, job: OutboxJob, object_store: SyncS3ObjectStore, email: EmailProvider
 ) -> None:
     """Dispatch an outbox job to its handler based on job type."""
     if job.job_type == "EVALUATE_APPLICATION":
@@ -50,7 +50,7 @@ async def process_job(
 
 
 async def _evaluate_application(
-    db: Session, job: OutboxJob, object_store: SyncS3ObjectStore
+    db: AsyncSession, job: OutboxJob, object_store: SyncS3ObjectStore
 ) -> None:
     """Extract resume text, score it against the vacancy, and persist an evaluation row."""
     application_id = uuid.UUID(str(job.payload["application_id"]))
@@ -59,7 +59,7 @@ async def _evaluate_application(
     data, content_type = object_store.get_object(object_key)
 
     extraction = extract_text(data, object_key, content_type)
-    application = db.get(Application, application_id)
+    application = await db.get(Application, application_id)
     if application is None:
         raise RuntimeError("Application row not found.")
 
@@ -79,10 +79,10 @@ async def _evaluate_application(
                 evaluated_at=datetime.now(UTC),
             )
         )
-        db.commit()
+        await db.commit()
         return
 
-    vacancy = db.get(Vacancy, application.vacancy_id)
+    vacancy = await db.get(Vacancy, application.vacancy_id)
 
     settings_svc = SettingsService()
     system_prompt = settings_svc.resolved_prompt()
@@ -93,9 +93,6 @@ async def _evaluate_application(
 
     started = time.monotonic()
     try:
-        # Structured extraction runs first, as its own step, so scoring is
-        # grounded in verified work/education facts instead of re-deriving
-        # everything (like years of experience) from raw text in one shot.
         structured = await extract_structured_resume(
             extraction.text,
             system_prompt=structuring_system_prompt,
@@ -117,9 +114,6 @@ async def _evaluate_application(
             api_key=llm_overrides["api_key"],
         )
     except ChatProviderError as err:
-        # The AI provider isn't configured or the call failed outright — record
-        # a clear failed evaluation instead of a fabricated score, so the
-        # manager sees an actionable error with a retry action in the UI.
         db.add(
             ApplicationEvaluation(
                 application_id=application_id,
@@ -131,7 +125,7 @@ async def _evaluate_application(
                 evaluated_at=datetime.now(UTC),
             )
         )
-        db.commit()
+        await db.commit()
         return
     latency_ms = int((time.monotonic() - started) * 1000)
 
@@ -148,10 +142,10 @@ async def _evaluate_application(
             evaluated_at=datetime.now(UTC),
         )
     )
-    db.commit()
+    await db.commit()
 
 
-def _send_email(db: Session, job: OutboxJob, email: EmailProvider) -> None:
+def _send_email(db: AsyncSession, job: OutboxJob, email: EmailProvider) -> None:
     """Send a notification email encoded in the job payload, raising if there is no recipient."""
     payload = job.payload
     to_email = str(payload["to_email"])
@@ -164,35 +158,37 @@ def _send_email(db: Session, job: OutboxJob, email: EmailProvider) -> None:
 
 async def worker_loop() -> None:
     """Poll the outbox continuously, claiming and processing one job at a time."""
-    init_db()
+    await init_db()
     object_store = SyncS3ObjectStore()
     object_store.ensure_bucket()
     email: EmailProvider = SmtpEmailProvider()
 
     log.info("Worker started: polling outbox_job every %ss", POLL_INTERVAL_SECONDS)
     while True:
-        db = SessionLocal()
-        try:
-            repo = OutboxRepo(db)
-            job = repo.claim_next()
-            db.commit()  # release the row lock (SELECT ... FOR UPDATE) once claimed
-            if job is None:
-                await asyncio.sleep(POLL_INTERVAL_SECONDS)
-                continue
+        async with async_session_factory() as db:
             try:
-                await process_job(db, job, object_store, email)
-                repo.mark_succeeded(job)
-                db.commit()
-                log.info("Job %s %s succeeded", job.job_id, job.job_type)
-            except Exception as err:  # noqa: BLE001
-                db.rollback()
-                job = db.get(OutboxJob, job.job_id)
-                repo.mark_failed(job, str(err))
-                db.commit()
-                log.error("Job %s %s failed: %s", job.job_id, job.job_type, err)
-        finally:
-            db.close()
+                repo = OutboxRepo(db)
+                job = await repo.claim_next()
+                await db.commit()  # release the row lock once claimed
+                if job is None:
+                    await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                    continue
+                try:
+                    await process_job(db, job, object_store, email)
+                    await repo.mark_succeeded(job)
+                    await db.commit()
+                    log.info("Job %s %s succeeded", job.job_id, job.job_type)
+                except Exception as err:  # noqa: BLE001
+                    await db.rollback()
+                    job = await db.get(OutboxJob, job.job_id)
+                    await repo.mark_failed(job, str(err))
+                    await db.commit()
+                    log.error("Job %s %s failed: %s", job.job_id, job.job_type, err)
+            except Exception as err:
+                log.error("Error in worker loop: %s", err)
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":
     asyncio.run(worker_loop())
+

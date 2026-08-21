@@ -11,7 +11,7 @@ from app.agents.leave_agent.tools import ToolError, preflight_submit
 from app.domain.outbox import OutboxJob
 
 
-def _create_leave_type(
+async def _create_leave_type(
     svc,
     actor,
     *,
@@ -19,7 +19,7 @@ def _create_leave_type(
     default_days=Decimal(20),
     max_consecutive_days=None,
 ):
-    return svc.create_leave_type(
+    return await svc.create_leave_type(
         actor,
         leave_name=name,
         description="Planned time off.",
@@ -30,42 +30,43 @@ def _create_leave_type(
     )
 
 
-def test_create_leave_type_requires_hr_admin(db, employee_context):
+async def test_create_leave_type_requires_hr_admin(db, employee_context):
     svc = LeaveService(db)
     with pytest.raises(PermissionError_):
-        _create_leave_type(svc, employee_context)
+        await _create_leave_type(svc, employee_context)
 
 
-def test_create_leave_type_success(db, manager_context):
+async def test_create_leave_type_success(db, manager_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
+    leave_type = await _create_leave_type(svc, manager_context)
     assert leave_type.status == "ACTIVE"
-    assert leave_type in svc.list_leave_types()
+    types = await svc.list_leave_types()
+    assert any(t.leave_type_id == leave_type.leave_type_id for t in types)
 
 
-def test_create_leave_type_rejects_case_insensitive_duplicate(db, manager_context):
+async def test_create_leave_type_rejects_case_insensitive_duplicate(db, manager_context):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     with pytest.raises(ValueError, match="already exists"):
-        _create_leave_type(svc, manager_context, name="annual leave")
+        await _create_leave_type(svc, manager_context, name="annual leave")
 
 
-def test_balance_defaults_to_leave_type_default_before_any_request(db, manager_context, employee_context):
+async def test_balance_defaults_to_leave_type_default_before_any_request(db, manager_context, employee_context):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, default_days=Decimal(12))
+    await _create_leave_type(svc, manager_context, default_days=Decimal(12))
 
-    rows = svc.list_my_balance(employee_context)
+    rows = await svc.list_my_balance(employee_context)
     assert len(rows) == 1
     assert rows[0]["allocated_days"] == Decimal(12)
     assert rows[0]["used_days"] == Decimal(0)
     assert rows[0]["remaining_days"] == Decimal(12)
 
 
-def test_request_leave_requires_employee_or_hr_admin(db, manager_context, candidate_context):
+async def test_request_leave_requires_employee_or_hr_admin(db, manager_context, candidate_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
+    leave_type = await _create_leave_type(svc, manager_context)
     with pytest.raises(PermissionError_):
-        svc.request_leave(
+        await svc.request_leave(
             candidate_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=date(2026, 9, 1),
@@ -74,11 +75,11 @@ def test_request_leave_requires_employee_or_hr_admin(db, manager_context, candid
         )
 
 
-def test_request_leave_rejects_end_before_start(db, manager_context, employee_context):
+async def test_request_leave_rejects_end_before_start(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
+    leave_type = await _create_leave_type(svc, manager_context)
     with pytest.raises(ValueError, match="on or after"):
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=date(2026, 9, 5),
@@ -87,11 +88,11 @@ def test_request_leave_rejects_end_before_start(db, manager_context, employee_co
         )
 
 
-def test_request_leave_enforces_max_consecutive_days(db, manager_context, employee_context):
+async def test_request_leave_enforces_max_consecutive_days(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, max_consecutive_days=3)
+    leave_type = await _create_leave_type(svc, manager_context, max_consecutive_days=3)
     with pytest.raises(ValueError, match="consecutive"):
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=date(2026, 9, 1),
@@ -100,11 +101,11 @@ def test_request_leave_enforces_max_consecutive_days(db, manager_context, employ
         )
 
 
-def test_request_leave_enforces_remaining_balance(db, manager_context, employee_context):
+async def test_request_leave_enforces_remaining_balance(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(2))
+    leave_type = await _create_leave_type(svc, manager_context, default_days=Decimal(2))
     with pytest.raises(ValueError, match="Not enough"):
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=date(2026, 9, 1),
@@ -113,11 +114,11 @@ def test_request_leave_enforces_remaining_balance(db, manager_context, employee_
         )
 
 
-def test_request_leave_rejects_past_dates(db, manager_context, employee_context):
+async def test_request_leave_rejects_past_dates(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
+    leave_type = await _create_leave_type(svc, manager_context)
     with pytest.raises(ValueError, match="past"):
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=date(2026, 1, 1),
@@ -126,11 +127,11 @@ def test_request_leave_rejects_past_dates(db, manager_context, employee_context)
         )
 
 
-def test_request_leave_rejects_overlap_diff_type(db, manager_context, employee_context):
+async def test_request_leave_rejects_overlap_diff_type(db, manager_context, employee_context):
     svc = LeaveService(db)
-    annual = _create_leave_type(svc, manager_context, name="Annual Leave")
-    sick = _create_leave_type(svc, manager_context, name="Sick Leave", default_days=Decimal(10))
-    svc.request_leave(
+    annual = await _create_leave_type(svc, manager_context, name="Annual Leave")
+    sick = await _create_leave_type(svc, manager_context, name="Sick Leave", default_days=Decimal(10))
+    await svc.request_leave(
         employee_context,
         leave_type_id=annual.leave_type_id,
         start_date=date(2026, 9, 1),
@@ -138,7 +139,7 @@ def test_request_leave_rejects_overlap_diff_type(db, manager_context, employee_c
         reason=None,
     )
     with pytest.raises(ValueError, match="overlap"):
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=sick.leave_type_id,
             start_date=date(2026, 9, 3),
@@ -147,10 +148,10 @@ def test_request_leave_rejects_overlap_diff_type(db, manager_context, employee_c
         )
 
 
-def test_request_leave_rejects_overlap_same_type(db, manager_context, employee_context):
+async def test_request_leave_rejects_overlap_same_type(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(20))
-    svc.request_leave(
+    leave_type = await _create_leave_type(svc, manager_context, default_days=Decimal(20))
+    await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
@@ -158,7 +159,7 @@ def test_request_leave_rejects_overlap_same_type(db, manager_context, employee_c
         reason=None,
     )
     with pytest.raises(ValueError, match="overlap"):
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=date(2026, 9, 4),  # inside the first request
@@ -167,11 +168,11 @@ def test_request_leave_rejects_overlap_same_type(db, manager_context, employee_c
         )
 
 
-def test_request_leave_rejects_consecutive_run_over_cap(db, manager_context, employee_context):
+async def test_request_leave_rejects_consecutive_run_over_cap(db, manager_context, employee_context):
     """3 days + back-to-back 3 days must trip the 3-day max-consecutive cap."""
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, max_consecutive_days=3, default_days=Decimal(20))
-    svc.request_leave(
+    leave_type = await _create_leave_type(svc, manager_context, max_consecutive_days=3, default_days=Decimal(20))
+    await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
@@ -179,7 +180,7 @@ def test_request_leave_rejects_consecutive_run_over_cap(db, manager_context, emp
         reason=None,
     )
     with pytest.raises(ValueError, match="consecutive"):
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=date(2026, 9, 4),
@@ -188,12 +189,12 @@ def test_request_leave_rejects_consecutive_run_over_cap(db, manager_context, emp
         )
 
 
-def test_preflight_submit_rejects_overlapping_existing_request(db, manager_context, employee_context):
+async def test_preflight_submit_rejects_overlapping_existing_request(db, manager_context, employee_context):
     """The agent's stage-time preflight must catch a date the employee has
     already applied for (same day twice for one date)."""
     svc = LeaveService(db)
-    annual = _create_leave_type(svc, manager_context, name="Annual Leave", default_days=Decimal(20))
-    svc.request_leave(
+    annual = await _create_leave_type(svc, manager_context, name="Annual Leave", default_days=Decimal(20))
+    await svc.request_leave(
         employee_context,
         leave_type_id=annual.leave_type_id,
         start_date=date(2026, 9, 1),
@@ -201,7 +202,7 @@ def test_preflight_submit_rejects_overlapping_existing_request(db, manager_conte
         reason=None,
     )
     with pytest.raises(ToolError, match="overlap"):
-        preflight_submit(
+        await preflight_submit(
             svc,
             employee_context,
             leave_type_name="Annual Leave",
@@ -210,11 +211,11 @@ def test_preflight_submit_rejects_overlapping_existing_request(db, manager_conte
         )
 
 
-def test_preflight_submit_rejects_consecutive_run_over_cap(db, manager_context, employee_context):
+async def test_preflight_submit_rejects_consecutive_run_over_cap(db, manager_context, employee_context):
     """Back-to-back same-type requests must trip the cap at stage time too."""
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, max_consecutive_days=3, default_days=Decimal(20))
-    svc.request_leave(
+    leave_type = await _create_leave_type(svc, manager_context, max_consecutive_days=3, default_days=Decimal(20))
+    await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
@@ -222,7 +223,7 @@ def test_preflight_submit_rejects_consecutive_run_over_cap(db, manager_context, 
         reason=None,
     )
     with pytest.raises(ToolError, match="consecutive"):
-        preflight_submit(
+        await preflight_submit(
             svc,
             employee_context,
             leave_type_name="Annual Leave",
@@ -231,17 +232,17 @@ def test_preflight_submit_rejects_consecutive_run_over_cap(db, manager_context, 
         )
 
 
-def test_preflight_submit_allows_dates_clear_of_existing_requests(db, manager_context, employee_context):
+async def test_preflight_submit_allows_dates_clear_of_existing_requests(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, max_consecutive_days=3, default_days=Decimal(20))
-    svc.request_leave(
+    leave_type = await _create_leave_type(svc, manager_context, max_consecutive_days=3, default_days=Decimal(20))
+    await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
         end_date=date(2026, 9, 3),
         reason=None,
     )
-    preflight_submit(
+    await preflight_submit(
         svc,
         employee_context,
         leave_type_name="Annual Leave",
@@ -250,18 +251,18 @@ def test_preflight_submit_allows_dates_clear_of_existing_requests(db, manager_co
     )
 
 
-def test_request_leave_allows_gap_between_requests(db, manager_context, employee_context):
+async def test_request_leave_allows_gap_between_requests(db, manager_context, employee_context):
     """A 1+ day gap breaks the run: 3 + 3 with a rest day must stay allowed."""
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, max_consecutive_days=3, default_days=Decimal(20))
-    svc.request_leave(
+    leave_type = await _create_leave_type(svc, manager_context, max_consecutive_days=3, default_days=Decimal(20))
+    await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
         end_date=date(2026, 9, 3),
         reason=None,
     )
-    second = svc.request_leave(
+    second = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 5),  # 2026-09-04 off — gap breaks the run
@@ -271,11 +272,11 @@ def test_request_leave_allows_gap_between_requests(db, manager_context, employee
     assert second.status == "PENDING"
 
 
-def test_request_leave_success_generates_sequential_reference(db, manager_context, employee_context):
+async def test_request_leave_success_generates_sequential_reference(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
+    leave_type = await _create_leave_type(svc, manager_context)
 
-    first = svc.request_leave(
+    first = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
@@ -286,7 +287,7 @@ def test_request_leave_success_generates_sequential_reference(db, manager_contex
     assert first.total_days == Decimal(2)
     assert first.request_number.startswith(f"LR-{date(2026, 9, 1).year}-")
 
-    second = svc.request_leave(
+    second = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 10, 1),
@@ -296,13 +297,13 @@ def test_request_leave_success_generates_sequential_reference(db, manager_contex
     assert second.request_number != first.request_number
 
 
-def test_request_leave_enqueues_confirmation_and_manager_alert(db, manager_context, employee_context):
+async def test_request_leave_enqueues_confirmation_and_manager_alert(db, manager_context, employee_context):
     """No org hierarchy is configured for `employee_context`, so the alert
     should fall back to the seeded HR_ADMIN rather than being dropped.
     """
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
-    request = svc.request_leave(
+    leave_type = await _create_leave_type(svc, manager_context)
+    request = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
@@ -310,9 +311,9 @@ def test_request_leave_enqueues_confirmation_and_manager_alert(db, manager_conte
         reason=None,
     )
 
-    jobs = db.scalars(
+    jobs = (await db.scalars(
         select(OutboxJob).where(OutboxJob.aggregate_id == request.leave_request_id)
-    ).all()
+    )).all()
     by_type = {j.job_type: j for j in jobs}
 
     assert "SEND_LEAVE_REQUEST_RECEIVED" in by_type
@@ -322,48 +323,48 @@ def test_request_leave_enqueues_confirmation_and_manager_alert(db, manager_conte
     assert by_type["SEND_NEW_LEAVE_REQUEST_ALERT"].payload["to_email"] == manager_context.email
 
 
-def test_cancel_request_only_from_pending(db, manager_context, employee_context):
+async def test_cancel_request_only_from_pending(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
-    request = svc.request_leave(
+    leave_type = await _create_leave_type(svc, manager_context)
+    request = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
         end_date=date(2026, 9, 2),
         reason=None,
     )
-    svc.decide_request(manager_context, request.leave_request_id, approve=True)
+    await svc.decide_request(manager_context, request.leave_request_id, approve=True)
 
     with pytest.raises(ValueError, match="Only pending requests"):
-        svc.cancel_request(employee_context, request.leave_request_id)
+        await svc.cancel_request(employee_context, request.leave_request_id)
 
 
-def test_cancel_request_success(db, manager_context, employee_context):
+async def test_cancel_request_success(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
-    request = svc.request_leave(
+    leave_type = await _create_leave_type(svc, manager_context)
+    request = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
         end_date=date(2026, 9, 2),
         reason=None,
     )
-    cancelled = svc.cancel_request(employee_context, request.leave_request_id)
+    cancelled = await svc.cancel_request(employee_context, request.leave_request_id)
     assert cancelled.status == "CANCELLED"
 
 
-def test_list_all_requests_requires_hr_admin(db, employee_context):
+async def test_list_all_requests_requires_hr_admin(db, employee_context):
     svc = LeaveService(db)
     with pytest.raises(PermissionError_):
-        svc.list_all_requests(employee_context)
+        await svc.list_all_requests(employee_context)
 
 
-def test_decide_request_approve_books_balance_then_redecide_is_blocked(
+async def test_decide_request_approve_books_balance_then_redecide_is_blocked(
     db, manager_context, employee_context
 ):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(10))
-    request = svc.request_leave(
+    leave_type = await _create_leave_type(svc, manager_context, default_days=Decimal(10))
+    request = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
@@ -371,25 +372,22 @@ def test_decide_request_approve_books_balance_then_redecide_is_blocked(
         reason=None,
     )
 
-    decided = svc.decide_request(manager_context, request.leave_request_id, approve=True)
+    decided = await svc.decide_request(manager_context, request.leave_request_id, approve=True)
     assert decided.status == "APPROVED"
 
-    rows = svc.list_my_balance(employee_context, year=2026)
+    rows = await svc.list_my_balance(employee_context, year=2026)
     row = next(r for r in rows if r["leave_type"].leave_type_id == leave_type.leave_type_id)
     assert row["used_days"] == Decimal(3)
     assert row["remaining_days"] == Decimal(7)
 
-    # Regression guard, mirrors recruitment's decide-twice test: once decided,
-    # a request is terminal — re-deciding must never double-book the balance
-    # or re-send the outcome email.
     with pytest.raises(ValueError, match="already been decided"):
-        svc.decide_request(manager_context, request.leave_request_id, approve=False)
+        await svc.decide_request(manager_context, request.leave_request_id, approve=False)
 
 
-def test_decide_request_reject_does_not_touch_balance(db, manager_context, employee_context):
+async def test_decide_request_reject_does_not_touch_balance(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(10))
-    request = svc.request_leave(
+    leave_type = await _create_leave_type(svc, manager_context, default_days=Decimal(10))
+    request = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=date(2026, 9, 1),
@@ -397,10 +395,10 @@ def test_decide_request_reject_does_not_touch_balance(db, manager_context, emplo
         reason=None,
     )
 
-    decided = svc.decide_request(manager_context, request.leave_request_id, approve=False)
+    decided = await svc.decide_request(manager_context, request.leave_request_id, approve=False)
     assert decided.status == "REJECTED"
 
-    rows = svc.list_my_balance(employee_context, year=2026)
+    rows = await svc.list_my_balance(employee_context, year=2026)
     row = next(r for r in rows if r["leave_type"].leave_type_id == leave_type.leave_type_id)
     assert row["used_days"] == Decimal(0)
 
@@ -423,9 +421,9 @@ def test_create_leave_type_http_requires_hr_admin(client, employee_context, empl
     assert res.status_code == 403
 
 
-def test_leave_request_http_flow(db, client, manager_context, employee_context, employee_password, manager_password):
+async def test_leave_request_http_flow(db, client, manager_context, employee_context, employee_password, manager_password):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context)
+    leave_type = await _create_leave_type(svc, manager_context)
 
     login = client.post(
         "/api/auth/login",
@@ -467,21 +465,18 @@ def test_leave_request_http_flow(db, client, manager_context, employee_context, 
     assert decision.json()["employee_email"] == employee_context.email
 
 
-def test_calculate_working_days_weekend_exclusion(db):
+async def test_calculate_working_days_weekend_exclusion(db):
     svc = LeaveService(db)
-    # 2026-08-21 is Friday, 2026-08-24 is Monday
     fri = date(2026, 8, 21)
     mon = date(2026, 8, 24)
-    working_days, holidays = svc.calculate_working_days(fri, mon)
-    # Friday and Monday are 2 working days (Sat & Sun excluded)
+    working_days, holidays = await svc.calculate_working_days(fri, mon)
     assert working_days == Decimal("2.0")
     assert len(holidays) == 0
 
 
-def test_calculate_working_days_with_company_holidays(db, manager_context):
+async def test_calculate_working_days_with_company_holidays(db, manager_context):
     svc = LeaveService(db)
-    # Create holiday on Monday 2026-08-24
-    svc.create_company_holiday(
+    await svc.create_company_holiday(
         manager_context,
         name="Test Monday Holiday",
         holiday_date=date(2026, 8, 24),
@@ -489,54 +484,46 @@ def test_calculate_working_days_with_company_holidays(db, manager_context):
 
     fri = date(2026, 8, 21)
     mon = date(2026, 8, 24)
-    working_days, holidays = svc.calculate_working_days(fri, mon)
-    # Friday is the only working day (Sat, Sun, and Mon holiday excluded)
+    working_days, holidays = await svc.calculate_working_days(fri, mon)
     assert working_days == Decimal("1.0")
     assert len(holidays) == 1
     assert holidays[0].name == "Test Monday Holiday"
 
 
-def test_calculate_working_days_yearly_recurring_holiday(db, manager_context):
+async def test_calculate_working_days_yearly_recurring_holiday(db, manager_context):
     svc = LeaveService(db)
-    # Recurring yearly on Nov 15
-    svc.create_company_holiday(
+    await svc.create_company_holiday(
         manager_context,
         name="Annual Foundation Day",
         holiday_date=date(2020, 11, 15),
         is_recurring_yearly=True,
     )
 
-    # 2026-11-13 is Friday, 2026-11-15 is Sunday, 2026-11-16 is Monday
-    # 2026-11-15 is a Sunday holiday
-    working_days, holidays = svc.calculate_working_days(date(2026, 11, 13), date(2026, 11, 16))
-    assert working_days == Decimal("2.0")  # Friday and Monday
+    working_days, holidays = await svc.calculate_working_days(date(2026, 11, 13), date(2026, 11, 16))
+    assert working_days == Decimal("2.0")
 
-    # In 2027, Nov 15 is Monday
-    working_days_2027, holidays_2027 = svc.calculate_working_days(date(2027, 11, 12), date(2027, 11, 16))
-    # Friday 12 (1), Sat 13 (0), Sun 14 (0), Mon 15 (holiday 0), Tue 16 (1) -> 2 working days
+    working_days_2027, holidays_2027 = await svc.calculate_working_days(date(2027, 11, 12), date(2027, 11, 16))
     assert working_days_2027 == Decimal("2.0")
     assert len(holidays_2027) == 1
 
 
-def test_calculate_working_days_half_day(db):
+async def test_calculate_working_days_half_day(db):
     svc = LeaveService(db)
-    # 2026-08-25 is Tuesday
     tue = date(2026, 8, 25)
-    working_days, holidays = svc.calculate_working_days(tue, tue, is_half_day=True, half_day_period="MORNING")
+    working_days, holidays = await svc.calculate_working_days(tue, tue, is_half_day=True, half_day_period="MORNING")
     assert working_days == Decimal("0.5")
 
-    # Half day on Saturday raises ValueError
     sat = date(2026, 8, 22)
     with pytest.raises(ValueError, match="weekend"):
-        svc.calculate_working_days(sat, sat, is_half_day=True, half_day_period="AFTERNOON")
+        await svc.calculate_working_days(sat, sat, is_half_day=True, half_day_period="AFTERNOON")
 
 
-def test_half_day_leave_request_flow(db, manager_context, employee_context):
+async def test_half_day_leave_request_flow(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(10))
+    leave_type = await _create_leave_type(svc, manager_context, default_days=Decimal(10))
 
-    tue = date(2026, 9, 8)  # Tuesday
-    request = svc.request_leave(
+    tue = date(2026, 9, 8)
+    request = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=tue,
@@ -549,21 +536,19 @@ def test_half_day_leave_request_flow(db, manager_context, employee_context):
     assert request.half_day_period == "MORNING"
     assert request.total_days == Decimal("0.5")
 
-    # Approve and verify balance deduction
-    svc.decide_request(manager_context, request.leave_request_id, approve=True)
-    rows = svc.list_my_balance(employee_context, year=2026)
+    await svc.decide_request(manager_context, request.leave_request_id, approve=True)
+    rows = await svc.list_my_balance(employee_context, year=2026)
     row = next(r for r in rows if r["leave_type"].leave_type_id == leave_type.leave_type_id)
     assert row["used_days"] == Decimal("0.5")
     assert row["remaining_days"] == Decimal("9.5")
 
 
-def test_half_day_non_colliding_morning_and_afternoon(db, manager_context, employee_context):
+async def test_half_day_non_colliding_morning_and_afternoon(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(10))
+    leave_type = await _create_leave_type(svc, manager_context, default_days=Decimal(10))
 
     wed = date(2026, 9, 9)
-    # Morning request
-    req1 = svc.request_leave(
+    req1 = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=wed,
@@ -573,8 +558,7 @@ def test_half_day_non_colliding_morning_and_afternoon(db, manager_context, emplo
     )
     assert req1.status == "PENDING"
 
-    # Afternoon request on same day -> allowed!
-    req2 = svc.request_leave(
+    req2 = await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
         start_date=wed,
@@ -584,9 +568,8 @@ def test_half_day_non_colliding_morning_and_afternoon(db, manager_context, emplo
     )
     assert req2.status == "PENDING"
 
-    # Duplicate morning request on same day -> blocked!
     with pytest.raises(ValueError, match="overlap"):
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=wed,
@@ -595,9 +578,8 @@ def test_half_day_non_colliding_morning_and_afternoon(db, manager_context, emplo
             half_day_period="MORNING",
         )
 
-    # Full-day request on same day -> blocked!
     with pytest.raises(ValueError, match="overlap"):
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=wed,
@@ -609,7 +591,6 @@ def test_half_day_non_colliding_morning_and_afternoon(db, manager_context, emplo
 def test_company_holiday_and_team_calendar_http(
     db, client, manager_context, employee_context, employee_password, manager_password
 ):
-    # 1. Login as manager and create a holiday
     mgr_login = client.post(
         "/api/auth/login",
         json={"email": manager_context.email, "password": manager_password},
@@ -629,7 +610,6 @@ def test_company_holiday_and_team_calendar_http(
     assert holiday_res.status_code == 201
     holiday_id = holiday_res.json()["holiday_id"]
 
-    # 2. Login as employee and list holidays
     emp_login = client.post(
         "/api/auth/login",
         json={"email": employee_context.email, "password": employee_password},
@@ -640,7 +620,6 @@ def test_company_holiday_and_team_calendar_http(
     assert holidays_list.status_code == 200
     assert any(h["holiday_id"] == holiday_id for h in holidays_list.json())
 
-    # 3. Test calculate-days preview endpoint
     calc_res = client.post(
         "/api/leave/calculate-days",
         headers={"Authorization": f"Bearer {emp_token}"},
@@ -651,19 +630,15 @@ def test_company_holiday_and_team_calendar_http(
     )
     assert calc_res.status_code == 200
     calc_data = calc_res.json()
-    # 2026-04-09 (Thu), 2026-04-10 (Fri holiday), 2026-04-11 (Sat), 2026-04-12 (Sun), 2026-04-13 (Mon)
-    # Total calendar days = 5, weekend days = 2, holiday days = 1, total working days = 2 (Thu + Mon)
     assert Decimal(calc_data["total_working_days"]) == Decimal("2")
     assert calc_data["calendar_days"] == 5
     assert calc_data["weekend_days"] == 2
     assert calc_data["holiday_days"] == 1
 
-    # 4. Test team out of office endpoint
     team_res = client.get("/api/leave/team-out-of-office", headers={"Authorization": f"Bearer {emp_token}"})
     assert team_res.status_code == 200
     assert isinstance(team_res.json(), list)
 
-    # 5. Manager deletes holiday
     del_res = client.delete(
         f"/api/leave/holidays/{holiday_id}",
         headers={"Authorization": f"Bearer {mgr_token}"},
@@ -671,13 +646,12 @@ def test_company_holiday_and_team_calendar_http(
     assert del_res.status_code == 200
 
 
-def test_leave_request_on_custom_holiday_fails_with_mention(db, manager_context, employee_context):
+async def test_leave_request_on_custom_holiday_fails_with_mention(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(10))
+    leave_type = await _create_leave_type(svc, manager_context, default_days=Decimal(10))
 
-    # Create a custom one-off holiday on Tuesday 2026-09-15
     tue = date(2026, 9, 15)
-    svc.create_company_holiday(
+    await svc.create_company_holiday(
         manager_context,
         name="Company Retreat Day",
         holiday_date=tue,
@@ -685,7 +659,7 @@ def test_leave_request_on_custom_holiday_fails_with_mention(db, manager_context,
     )
 
     with pytest.raises(ValueError, match="Company Retreat Day") as exc_info:
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=tue,
@@ -695,13 +669,12 @@ def test_leave_request_on_custom_holiday_fails_with_mention(db, manager_context,
     assert "no leave deduction or request is needed" in str(exc_info.value)
 
 
-def test_leave_request_on_annual_recurring_holiday_fails_with_mention(db, manager_context, employee_context):
+async def test_leave_request_on_annual_recurring_holiday_fails_with_mention(db, manager_context, employee_context):
     svc = LeaveService(db)
-    leave_type = _create_leave_type(svc, manager_context, default_days=Decimal(10))
+    leave_type = await _create_leave_type(svc, manager_context, default_days=Decimal(10))
 
-    # Create an annual recurring holiday
     fri = date(2026, 9, 18)
-    svc.create_company_holiday(
+    await svc.create_company_holiday(
         manager_context,
         name="Annual Gala Day",
         holiday_date=fri,
@@ -709,12 +682,10 @@ def test_leave_request_on_annual_recurring_holiday_fails_with_mention(db, manage
     )
 
     with pytest.raises(ValueError, match="Annual Gala Day") as exc_info:
-        svc.request_leave(
+        await svc.request_leave(
             employee_context,
             leave_type_id=leave_type.leave_type_id,
             start_date=fri,
             end_date=fri,
         )
     assert "annual recurring holiday" in str(exc_info.value)
-
-

@@ -5,12 +5,13 @@ import uuid
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_optional_user, require_role
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
 from app.capabilities.settings import SettingsService
 from app.contracts.auth import UserContext
-from app.db.sync_session import get_db
+from app.db.session import get_db
 from app.domain.identity import Department, Person
 from app.evaluation.keyword_suggestion import suggest_keywords
 from app.integrations.object_store import SyncS3ObjectStore
@@ -44,15 +45,7 @@ ALLOWED_RESUME_TYPES = (".pdf", ".docx")
 
 
 def _to_structured_resume(raw: dict | None) -> StructuredResumeOut | None:
-    """Build a typed StructuredResumeOut from the stored structuring result, or None if absent.
-
-    Unlike the rest of `raw_payload` (LLM output, camelCase), this comes
-    from `resume_structuring.StructuredResume.to_dict()` — already
-    snake_case, but extracted explicitly here (not `**raw`) since that dict
-    also carries the parsed `start_year`/`end_year` alongside the raw date
-    strings — passed through (not dropped) so the UI can tell a cleanly
-    parsed date from a garbled one instead of displaying either the same way.
-    """
+    """Build a typed StructuredResumeOut from the stored structuring result, or None if absent."""
     if not isinstance(raw, dict):
         return None
     return StructuredResumeOut(
@@ -84,13 +77,7 @@ def _to_structured_resume(raw: dict | None) -> StructuredResumeOut | None:
 
 
 def _to_detail(raw_payload: dict | None) -> EvaluationDetail | None:
-    """Build a typed EvaluationDetail from a stored raw evaluation payload, or None if absent.
-
-    The LLM's raw payload uses camelCase keys (`keyFactors`, `matchedKeywords`,
-    ...); translated explicitly here rather than via a Pydantic alias
-    generator, matching the wire format (snake_case) every other field in
-    this API uses.
-    """
+    """Build a typed EvaluationDetail from a stored raw evaluation payload, or None if absent."""
     if not raw_payload:
         return None
     profile = raw_payload.get("candidateProfile")
@@ -141,57 +128,72 @@ def _to_application_out(application, evaluation=None) -> ApplicationOut:
     )
 
 
-def _to_application_detail_out(svc: RecruitmentService, application) -> ApplicationDetailOut:
+async def _to_application_detail_out(svc: RecruitmentService, application) -> ApplicationDetailOut:
     """Build a manager-facing detail response: application + evaluation + candidate contact info."""
-    evaluation = svc.latest_evaluation(application.application_id)
+    evaluation = await svc.latest_evaluation(application.application_id)
     payload = _to_application_out(application, evaluation).model_dump()
-    candidate = svc._identity.get_candidate_for_application(application)
-    # A linked Employee row means the candidate was hired from this pipeline
-    # (the application status itself stays SHORTLISTED).
+    candidate = await svc._identity.get_candidate_for_application(application)
     payload["hired"] = candidate.hired_employee_id is not None if candidate else False
+    cand_name = await _candidate_display(svc, candidate)
+    cand_email = await _candidate_email(svc, candidate)
     return ApplicationDetailOut(
         **payload,
-        candidate_name=_candidate_display(svc, candidate),
-        candidate_email=_candidate_email(svc, candidate),
+        candidate_name=cand_name,
+        candidate_email=cand_email,
     )
 
 
-def _to_status_out(application) -> ApplicationStatusOut:
+async def _to_status_out(application, db: AsyncSession | None = None) -> ApplicationStatusOut:
     """Build a candidate-facing response: status only, no AI screening result."""
+    vacancy_title = None
+    try:
+        if application.vacancy is not None:
+            vacancy_title = application.vacancy.title
+    except Exception:
+        pass
+    if vacancy_title is None and db is not None and getattr(application, "vacancy_id", None) is not None:
+        try:
+            vac = await db.get(Vacancy, application.vacancy_id)
+            if vac is not None:
+                vacancy_title = vac.title
+        except Exception:
+            pass
+
     return ApplicationStatusOut(
         application_id=application.application_id,
         vacancy_id=application.vacancy_id,
-        vacancy_title=application.vacancy.title if application.vacancy else None,
+        vacancy_title=vacancy_title,
         application_status=application.application_status,
         applied_at=application.applied_at,
         withdrawn_at=application.withdrawn_at,
     )
 
 
-def _svc(db=Depends(get_db)) -> RecruitmentService:
+
+def _svc(db: AsyncSession = Depends(get_db)) -> RecruitmentService:
     """FastAPI dependency that builds a RecruitmentService bound to the request's DB session."""
     return RecruitmentService(db)
 
 
-def _department_name(svc: RecruitmentService, department_id: uuid.UUID) -> str | None:
+async def _department_name(svc: RecruitmentService, department_id: uuid.UUID) -> str | None:
     """Resolve a department id to its display name, or None if it no longer exists."""
-    dept = svc._db.get(Department, department_id)
+    dept = await svc._db.get(Department, department_id)
     return dept.name if dept else None
 
 
-def _candidate_display(svc: RecruitmentService, candidate) -> str | None:
+async def _candidate_display(svc: RecruitmentService, candidate) -> str | None:
     """Return the candidate's full display name, or None if the candidate/person is unknown."""
     if candidate is None:
         return None
-    person = svc._db.get(Person, candidate.person_id)
+    person = await svc._db.get(Person, candidate.person_id)
     return f"{person.first_name} {person.last_name}".strip() if person else None
 
 
-def _candidate_email(svc: RecruitmentService, candidate) -> str | None:
+async def _candidate_email(svc: RecruitmentService, candidate) -> str | None:
     """Return the candidate's email address, or None if the candidate/person is unknown."""
     if candidate is None:
         return None
-    person = svc._db.get(Person, candidate.person_id)
+    person = await svc._db.get(Person, candidate.person_id)
     return person.email if person else None
 
 
@@ -215,13 +217,13 @@ def _vacancy_out(v) -> VacancyOut:
 
 
 @router.get("/vacancies", response_model=list[VacancyOut])
-def list_vacancies(
+async def list_vacancies(
     user: UserContext | None = Depends(get_optional_user),
     svc: RecruitmentService = Depends(_svc),
 ):
     """List vacancies; anonymous visitors and candidates see only open ones."""
-    vacancies = svc.list_vacancies(user)
-    depts = {v.department_id: _department_name(svc, v.department_id) for v in vacancies}
+    vacancies = await svc.list_vacancies(user)
+    depts = {v.department_id: await _department_name(svc, v.department_id) for v in vacancies}
     out = []
     for v in vacancies:
         vo = _vacancy_out(v)
@@ -231,14 +233,14 @@ def list_vacancies(
 
 
 @router.post("/vacancies", response_model=VacancyOut, status_code=status.HTTP_201_CREATED)
-def create_vacancy(
+async def create_vacancy(
     body: VacancyCreate,
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """Create a new vacancy (manager-only)."""
     try:
-        vacancy = svc.create_vacancy(
+        vacancy = await svc.create_vacancy(
             user,
             title=body.title,
             department_name=body.department_name,
@@ -260,12 +262,7 @@ async def suggest_vacancy_keywords(
     body: KeywordSuggestionRequest,
     user: UserContext = Depends(require_role("HR_ADMIN")),
 ):
-    """Suggest scoring keywords + tiers from a job title/description (manager-only).
-
-    A starting point for the manager to review, check/uncheck, and re-tier
-    before posting — not the final rubric. Runs before the vacancy exists,
-    so it takes the title/description directly rather than a vacancy_id.
-    """
+    """Suggest scoring keywords + tiers from a job title/description (manager-only)."""
     settings_svc = SettingsService()
     llm_overrides = settings_svc.resolved_llm_overrides()
     try:
@@ -285,53 +282,53 @@ async def suggest_vacancy_keywords(
 
 
 @router.get("/vacancies/{vacancy_id}", response_model=VacancyOut)
-def get_vacancy(
+async def get_vacancy(
     vacancy_id: uuid.UUID,
     user: UserContext | None = Depends(get_optional_user),
     svc: RecruitmentService = Depends(_svc),
 ):
     """Return a single vacancy by id, or 404 if not found (public — job postings)."""
-    vacancy = svc.get_vacancy(vacancy_id)
+    vacancy = await svc.get_vacancy(vacancy_id)
     if vacancy is None:
         raise HTTPException(status_code=404, detail="Vacancy not found.")
     vo = _vacancy_out(vacancy)
-    vo.department_name = _department_name(svc, vacancy.department_id)
+    vo.department_name = await _department_name(svc, vacancy.department_id)
     return vo
 
 
 @router.post("/vacancies/{vacancy_id}/close", response_model=VacancyOut)
-def close_vacancy(
+async def close_vacancy(
     vacancy_id: uuid.UUID,
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """Archive a vacancy: move it to CLOSED while keeping its applications (manager-only)."""
     try:
-        vacancy = svc.archive_vacancy(user, vacancy_id)
+        vacancy = await svc.archive_vacancy(user, vacancy_id)
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
     vo = _vacancy_out(vacancy)
-    vo.department_name = _department_name(svc, vacancy.department_id)
+    vo.department_name = await _department_name(svc, vacancy.department_id)
     return vo
 
 
 @router.post("/vacancies/{vacancy_id}/reopen", response_model=VacancyOut)
-def reopen_vacancy(
+async def reopen_vacancy(
     vacancy_id: uuid.UUID,
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """Re-open an archived (CLOSED) vacancy so candidates can apply again (manager-only)."""
     try:
-        vacancy = svc.reopen_vacancy(user, vacancy_id)
+        vacancy = await svc.reopen_vacancy(user, vacancy_id)
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
     vo = _vacancy_out(vacancy)
-    vo.department_name = _department_name(svc, vacancy.department_id)
+    vo.department_name = await _department_name(svc, vacancy.department_id)
     return vo
 
 
@@ -343,18 +340,14 @@ def reopen_vacancy(
     response_model=ApplicationStatusOut,
     status_code=status.HTTP_201_CREATED,
 )
-def apply_to_vacancy(
+async def apply_to_vacancy(
     vacancy_id: uuid.UUID,
     file: UploadFile,
     user: UserContext = Depends(require_role("CANDIDATE")),
     svc: RecruitmentService = Depends(_svc),
 ):
-    """Apply to a vacancy (candidate-only): validates and stores the resume, then creates the application.
-
-    Plain `def` (not `async def`) so FastAPI runs the blocking MinIO upload
-    and DB commit in its threadpool instead of on the shared event loop.
-    """
-    data = file.file.read()
+    """Apply to a vacancy (candidate-only): validates and stores the resume, then creates the application."""
+    data = await file.read()
     if len(data) == 0:
         raise HTTPException(status_code=400, detail="The uploaded resume is empty.")
     if len(data) > MAX_RESUME_BYTES:
@@ -371,20 +364,19 @@ def apply_to_vacancy(
     if not is_parsable:
         raise HTTPException(status_code=400, detail=parsability_reason)
 
-    # upload to MinIO FIRST; only then create the application row
     try:
         object_key = SyncS3ObjectStore().put_resume(data, filename, file.content_type or "")
     except Exception as err:
         raise HTTPException(status_code=500, detail="Failed to store resume.") from err
 
     try:
-        application = svc.apply(user, vacancy_id=vacancy_id, cv_object_key=object_key)
+        application = await svc.apply(user, vacancy_id=vacancy_id, cv_object_key=object_key)
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
 
-    return _to_status_out(application)
+    return await _to_status_out(application, db=svc._db)
 
 
 @router.post(
@@ -392,7 +384,7 @@ def apply_to_vacancy(
     response_model=ApplicationStatusOut,
     status_code=status.HTTP_201_CREATED,
 )
-def apply_as_new_candidate(
+async def apply_as_new_candidate(
     vacancy_id: uuid.UUID,
     file: UploadFile,
     first_name: str = Form(...),
@@ -402,17 +394,8 @@ def apply_as_new_candidate(
     password: str = Form(...),
     svc: RecruitmentService = Depends(_svc),
 ):
-    """Apply to an open vacancy as a new (anonymous) candidate.
-
-    No login required: the candidate's details + resume are collected here and
-    their account (password chosen in the form) is provisioned in the same
-    transaction as the application. Blocks when the email already exists —
-    that person should sign in and use the authenticated apply flow instead.
-
-    Plain `def` (not `async def`) so FastAPI runs the blocking MinIO upload
-    and DB commit in its threadpool instead of on the shared event loop.
-    """
-    data = file.file.read()
+    """Apply to an open vacancy as a new (anonymous) candidate."""
+    data = await file.read()
     if len(data) == 0:
         raise HTTPException(status_code=400, detail="The uploaded resume is empty.")
     if len(data) > MAX_RESUME_BYTES:
@@ -429,14 +412,13 @@ def apply_as_new_candidate(
     if not is_parsable:
         raise HTTPException(status_code=400, detail=parsability_reason)
 
-    # upload to MinIO FIRST; only then provision the account + application row
     try:
         object_key = SyncS3ObjectStore().put_resume(data, filename, file.content_type or "")
     except Exception as err:
         raise HTTPException(status_code=500, detail="Failed to store resume.") from err
 
     try:
-        application = svc.apply_as_new_candidate(
+        application = await svc.apply_as_new_candidate(
             vacancy_id=vacancy_id,
             cv_object_key=object_key,
             first_name=first_name,
@@ -448,108 +430,106 @@ def apply_as_new_candidate(
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
     except IntegrityError as err:
-        # Two concurrent submissions with the same email racing the unique
-        # constraint on Person.email — the duplicate-email guard above usually
-        # catches it, this is the last-resort backstop.
         raise HTTPException(
             status_code=409, detail="An account already exists for this email — sign in instead."
         ) from err
 
-    return _to_status_out(application)
+    return await _to_status_out(application, db=svc._db)
 
 
 @router.get("/applications/mine", response_model=list[ApplicationStatusOut])
-def my_applications(
+async def my_applications(
     user: UserContext = Depends(require_role("CANDIDATE")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """List the current candidate's applications — status only, no AI screening result."""
-    applications = svc.list_my_applications(user)
-    return [_to_status_out(a) for a in applications]
+    applications = await svc.list_my_applications(user)
+    return [await _to_status_out(a, db=svc._db) for a in applications]
 
 
 @router.get("/applications/mine/{application_id}", response_model=ApplicationStatusOut)
-def my_application(
+async def my_application(
     application_id: uuid.UUID,
     user: UserContext = Depends(require_role("CANDIDATE")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """Return one of the current candidate's applications by id — status only."""
     try:
-        application = svc.get_my_application(user, application_id)
+        application = await svc.get_my_application(user, application_id)
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
-    return _to_status_out(application)
+    return await _to_status_out(application, db=svc._db)
 
 
 @router.post("/applications/mine/{application_id}/withdraw", response_model=ApplicationStatusOut)
 @router.post("/applications/{application_id}/withdraw", response_model=ApplicationStatusOut)
-def withdraw_application(
+async def withdraw_application(
     application_id: uuid.UUID,
     user: UserContext = Depends(require_role("CANDIDATE")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """Withdraw one of the current candidate's own active applications."""
     try:
-        application = svc.withdraw_application(user, application_id)
+        application = await svc.withdraw_application(user, application_id)
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:
         if str(err) == "Application not found.":
             raise HTTPException(status_code=404, detail=str(err)) from err
         raise HTTPException(status_code=400, detail=str(err)) from err
-    return _to_status_out(application)
+    return await _to_status_out(application, db=svc._db)
+
 
 
 @router.get("/applications", response_model=list[ApplicationDetailOut])
-def all_applications(
+async def all_applications(
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """List every application across all vacancies, including candidate details (manager-only)."""
-    applications = svc.list_all_applications(user)
-    return [_to_application_detail_out(svc, a) for a in applications]
+    applications = await svc.list_all_applications(user)
+    return [await _to_application_detail_out(svc, a) for a in applications]
 
 
 @router.get(
     "/vacancies/{vacancy_id}/applications", response_model=list[ApplicationDetailOut]
 )
-def vacancy_applications(
+async def vacancy_applications(
     vacancy_id: uuid.UUID,
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """List all applications for a vacancy, including candidate details (manager-only)."""
     try:
-        applications = svc.list_vacancy_applications(user, vacancy_id)
+        applications = await svc.list_vacancy_applications(user, vacancy_id)
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
-    return [_to_application_detail_out(svc, a) for a in applications]
+    return [await _to_application_detail_out(svc, a) for a in applications]
 
 
 @router.get("/applications/{application_id}", response_model=ApplicationDetailOut)
-def application_detail(
+async def application_detail(
     application_id: uuid.UUID,
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """Return a single application for review, with its evaluation and candidate details."""
     try:
-        application = svc.get_application_for_review(user, application_id)
+        application = await svc.get_application_for_review(user, application_id)
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
-    return _to_application_detail_out(svc, application)
+    return await _to_application_detail_out(svc, application)
 
 
 @router.get("/applications/{application_id}/resume")
-def download_resume(
+async def download_resume(
     application_id: uuid.UUID,
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
     """Stream the stored resume file for an application (manager-only)."""
     try:
-        application = svc.get_application_for_review(user, application_id)
+        application = await svc.get_application_for_review(user, application_id)
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
     if not application.cv_object_key:
@@ -567,7 +547,7 @@ def download_resume(
 
 
 @router.post("/applications/{application_id}/decision", response_model=ApplicationOut)
-def decide_application(
+async def decide_application(
     application_id: uuid.UUID,
     body: DecisionRequest,
     user: UserContext = Depends(require_role("HR_ADMIN")),
@@ -577,25 +557,26 @@ def decide_application(
     if body.action not in {"approve", "reject"}:
         raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'.")
     try:
-        application = svc.decide_application(user, application_id, approve=body.action == "approve")
+        application = await svc.decide_application(user, application_id, approve=body.action == "approve")
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
-    return _to_application_out(application, svc.latest_evaluation(application_id))
+    return _to_application_out(application, await svc.latest_evaluation(application_id))
 
 
 @router.post("/applications/{application_id}/re-evaluate", response_model=ApplicationOut)
-def re_evaluate_application(
+async def re_evaluate_application(
     application_id: uuid.UUID,
     user: UserContext = Depends(require_role("HR_ADMIN")),
     svc: RecruitmentService = Depends(_svc),
 ):
-    """Re-run the AI screening for an application (manager-only) — e.g. after fixing a missing API key."""
+    """Re-run the AI screening for an application (manager-only)."""
     try:
-        application = svc.re_evaluate_application(user, application_id)
+        application = await svc.re_evaluate_application(user, application_id)
     except PermissionError_ as err:
         raise HTTPException(status_code=403, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
-    return _to_application_out(application, svc.latest_evaluation(application_id))
+    return _to_application_out(application, await svc.latest_evaluation(application_id))
+

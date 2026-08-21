@@ -48,8 +48,8 @@ def _state(actor, session_id: str = "sess-1") -> LeaveAgentState:
     )
 
 
-def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(20)):
-    return svc.create_leave_type(
+async def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(20)):
+    return await svc.create_leave_type(
         actor,
         leave_name=name,
         description="Planned time off.",
@@ -58,6 +58,7 @@ def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(
         is_paid=True,
         max_consecutive_days=None,
     )
+
 
 
 class FakeChatProvider:
@@ -164,7 +165,7 @@ async def test_redis_claim_blocks_concurrent_confirmation(
     nothing is written — the confirmation gate is cross-process, not just a
     per-process flag."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     start = get_clock().today() + timedelta(days=7)
     end = start + timedelta(days=1)
 
@@ -211,7 +212,7 @@ async def test_redis_claim_blocks_concurrent_confirmation(
 
     assert result.tool_called is None
     assert "already processing" in result.reply
-    assert db.scalar(select(LeaveRequest)) is None  # nothing executed
+    assert (await db.scalar(select(LeaveRequest))) is None  # nothing executed
 
     # Once the claim is released, the same staged action executes normally.
     store.end_execution(state.session_id)
@@ -230,7 +231,8 @@ async def test_redis_claim_blocks_concurrent_confirmation(
         user_message="yes",
     )
     assert result.tool_called == "submit_leave_request"
-    assert db.scalar(select(LeaveRequest)) is not None
+    assert (await db.scalar(select(LeaveRequest))) is not None
+
 
 
 def test_delete_drops_working_state_and_claims():

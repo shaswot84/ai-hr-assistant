@@ -31,8 +31,8 @@ ai-hr-assistant/
 │   ├── src/app/
 │   │   ├── api/knowledge.py  # ingestion + retrieval REST endpoints
 │   │   ├── config/           # pydantic-settings (env-driven)
-│   │   ├── db/                # session.py = async engine (Knowledge Service + Alembic);
-│   │   │                      # sync_session.py = sync engine (auth/recruitment)
+│   │   ├── db/                # session.py = unified async SQLAlchemy engine (asyncpg)
+│   │   │                      # for all capabilities, repositories, services, agents, and Alembic
 │   │   ├── knowledge/        # models, contracts, retrieval, ranking, grounding,
 │   │   │   ├── ingestion/    #   confidence, service (RAG) + resume_extraction (recruitment)
 │   │   │   │                 #   validate/parse/normalize/chunk engine,
@@ -57,7 +57,7 @@ ai-hr-assistant/
 ## Stack
 
 - **Frontend**: Next.js (App Router, React, Tailwind CSS v4) — role-aware login + Manager/Candidate portals in one app.
-- **Backend**: FastAPI (Python), dependency management via `uv`. Two SQLAlchemy engines share one Postgres and one `Base.metadata`: an **async** engine (`db/session.py`, asyncpg) for the Knowledge Service and Alembic, and a **sync** engine (`db/sync_session.py`, psycopg2) for the auth/recruitment stack — both derived from a single `DATABASE_URL`.
+- **Backend**: FastAPI (Python), dependency management via `uv`. Unified **async** SQLAlchemy engine (`db/session.py`, asyncpg / aiosqlite in tests) for all capabilities, repositories, services, LangGraph agents, and Alembic migrations — eliminating dual connection pools and preventing thread-blocking sync DB calls.
 - **Auth**: **self-issued JWT** behind a swappable `AuthProvider` interface. The backend signs short-lived HS256 access tokens after verifying email+password against the `application_user` table (PBKDF2-hashed, 600k iterations). No external IdP, cloud dependency, or webhook — works on every localhost clone. Coarse roles (`HR_ADMIN`/`EMPLOYEE`/`CANDIDATE`) are read from the DB on every request and enforced in FastAPI (see `hr-project-docs/architecture/high_level_architecture.md` §4 — this project uses JWT in place of the doc's Keycloak, an explicit team decision).
 - **Database**: PostgreSQL (+ pgvector); **MinIO** for resumes/documents; **Mailpit** for dev email.
 - **AI scoring**: hosted Ollama API via the Model Gateway; deterministic keyword-overlap fallback when no API key is set, so the pipeline stays demoable offline.

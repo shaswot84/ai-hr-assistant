@@ -16,7 +16,7 @@ from langgraph.types import StreamWriter
 from app.agents.recruitment_agent.agent import handle_turn
 from app.capabilities.recruitment import RecruitmentService
 from app.contracts.auth import UserContext
-from app.db.sync_session import SessionLocal
+from app.db.session import async_session_factory
 from app.model_gateway.provider import ChatProvider
 
 if TYPE_CHECKING:
@@ -29,11 +29,7 @@ def make_recruitment_node(
     service: RecruitmentService | None = None,
     chat_provider: ChatProvider | None = None,
 ) -> Callable[[SupervisorState, StreamWriter], Awaitable[dict]]:
-    """Build the recruitment node for the supervisor graph.
-
-    ``service`` and ``chat_provider`` may be injected for tests; otherwise
-    a request-scoped ``RecruitmentService`` is built on the sync session.
-    """
+    """Build the recruitment node for the supervisor graph."""
 
     async def recruitment_node(state: SupervisorState, writer: StreamWriter) -> dict:
         query = state.get("current_query", "")
@@ -46,7 +42,7 @@ def make_recruitment_node(
                 user_message=query,
             )
         else:
-            with SessionLocal() as db:
+            async with async_session_factory() as db:
                 result = await handle_turn(
                     actor=actor,
                     state=None,
@@ -71,3 +67,4 @@ def make_recruitment_node(
         }
 
     return recruitment_node
+

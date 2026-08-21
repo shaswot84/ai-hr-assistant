@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 from app.domain.identity import ApplicationUser
 from app.repositories.audit import AuditRepo
@@ -14,13 +15,13 @@ def _login(client, email: str, password: str) -> str:
     return res.json()["access_token"]
 
 
-def test_audit_repo_record_and_list(db, manager_context):
-    app_user = db.query(ApplicationUser).filter_by(external_subject=manager_context.subject).first()
+async def test_audit_repo_record_and_list(db, manager_context):
+    app_user = await db.scalar(select(ApplicationUser).where(ApplicationUser.external_subject == manager_context.subject))
     repo = AuditRepo(db)
 
     # Record 3 events
     target_id_1 = uuid.uuid4()
-    entry1 = repo.record(
+    entry1 = await repo.record(
         actor_user_id=app_user.user_id,
         action="VACANCY_CREATED",
         target_type="Vacancy",
@@ -30,7 +31,7 @@ def test_audit_repo_record_and_list(db, manager_context):
     )
 
     target_id_2 = uuid.uuid4()
-    entry2 = repo.record(
+    entry2 = await repo.record(
         actor_user_id=app_user.user_id,
         action="EMPLOYEE_CREATED",
         target_type="Employee",
@@ -39,7 +40,7 @@ def test_audit_repo_record_and_list(db, manager_context):
         new_state={"name": "Alice Developer"},
     )
 
-    entry3 = repo.record(
+    entry3 = await repo.record(
         actor_user_id=None,
         action="SYSTEM_MAINTENANCE",
         target_type="System",
@@ -48,10 +49,10 @@ def test_audit_repo_record_and_list(db, manager_context):
         previous_state={"maintenance": False},
         new_state={"maintenance": True},
     )
-    db.commit()
+    await db.commit()
 
     # Query all
-    items, total = repo.list_logs()
+    items, total = await repo.list_logs()
     assert total == 3
     assert len(items) == 3
     assert items[0].audit_id == entry3.audit_id
@@ -62,37 +63,37 @@ def test_audit_repo_record_and_list(db, manager_context):
     assert items[1].actor_email == "manager@acme-hr-test.dev"
 
     # Filter by action
-    items_action, total_action = repo.list_logs(action="VACANCY_CREATED")
+    items_action, total_action = await repo.list_logs(action="VACANCY_CREATED")
     assert total_action == 1
     assert items_action[0].audit_id == entry1.audit_id
     assert items_action[0].new_state == {"title": "Software Engineer", "status": "OPEN"}
 
     # Filter by target_type (case-insensitive)
-    items_target, total_target = repo.list_logs(target_type="employee")
+    items_target, total_target = await repo.list_logs(target_type="employee")
     assert total_target == 1
     assert items_target[0].audit_id == entry2.audit_id
 
     # Filter by actor_user_id
-    items_actor, total_actor = repo.list_logs(actor_user_id=app_user.user_id)
+    items_actor, total_actor = await repo.list_logs(actor_user_id=app_user.user_id)
     assert total_actor == 2
 
     # Search by text
-    items_search, total_search = repo.list_logs(search="Software")
+    items_search, total_search = await repo.list_logs(search="Software")
     assert total_search == 1
     assert items_search[0].audit_id == entry1.audit_id
 
     # Search by actor name
-    items_search_actor, total_search_actor = repo.list_logs(search="Hiring")
+    items_search_actor, total_search_actor = await repo.list_logs(search="Hiring")
     assert total_search_actor == 2
 
     # Get by ID
-    single = repo.get_by_id(entry1.audit_id)
+    single = await repo.get_by_id(entry1.audit_id)
     assert single is not None
     assert single.action == "VACANCY_CREATED"
     assert single.actor_name == "Hiring Manager"
 
     # Get filter options
-    opts = repo.get_filter_options()
+    opts = await repo.get_filter_options()
     assert "VACANCY_CREATED" in opts["actions"]
     assert "EMPLOYEE_CREATED" in opts["actions"]
     assert "SYSTEM_MAINTENANCE" in opts["actions"]
@@ -125,15 +126,15 @@ def test_audit_logs_api_requires_hr_admin(
     assert "total_pages" in body
 
 
-def test_audit_api_filtering_and_detail(client, db, manager_context, manager_password):
+async def test_audit_api_filtering_and_detail(client, db, manager_context, manager_password):
     mgr_token = _login(client, manager_context.email, manager_password)
     headers = {"Authorization": f"Bearer {mgr_token}"}
 
-    app_user = db.query(ApplicationUser).filter_by(external_subject=manager_context.subject).first()
+    app_user = await db.scalar(select(ApplicationUser).where(ApplicationUser.external_subject == manager_context.subject))
     repo = AuditRepo(db)
 
     target_id = uuid.uuid4()
-    entry = repo.record(
+    entry = await repo.record(
         actor_user_id=app_user.user_id,
         action="LEAVE_REQUESTED",
         target_type="LeaveRequest",
@@ -142,7 +143,7 @@ def test_audit_api_filtering_and_detail(client, db, manager_context, manager_pas
         previous_state=None,
         new_state={"days": 3, "reason": "Vacation"},
     )
-    db.commit()
+    await db.commit()
 
     # List with action filter
     res = client.get("/api/audit/logs?action=LEAVE_REQUESTED", headers=headers)
@@ -172,3 +173,4 @@ def test_audit_api_filtering_and_detail(client, db, manager_context, manager_pas
     assert "LEAVE_REQUESTED" in filters_data["actions"]
     assert "LeaveRequest" in filters_data["target_types"]
     assert filters_data["total_count"] >= 1
+

@@ -1,17 +1,17 @@
-from __future__ import annotations
-
+import asyncio
 import io
 
 from docx import Document
 from sqlalchemy import select
 
 from app.capabilities.recruitment import RecruitmentService
-from app.db.sync_session import SessionLocal, init_db
+from app.db.session import async_session_factory, init_db
 from app.domain.recruitment import Vacancy
 from app.integrations.object_store import SyncS3ObjectStore
 from app.knowledge.resume_extraction import extract_text, is_ats_friendly, looks_like_resume
 
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
 
 
 def _build_resume_docx(lines: list[tuple[str, str]]) -> bytes:
@@ -438,26 +438,15 @@ SAMPLE_APPLICATIONS = [
 ]
 
 
-def seed_sample_applications() -> int:
-    """Submit the sample resumes above as real applications through the full pipeline.
-
-    Runs the exact same DOCX extraction, resume classification, and
-    ATS-parsability checks a live upload goes through, stores each resume in
-    the real object store, and creates the application through the real
-    capability layer — which enqueues a real EVALUATE_APPLICATION outbox
-    job. The AI screening result comes from the actual LLM once the worker
-    picks the job up, not from fabricated evaluation data. Requires a
-    configured AI provider (see Settings) and the worker running to see
-    results appear. Idempotent: skips any email that already has an account.
-    """
-    init_db()
-    db = SessionLocal()
-    try:
+async def seed_sample_applications() -> int:
+    """Submit the sample resumes above as real applications through the full pipeline."""
+    await init_db()
+    async with async_session_factory() as db:
         svc = RecruitmentService(db)
         store = SyncS3ObjectStore()
         created = 0
         for entry in SAMPLE_APPLICATIONS:
-            vacancy = db.scalar(select(Vacancy).where(Vacancy.title == entry["vacancy_title"]))
+            vacancy = await db.scalar(select(Vacancy).where(Vacancy.title == entry["vacancy_title"]))
             if vacancy is None:
                 print(f"Skipping {entry['email']}: vacancy '{entry['vacancy_title']}' not found.")
                 continue
@@ -475,7 +464,7 @@ def seed_sample_applications() -> int:
 
             object_key = store.put_resume(data, entry["filename"], DOCX_CONTENT_TYPE)
             try:
-                svc.apply_as_new_candidate(
+                await svc.apply_as_new_candidate(
                     vacancy_id=vacancy.vacancy_id,
                     cv_object_key=object_key,
                     first_name=entry["first"],
@@ -491,9 +480,8 @@ def seed_sample_applications() -> int:
 
         print(f"Seeded {created} real application(s) with generated resumes.")
         return created
-    finally:
-        db.close()
 
 
 if __name__ == "__main__":
-    seed_sample_applications()
+    asyncio.run(seed_sample_applications())
+

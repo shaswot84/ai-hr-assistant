@@ -1,16 +1,4 @@
-"""Test setup for the auth/recruitment unit suite.
-
-The test-wide environment (SQLite ``DATABASE_URL``, JWT secret, MinIO
-auto-init) is bootstrapped in ``tests/conftest.py`` before any app module can
-be imported. This conftest wires the auth/recruitment routers to a throwaway
-SQLite file and provides per-test database/client fixtures.
-
-Scope: only what `test_auth.py`/`test_recruitment.py` exercise (auth +
-recruitment). `app.knowledge` (pgvector-backed RAG models) is never imported
-here, so `Base.metadata` only contains the domain tables when
-`create_all()` runs — importing `app.knowledge.models` would pull in
-Postgres-only `Vector` columns that SQLite can't create.
-"""
+"""Test setup for the auth/recruitment unit suite."""
 
 from __future__ import annotations
 
@@ -19,11 +7,12 @@ import os
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.passwords import hash_password
 from app.contracts.auth import UserContext
 from app.db.base import Base
-from app.db.sync_session import SessionLocal, engine
+from app.db.session import async_session_factory, engine
 from app.domain import audit, conversation, leave, outbox, recruitment, setting  # noqa: F401
 from app.domain.identity import (
     ApplicationUser,
@@ -36,13 +25,6 @@ from app.domain.identity import (
 from app.shared.clock import get_clock
 
 
-# A purpose-built app with only the routers this suite exercises — not the
-# real `app.main:app`. That app also wires up `app.api.knowledge`, which
-# imports `db/session.py`'s *async* engine at module load time; that engine
-# reads the same DATABASE_URL as the sync engine above, and a sqlite:// URL
-# (fine for the sync engine) isn't a valid async driver, so importing the
-# full app here would crash collection. Knowledge/RAG has its own test suite
-# with its own (Postgres-backed) fixtures — out of scope for this one.
 def _build_test_app() -> FastAPI:
     from app.api.routes import audit as audit_router
     from app.api.routes import auth as auth_router
@@ -65,21 +47,23 @@ fastapi_app = _build_test_app()
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _schema():
+async def _schema():
     """Create all domain tables once for the test session, drop them after."""
-    Base.metadata.create_all(bind=engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     yield
-    Base.metadata.drop_all(bind=engine)
-    engine.dispose()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
 
 
 @pytest.fixture(autouse=True)
-def _clean_tables():
+async def _clean_tables():
     """Truncate every table between tests so each test starts from empty."""
     yield
-    with engine.begin() as conn:
+    async with engine.begin() as conn:
         for table in reversed(Base.metadata.sorted_tables):
-            conn.execute(table.delete())
+            await conn.execute(table.delete())
 
 
 @pytest.fixture(autouse=True)
@@ -91,13 +75,10 @@ def _clean_settings_env_file():
 
 
 @pytest.fixture()
-def db():
-    """A sync DB session bound to the test SQLite file."""
-    session = SessionLocal()
-    try:
+async def db():
+    """An AsyncSession bound to the test SQLite file."""
+    async with async_session_factory() as session:
         yield session
-    finally:
-        session.close()
 
 
 @pytest.fixture()
@@ -107,15 +88,15 @@ def client():
         yield c
 
 
-def _seed_person(db, *, email: str, first: str, last: str) -> Person:
+async def _seed_person(db: AsyncSession, *, email: str, first: str, last: str) -> Person:
     now = get_clock().now()
     person = Person(first_name=first, last_name=last, email=email, created_at=now, updated_at=now)
     db.add(person)
-    db.flush()
+    await db.flush()
     return person
 
 
-def _seed_app_user(db, *, person: Person, subject: str, role: str, password: str) -> ApplicationUser:
+async def _seed_app_user(db: AsyncSession, *, person: Person, subject: str, role: str, password: str) -> ApplicationUser:
     now = get_clock().now()
     app_user = ApplicationUser(
         external_subject=subject,
@@ -126,7 +107,7 @@ def _seed_app_user(db, *, person: Person, subject: str, role: str, password: str
         updated_at=now,
     )
     db.add(app_user)
-    db.flush()
+    await db.flush()
     return app_user
 
 
@@ -136,16 +117,16 @@ def manager_password() -> str:
 
 
 @pytest.fixture()
-def manager_context(db, manager_password) -> UserContext:
+async def manager_context(db: AsyncSession, manager_password: str) -> UserContext:
     """Seed a full manager identity (Person/Employee/ApplicationUser) and return its UserContext."""
     now = get_clock().now()
-    person = _seed_person(db, email="manager@acme-hr-test.dev", first="Hiring", last="Manager")
+    person = await _seed_person(db, email="manager@acme-hr-test.dev", first="Hiring", last="Manager")
     dept = Department(name="Human Resources")
     db.add(dept)
-    db.flush()
+    await db.flush()
     designation = Designation(department_id=dept.department_id, title="HR Manager")
     db.add(designation)
-    db.flush()
+    await db.flush()
     db.add(
         Employee(
             person_id=person.person_id,
@@ -157,8 +138,8 @@ def manager_context(db, manager_password) -> UserContext:
             updated_at=now,
         )
     )
-    _seed_app_user(db, person=person, subject="mgr-subject", role="HR_ADMIN", password=manager_password)
-    db.commit()
+    await _seed_app_user(db, person=person, subject="mgr-subject", role="HR_ADMIN", password=manager_password)
+    await db.commit()
     return UserContext(
         subject="mgr-subject", email=person.email, display_name="Hiring Manager", coarse_role="HR_ADMIN"
     )
@@ -170,16 +151,16 @@ def employee_password() -> str:
 
 
 @pytest.fixture()
-def employee_context(db, employee_password) -> UserContext:
+async def employee_context(db: AsyncSession, employee_password: str) -> UserContext:
     """Seed a full employee identity (Person/Employee/ApplicationUser) and return its UserContext."""
     now = get_clock().now()
-    person = _seed_person(db, email="employee@acme-hr-test.dev", first="Sam", last="Staff")
+    person = await _seed_person(db, email="employee@acme-hr-test.dev", first="Sam", last="Staff")
     dept = Department(name="Engineering")
     db.add(dept)
-    db.flush()
+    await db.flush()
     designation = Designation(department_id=dept.department_id, title="Engineer")
     db.add(designation)
-    db.flush()
+    await db.flush()
     db.add(
         Employee(
             person_id=person.person_id,
@@ -191,8 +172,8 @@ def employee_context(db, employee_password) -> UserContext:
             updated_at=now,
         )
     )
-    _seed_app_user(db, person=person, subject="emp-subject", role="EMPLOYEE", password=employee_password)
-    db.commit()
+    await _seed_app_user(db, person=person, subject="emp-subject", role="EMPLOYEE", password=employee_password)
+    await db.commit()
     return UserContext(
         subject="emp-subject", email=person.email, display_name="Sam Staff", coarse_role="EMPLOYEE"
     )
@@ -204,10 +185,10 @@ def candidate_password() -> str:
 
 
 @pytest.fixture()
-def candidate_context(db, candidate_password) -> UserContext:
+async def candidate_context(db: AsyncSession, candidate_password: str) -> UserContext:
     """Seed a full candidate identity (Person/Candidate/ApplicationUser) and return its UserContext."""
     now = get_clock().now()
-    person = _seed_person(db, email="candidate@acme-hr-test.dev", first="Alex", last="Applicant")
+    person = await _seed_person(db, email="candidate@acme-hr-test.dev", first="Alex", last="Applicant")
     db.add(
         Candidate(
             person_id=person.person_id,
@@ -216,10 +197,11 @@ def candidate_context(db, candidate_password) -> UserContext:
             updated_at=now,
         )
     )
-    _seed_app_user(
+    await _seed_app_user(
         db, person=person, subject="cand-subject", role="CANDIDATE", password=candidate_password
     )
-    db.commit()
+    await db.commit()
     return UserContext(
         subject="cand-subject", email=person.email, display_name="Alex Applicant", coarse_role="CANDIDATE"
     )
+

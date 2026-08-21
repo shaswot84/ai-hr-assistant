@@ -18,8 +18,8 @@ DEFAULT_TEST_KEYWORDS = [
 ]
 
 
-def _create_vacancy(svc, actor, *, scoring_keywords=None):
-    return svc.create_vacancy(
+async def _create_vacancy(svc, actor, *, scoring_keywords=None):
+    return await svc.create_vacancy(
         actor,
         title="Senior Backend Engineer",
         department_name="Engineering",
@@ -31,39 +31,40 @@ def _create_vacancy(svc, actor, *, scoring_keywords=None):
     )
 
 
-def test_create_vacancy_requires_hr_admin(db, candidate_context):
+async def test_create_vacancy_requires_hr_admin(db, candidate_context):
     svc = RecruitmentService(db)
     with pytest.raises(PermissionError_):
-        _create_vacancy(svc, candidate_context)
+        await _create_vacancy(svc, candidate_context)
 
 
-def test_create_vacancy_success(db, manager_context):
+async def test_create_vacancy_success(db, manager_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
+    vacancy = await _create_vacancy(svc, manager_context)
     assert vacancy.status == "OPEN"
     assert vacancy.employment_type == "FULL_TIME"
-    assert vacancy in svc.list_vacancies(manager_context)
+    vacancies = await svc.list_vacancies(manager_context)
+    assert any(v.vacancy_id == vacancy.vacancy_id for v in vacancies)
 
 
-def test_candidate_can_apply_once_then_second_apply_fails(db, manager_context, candidate_context):
+async def test_candidate_can_apply_once_then_second_apply_fails(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
+    vacancy = await _create_vacancy(svc, manager_context)
 
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
     assert application.application_status == "APPLIED"
 
     with pytest.raises(ValueError, match="already applied"):
-        svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/b.pdf")
+        await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/b.pdf")
 
 
-def test_apply_enqueues_candidate_confirmation_and_manager_alert(db, manager_context, candidate_context):
+async def test_apply_enqueues_candidate_confirmation_and_manager_alert(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
 
-    jobs = db.scalars(
+    jobs = (await db.scalars(
         select(OutboxJob).where(OutboxJob.aggregate_id == application.application_id)
-    ).all()
+    )).all()
     by_type = {j.job_type: j for j in jobs}
 
     assert "SEND_APPLICATION_RECEIVED" in by_type
@@ -73,85 +74,83 @@ def test_apply_enqueues_candidate_confirmation_and_manager_alert(db, manager_con
     assert by_type["SEND_NEW_APPLICATION_ALERT"].payload["to_email"] == manager_context.email
 
 
-def test_apply_requires_open_vacancy(db, manager_context, candidate_context):
+async def test_apply_requires_open_vacancy(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    svc.archive_vacancy(manager_context, vacancy.vacancy_id)
+    vacancy = await _create_vacancy(svc, manager_context)
+    await svc.archive_vacancy(manager_context, vacancy.vacancy_id)
 
     with pytest.raises(ValueError, match="not open"):
-        svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+        await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
 
 
-def test_decide_application_shortlist_then_redecide_is_blocked(db, manager_context, candidate_context):
+async def test_decide_application_shortlist_then_redecide_is_blocked(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
 
-    decided = svc.decide_application(manager_context, application.application_id, approve=True)
+    decided = await svc.decide_application(manager_context, application.application_id, approve=True)
     assert decided.application_status == "SHORTLISTED"
 
-    # Regression test: previously a manager could re-decide an already
-    # SHORTLISTED/REJECTED application, re-sending the candidate email and
-    # (on REJECTED -> SHORTLISTED) leaving a stale rejected_at behind.
     with pytest.raises(ValueError, match="already been decided"):
-        svc.decide_application(manager_context, application.application_id, approve=False)
+        await svc.decide_application(manager_context, application.application_id, approve=False)
 
 
-def test_decide_application_reject_sets_rejected_at(db, manager_context, candidate_context):
+async def test_decide_application_reject_sets_rejected_at(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
 
-    decided = svc.decide_application(manager_context, application.application_id, approve=False)
+    decided = await svc.decide_application(manager_context, application.application_id, approve=False)
     assert decided.application_status == "REJECTED"
     assert decided.rejected_at is not None
 
 
-def test_re_evaluate_application_requires_hr_admin(db, manager_context, candidate_context):
+async def test_re_evaluate_application_requires_hr_admin(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
     with pytest.raises(PermissionError_):
-        svc.re_evaluate_application(candidate_context, application.application_id)
+        await svc.re_evaluate_application(candidate_context, application.application_id)
 
 
-def test_re_evaluate_application_enqueues_a_fresh_evaluation_job(db, manager_context, candidate_context):
+async def test_re_evaluate_application_enqueues_a_fresh_evaluation_job(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
 
-    svc.re_evaluate_application(manager_context, application.application_id)
+    await svc.re_evaluate_application(manager_context, application.application_id)
 
-    jobs = db.scalars(
+    jobs = (await db.scalars(
         select(OutboxJob).where(
             OutboxJob.aggregate_id == application.application_id,
             OutboxJob.job_type == "EVALUATE_APPLICATION",
         )
-    ).all()
-    # one from apply(), one from the manual retry
+    )).all()
     assert len(jobs) == 2
     assert jobs[-1].payload["cv_object_key"] == "resumes/a.pdf"
 
 
-def test_archive_and_reopen_vacancy(db, manager_context, candidate_context):
+async def test_archive_and_reopen_vacancy(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
+    vacancy = await _create_vacancy(svc, manager_context)
 
-    closed = svc.archive_vacancy(manager_context, vacancy.vacancy_id)
+    closed = await svc.archive_vacancy(manager_context, vacancy.vacancy_id)
     assert closed.status == "CLOSED"
-    # Candidates only see OPEN vacancies; managers still see everything.
-    assert closed.vacancy_id not in {v.vacancy_id for v in svc.list_vacancies(candidate_context)}
-    assert closed.vacancy_id in {v.vacancy_id for v in svc.list_vacancies(manager_context)}
+    cand_vacancies = await svc.list_vacancies(candidate_context)
+    mgr_vacancies = await svc.list_vacancies(manager_context)
+    assert closed.vacancy_id not in {v.vacancy_id for v in cand_vacancies}
+    assert closed.vacancy_id in {v.vacancy_id for v in mgr_vacancies}
 
-    reopened = svc.reopen_vacancy(manager_context, vacancy.vacancy_id)
+    reopened = await svc.reopen_vacancy(manager_context, vacancy.vacancy_id)
     assert reopened.status == "OPEN"
-    assert reopened.vacancy_id in {v.vacancy_id for v in svc.list_vacancies(candidate_context)}
+    cand_vacancies_after = await svc.list_vacancies(candidate_context)
+    assert reopened.vacancy_id in {v.vacancy_id for v in cand_vacancies_after}
 
 
-def test_list_all_applications_spans_every_vacancy(db, manager_context, candidate_context):
+async def test_list_all_applications_spans_every_vacancy(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy_a = _create_vacancy(svc, manager_context)
-    vacancy_b = svc.create_vacancy(
+    vacancy_a = await _create_vacancy(svc, manager_context)
+    vacancy_b = await svc.create_vacancy(
         manager_context,
         title="Product Designer",
         department_name="Design",
@@ -161,21 +160,21 @@ def test_list_all_applications_spans_every_vacancy(db, manager_context, candidat
         closing_date=None,
         scoring_keywords=DEFAULT_TEST_KEYWORDS,
     )
-    app_a = svc.apply(candidate_context, vacancy_id=vacancy_a.vacancy_id, cv_object_key="resumes/a.pdf")
-    app_b = svc.apply(candidate_context, vacancy_id=vacancy_b.vacancy_id, cv_object_key="resumes/b.pdf")
+    app_a = await svc.apply(candidate_context, vacancy_id=vacancy_a.vacancy_id, cv_object_key="resumes/a.pdf")
+    app_b = await svc.apply(candidate_context, vacancy_id=vacancy_b.vacancy_id, cv_object_key="resumes/b.pdf")
 
-    all_apps = {a.application_id for a in svc.list_all_applications(manager_context)}
+    all_apps = {a.application_id for a in await svc.list_all_applications(manager_context)}
     assert app_a.application_id in all_apps
     assert app_b.application_id in all_apps
 
 
-def test_list_all_applications_requires_hr_admin(db, candidate_context):
+async def test_list_all_applications_requires_hr_admin(db, candidate_context):
     svc = RecruitmentService(db)
     with pytest.raises(PermissionError_):
-        svc.list_all_applications(candidate_context)
+        await svc.list_all_applications(candidate_context)
 
 
-def _seed_evaluation(db, application_id, *, keyword_score=None, keyword_matches=None):
+async def _seed_evaluation(db, application_id, *, keyword_score=None, keyword_matches=None):
     """Attach an AI screening result (LLM-shaped raw_payload) to an application."""
     db.add(
         ApplicationEvaluation(
@@ -199,15 +198,15 @@ def _seed_evaluation(db, application_id, *, keyword_score=None, keyword_matches=
             evaluated_at=datetime.now(UTC),
         )
     )
-    db.commit()
+    await db.commit()
 
 
-def test_apply_as_new_candidate_provisions_account_and_login(db, client, manager_context):
+async def test_apply_as_new_candidate_provisions_account_and_login(db, client, manager_context):
     """First-time candidates self-register: account + application in one transaction, then can log in."""
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
+    vacancy = await _create_vacancy(svc, manager_context)
 
-    application = svc.apply_as_new_candidate(
+    application = await svc.apply_as_new_candidate(
         vacancy_id=vacancy.vacancy_id,
         cv_object_key="resumes/c.pdf",
         first_name="New",
@@ -218,17 +217,15 @@ def test_apply_as_new_candidate_provisions_account_and_login(db, client, manager
     )
     assert application.application_status == "APPLIED"
 
-    # Person + CANDIDATE account + Candidate rows were provisioned (email normalized).
-    person = db.scalar(select(Person).where(Person.email == "newbie@acme-hr-test.dev"))
+    person = await db.scalar(select(Person).where(Person.email == "newbie@acme-hr-test.dev"))
     assert person is not None
-    app_user = db.scalar(
+    app_user = await db.scalar(
         select(ApplicationUser).where(ApplicationUser.person_id == person.person_id)
     )
     assert app_user.coarse_role == "CANDIDATE"
-    candidate = db.scalar(select(Candidate).where(Candidate.person_id == person.person_id))
+    candidate = await db.scalar(select(Candidate).where(Candidate.person_id == person.person_id))
     assert candidate is not None
 
-    # The password chosen in the form works against the login endpoint.
     login = client.post(
         "/api/auth/login",
         json={"email": "newbie@acme-hr-test.dev", "password": "password-123"},
@@ -236,12 +233,11 @@ def test_apply_as_new_candidate_provisions_account_and_login(db, client, manager
     assert login.status_code == 200
 
 
-def test_apply_as_new_candidate_blocks_existing_email(db, manager_context, candidate_context):
-    """A duplicate email is blocked with a sign-in prompt instead of a second account."""
+async def test_apply_as_new_candidate_blocks_existing_email(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
+    vacancy = await _create_vacancy(svc, manager_context)
     with pytest.raises(ValueError, match="already exists"):
-        svc.apply_as_new_candidate(
+        await svc.apply_as_new_candidate(
             vacancy_id=vacancy.vacancy_id,
             cv_object_key="resumes/c.pdf",
             first_name="Alex",
@@ -252,12 +248,12 @@ def test_apply_as_new_candidate_blocks_existing_email(db, manager_context, candi
         )
 
 
-def test_apply_as_new_candidate_requires_open_vacancy(db, manager_context):
+async def test_apply_as_new_candidate_requires_open_vacancy(db, manager_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    svc.archive_vacancy(manager_context, vacancy.vacancy_id)
+    vacancy = await _create_vacancy(svc, manager_context)
+    await svc.archive_vacancy(manager_context, vacancy.vacancy_id)
     with pytest.raises(ValueError, match="not open"):
-        svc.apply_as_new_candidate(
+        await svc.apply_as_new_candidate(
             vacancy_id=vacancy.vacancy_id,
             cv_object_key="resumes/c.pdf",
             first_name="New",
@@ -268,11 +264,11 @@ def test_apply_as_new_candidate_requires_open_vacancy(db, manager_context):
         )
 
 
-def test_apply_as_new_candidate_requires_password_length(db, manager_context):
+async def test_apply_as_new_candidate_requires_password_length(db, manager_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
+    vacancy = await _create_vacancy(svc, manager_context)
     with pytest.raises(ValueError, match="at least 8"):
-        svc.apply_as_new_candidate(
+        await svc.apply_as_new_candidate(
             vacancy_id=vacancy.vacancy_id,
             cv_object_key="resumes/c.pdf",
             first_name="New",
@@ -283,59 +279,47 @@ def test_apply_as_new_candidate_requires_password_length(db, manager_context):
         )
 
 
-def test_public_vacancy_listing_shows_only_open(db, client, manager_context):
-    """Anonymous visitors can browse open vacancies without signing in."""
+async def test_public_vacancy_listing_shows_only_open(db, client, manager_context):
     svc = RecruitmentService(db)
-    open_vacancy = _create_vacancy(svc, manager_context)
-    closed_vacancy = _create_vacancy(svc, manager_context)
-    svc.archive_vacancy(manager_context, closed_vacancy.vacancy_id)
+    open_vacancy = await _create_vacancy(svc, manager_context)
+    closed_vacancy = await _create_vacancy(svc, manager_context)
+    await svc.archive_vacancy(manager_context, closed_vacancy.vacancy_id)
 
-    res = client.get("/api/vacancies")  # no Authorization header
+    res = client.get("/api/vacancies")
     assert res.status_code == 200
     ids = {v["vacancy_id"] for v in res.json()}
     assert str(open_vacancy.vacancy_id) in ids
     assert str(closed_vacancy.vacancy_id) not in ids
 
 
-def test_public_vacancy_detail_is_accessible(db, client, manager_context):
-    """Anonymous visitors can open a single vacancy (the candidate apply page needs it)."""
+async def test_public_vacancy_detail_is_accessible(db, client, manager_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
+    vacancy = await _create_vacancy(svc, manager_context)
 
-    res = client.get(f"/api/vacancies/{vacancy.vacancy_id}")  # no Authorization header
+    res = client.get(f"/api/vacancies/{vacancy.vacancy_id}")
     assert res.status_code == 200
     assert res.json()["vacancy_id"] == str(vacancy.vacancy_id)
     assert res.json()["status"] == "OPEN"
 
 
-def test_seed_candidate_apply_still_works_with_auth(db, manager_context, candidate_context):
-    """The authenticated apply flow is unchanged alongside the public one."""
+async def test_seed_candidate_apply_still_works_with_auth(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
     )
     assert application.application_status == "APPLIED"
 
 
-def test_manager_application_detail_serializes_screening_as_snake_case(
+async def test_manager_application_detail_serializes_screening_as_snake_case(
     db, client, manager_context, candidate_context, manager_password
 ):
-    """Regression test: the LLM's raw evaluation payload uses camelCase keys
-    (`matchedKeywords`, `keyFactors`, ...), but every other field in this
-    API is snake_case on the wire. A schema that round-tripped those
-    camelCase keys straight through to the HTTP response (via a Pydantic
-    alias generator) previously broke the frontend, which reads
-    `matched_keywords` — this crashed the application detail pages with
-    "Cannot read properties of undefined (reading 'map')". Assert the
-    manager-facing JSON body uses snake_case throughout.
-    """
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
     )
-    _seed_evaluation(db, application.application_id)
+    await _seed_evaluation(db, application.application_id)
 
     login = client.post(
         "/api/auth/login",
@@ -356,20 +340,15 @@ def test_manager_application_detail_serializes_screening_as_snake_case(
     assert "matchedKeywords" not in detail
 
 
-def test_manager_application_detail_exposes_keyword_score_and_matches(
+async def test_manager_application_detail_exposes_keyword_score_and_matches(
     db, client, manager_context, candidate_context, manager_password
 ):
-    """The deterministically-computed weighted keyword score and its
-    per-keyword breakdown must be reachable from the manager-facing API —
-    this is the new score's whole value proposition (auditable, not a
-    number the manager has to just trust).
-    """
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
     )
-    _seed_evaluation(
+    await _seed_evaluation(
         db,
         application.application_id,
         keyword_score=78,
@@ -397,16 +376,12 @@ def test_manager_application_detail_exposes_keyword_score_and_matches(
     ]
 
 
-def test_manager_sees_failed_evaluation_and_can_retry(
+async def test_manager_sees_failed_evaluation_and_can_retry(
     db, client, manager_context, candidate_context, manager_password
 ):
-    """When the AI provider is unavailable, the worker records `failed=True`
-    with an error message instead of a score. The manager-facing API must
-    surface that flag, and the re-evaluate endpoint must let them retry.
-    """
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
     )
     db.add(
@@ -420,7 +395,7 @@ def test_manager_sees_failed_evaluation_and_can_retry(
             evaluated_at=datetime.now(UTC),
         )
     )
-    db.commit()
+    await db.commit()
 
     login = client.post(
         "/api/auth/login",
@@ -437,27 +412,24 @@ def test_manager_sees_failed_evaluation_and_can_retry(
     retry = client.post(f"/api/applications/{application.application_id}/re-evaluate", headers=headers)
     assert retry.status_code == 200
 
-    jobs = db.scalars(
+    jobs = (await db.scalars(
         select(OutboxJob).where(
             OutboxJob.aggregate_id == application.application_id,
             OutboxJob.job_type == "EVALUATE_APPLICATION",
         )
-    ).all()
-    assert len(jobs) == 2  # the original apply()-triggered job plus the retry
+    )).all()
+    assert len(jobs) == 2
 
 
-def test_candidate_application_view_excludes_screening_result(
+async def test_candidate_application_view_excludes_screening_result(
     db, client, manager_context, candidate_context, candidate_password
 ):
-    """Candidates must only ever see their application status, never the AI
-    screening result (score, strengths/weaknesses) a manager uses to decide.
-    """
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
     )
-    _seed_evaluation(db, application.application_id)
+    await _seed_evaluation(db, application.application_id)
 
     login = client.post(
         "/api/auth/login",
@@ -500,12 +472,12 @@ def test_create_vacancy_http_requires_hr_admin(client, candidate_context, candid
     assert res.status_code == 403
 
 
-def test_all_applications_http_endpoint(
+async def test_all_applications_http_endpoint(
     db, client, manager_context, candidate_context, manager_password
 ):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
     )
 
@@ -521,7 +493,6 @@ def test_all_applications_http_endpoint(
 
 
 def _build_docx_bytes(paragraphs: list[str]) -> bytes:
-    """Build an in-memory DOCX file with the given paragraph text."""
     doc = Document()
     for text in paragraphs:
         doc.add_paragraph(text)
@@ -530,14 +501,9 @@ def _build_docx_bytes(paragraphs: list[str]) -> bytes:
     return buf.getvalue()
 
 
-def test_apply_rejects_non_resume_upload(db, client, manager_context, candidate_context, candidate_password):
-    """Regression test: previously any readable PDF/DOCX got scored as a
-    resume regardless of content. A document with no resume signals
-    (no contact info, no experience/education section, no dates) must be
-    rejected at upload time, before storage or an application row exist.
-    """
+async def test_apply_rejects_non_resume_upload(db, client, manager_context, candidate_context, candidate_password):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
+    vacancy = await _create_vacancy(svc, manager_context)
 
     login = client.post(
         "/api/auth/login",
@@ -560,21 +526,18 @@ def test_apply_rejects_non_resume_upload(db, client, manager_context, candidate_
     )
     assert res.status_code == 400
     assert "doesn't look like a resume" in res.json()["detail"]
-    assert svc.list_all_applications(manager_context) == []
+    assert await svc.list_all_applications(manager_context) == []
 
 
-def test_apply_accepts_real_resume_upload(
+async def test_apply_accepts_real_resume_upload(
     db, client, manager_context, candidate_context, candidate_password, monkeypatch
 ):
-    """The gate must not false-reject a real resume. Storage is monkeypatched
-    so this stays a hermetic unit test rather than depending on live MinIO.
-    """
     monkeypatch.setattr(
         "app.api.routes.recruitment.SyncS3ObjectStore.put_resume",
         lambda self, data, filename, content_type: "resumes/fake-key.docx",
     )
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
+    vacancy = await _create_vacancy(svc, manager_context)
 
     login = client.post(
         "/api/auth/login",
@@ -613,73 +576,73 @@ def test_apply_accepts_real_resume_upload(
     assert res.json()["application_status"] == "APPLIED"
 
 
-def test_withdraw_application_from_applied(db, manager_context, candidate_context):
+async def test_withdraw_application_from_applied(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
     assert application.application_status == "APPLIED"
 
-    withdrawn = svc.withdraw_application(candidate_context, application.application_id)
+    withdrawn = await svc.withdraw_application(candidate_context, application.application_id)
     assert withdrawn.application_status == "WITHDRAWN"
     assert withdrawn.withdrawn_at is not None
 
-    jobs = db.scalars(
+    jobs = (await db.scalars(
         select(OutboxJob).where(OutboxJob.aggregate_id == application.application_id)
-    ).all()
+    )).all()
     by_type = {j.job_type: j for j in jobs}
     assert "SEND_APPLICATION_WITHDRAWN" in by_type
     assert by_type["SEND_APPLICATION_WITHDRAWN"].payload["to_email"] == candidate_context.email
     assert "withdrawn" in by_type["SEND_APPLICATION_WITHDRAWN"].payload["subject"].lower()
 
 
-def test_withdraw_application_from_shortlisted(db, manager_context, candidate_context):
+async def test_withdraw_application_from_shortlisted(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
-    svc.decide_application(manager_context, application.application_id, approve=True)
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    await svc.decide_application(manager_context, application.application_id, approve=True)
     assert application.application_status == "SHORTLISTED"
 
-    withdrawn = svc.withdraw_application(candidate_context, application.application_id)
+    withdrawn = await svc.withdraw_application(candidate_context, application.application_id)
     assert withdrawn.application_status == "WITHDRAWN"
     assert withdrawn.withdrawn_at is not None
 
 
-def test_withdraw_already_withdrawn_fails(db, manager_context, candidate_context):
+async def test_withdraw_already_withdrawn_fails(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
-    svc.withdraw_application(candidate_context, application.application_id)
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    await svc.withdraw_application(candidate_context, application.application_id)
 
     with pytest.raises(ValueError, match="already withdrawn"):
-        svc.withdraw_application(candidate_context, application.application_id)
+        await svc.withdraw_application(candidate_context, application.application_id)
 
 
-def test_withdraw_rejected_application_fails(db, manager_context, candidate_context):
+async def test_withdraw_rejected_application_fails(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
-    svc.decide_application(manager_context, application.application_id, approve=False)
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    await svc.decide_application(manager_context, application.application_id, approve=False)
     assert application.application_status == "REJECTED"
 
     with pytest.raises(ValueError, match="Cannot withdraw"):
-        svc.withdraw_application(candidate_context, application.application_id)
+        await svc.withdraw_application(candidate_context, application.application_id)
 
 
-def test_withdraw_application_permission_check(db, manager_context, candidate_context):
+async def test_withdraw_application_permission_check(db, manager_context, candidate_context):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
 
     with pytest.raises(PermissionError_, match="Only candidates"):
-        svc.withdraw_application(manager_context, application.application_id)
+        await svc.withdraw_application(manager_context, application.application_id)
 
 
-def test_withdraw_application_api_endpoint(
+async def test_withdraw_application_api_endpoint(
     db, client, manager_context, candidate_context, candidate_password
 ):
     svc = RecruitmentService(db)
-    vacancy = _create_vacancy(svc, manager_context)
-    application = svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
+    vacancy = await _create_vacancy(svc, manager_context)
+    application = await svc.apply(candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf")
 
     login = client.post(
         "/api/auth/login",
