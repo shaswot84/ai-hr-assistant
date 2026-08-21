@@ -8,6 +8,7 @@ import { ListSkeleton } from "@/components/loading";
 import { EmptyState } from "@/components/empty-state";
 import { Pagination } from "@/components/pagination";
 import { SortableTh, Th, toggleSort, type SortState } from "@/components/table";
+import { OrgChart } from "@/components/org-chart";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
 import type { Department, Designation, Employee, EmploymentStatus } from "@/lib/types";
@@ -97,6 +98,7 @@ function EmployeeFormModal({
   isOpen,
   onClose,
   employee,
+  initialManagerId,
   departments,
   designations,
   managers,
@@ -105,6 +107,7 @@ function EmployeeFormModal({
   isOpen: boolean;
   onClose: () => void;
   employee: Employee | null; // null = create mode
+  initialManagerId?: string | null;
   departments: Department[];
   designations: Designation[];
   managers: Employee[];
@@ -113,9 +116,13 @@ function EmployeeFormModal({
     employeeId: string | null;
   }) => Promise<void>;
 }) {
-  const [form, setForm] = useState<EmployeeForm>(() =>
-    employee ? employeeToForm(employee) : emptyForm
-  );
+  const [form, setForm] = useState<EmployeeForm>(() => {
+    if (employee) return employeeToForm(employee);
+    return {
+      ...emptyForm,
+      manager_employee_id: initialManagerId ?? "",
+    };
+  });
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -941,104 +948,156 @@ function OrgTab() {
 
 // ---- org chart tab -------------------------------------------------------
 
-/** Build a manager → reports index plus the root nodes (no manager / manager unknown). */
-function buildOrgTree(employees: Employee[]) {
-  const byId = new Map(employees.map((e) => [e.employee_id, e]));
-  const childrenOf = new Map<string, Employee[]>();
-  const roots: Employee[] = [];
-  for (const e of employees) {
-    const manager = e.manager_employee_id ? byId.get(e.manager_employee_id) : undefined;
-    if (manager) {
-      const reports = childrenOf.get(manager.employee_id) ?? [];
-      reports.push(e);
-      childrenOf.set(manager.employee_id, reports);
-    } else {
-      roots.push(e);
-    }
-  }
-  return { roots, childrenOf };
-}
-
-/** One employee node in the org chart, rendering its direct reports recursively. */
-function OrgNode({
-  employee,
-  childrenOf,
-  ancestors,
-}: {
-  employee: Employee;
-  childrenOf: Map<string, Employee[]>;
-  ancestors: Set<string>;
-}) {
-  const reports = (childrenOf.get(employee.employee_id) ?? []).filter(
-    (r) => !ancestors.has(r.employee_id) // cycle guard — never recurse into an ancestor
-  );
-
-  return (
-    <li>
-      <div className="flex items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[13px] font-semibold text-blue-600">
-          {employee.first_name.charAt(0)}
-          {employee.last_name.charAt(0)}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-zinc-900">
-            {employee.first_name} {employee.last_name}
-          </p>
-          <p className="truncate text-xs text-zinc-400">
-            {employee.designation_title ?? "—"}
-            {employee.department_name ? ` · ${employee.department_name}` : ""}
-          </p>
-        </div>
-        <StatusBadge status={employee.employment_status} />
-      </div>
-      {reports.length > 0 && (
-        <ul className="ml-6 mt-2 space-y-2 border-l border-zinc-200 pl-4">
-          {reports.map((r) => (
-            <OrgNode
-              key={r.employee_id}
-              employee={r}
-              childrenOf={childrenOf}
-              ancestors={new Set([...ancestors, employee.employee_id])}
-            />
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
-
 function OrgChartTab() {
+  const { addToast } = useToast();
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [designations, setDesignations] = useState<Designation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<Employee | null>(null);
+  const [presetManagerId, setPresetManagerId] = useState<string | null>(null);
+
+  const refresh = useMemo(
+    () => () =>
+      Promise.all([
+        api.listDepartments().catch(() => [] as Department[]),
+        api.listDesignations().catch(() => [] as Designation[]),
+        api.listEmployees().catch(() => [] as Employee[]),
+      ])
+        .then(([depts, desigs, emps]) => {
+          setDepartments(depts);
+          setDesignations(desigs);
+          setEmployees(emps);
+        })
+        .finally(() => setLoading(false)),
+    []
+  );
 
   useEffect(() => {
-    api
-      .listEmployees()
-      .then(setEmployees)
-      .catch(() => setEmployees([]))
-      .finally(() => setLoading(false));
-  }, []);
+    refresh();
+  }, [refresh]);
+
+  async function handleSubmit({
+    form,
+    employeeId,
+  }: {
+    form: EmployeeForm;
+    employeeId: string | null;
+  }) {
+    if (employeeId) {
+      await api.updateEmployee(employeeId, {
+        first_name: form.first_name,
+        last_name: form.last_name,
+        phone: form.phone || null,
+        department_id: form.department_id,
+        designation_id: form.designation_id,
+        manager_employee_id: form.manager_employee_id || null,
+        joining_date: form.joining_date,
+        employment_status: form.employment_status,
+      });
+      addToast("Employee updated.", "success");
+    } else {
+      await api.createEmployee({
+        first_name: form.first_name,
+        last_name: form.last_name,
+        email: form.email,
+        phone: form.phone || null,
+        employee_code: form.employee_code,
+        department_id: form.department_id,
+        designation_id: form.designation_id,
+        manager_employee_id: form.manager_employee_id || null,
+        joining_date: form.joining_date,
+        password: form.password,
+      });
+      addToast("Employee added.", "success");
+    }
+    setFormOpen(false);
+    setEditing(null);
+    setPresetManagerId(null);
+    await refresh();
+  }
 
   if (loading) return <ListSkeleton rows={6} />;
+
   if (employees.length === 0) {
     return (
       <div className="card">
-        <EmptyState title="No employees yet" description="Add employees to see the reporting structure." />
+        <EmptyState
+          title="No employees yet"
+          description="Add your first employee to start building and visualizing the org hierarchy."
+          action={
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => {
+                setEditing(null);
+                setPresetManagerId(null);
+                setFormOpen(true);
+              }}
+            >
+              Add Employee
+            </button>
+          }
+        />
+        {formOpen && (
+          <EmployeeFormModal
+            isOpen
+            onClose={() => {
+              setFormOpen(false);
+              setEditing(null);
+              setPresetManagerId(null);
+            }}
+            employee={editing}
+            initialManagerId={presetManagerId}
+            departments={departments}
+            designations={designations}
+            managers={employees.filter(
+              (e) => e.employment_status === "ACTIVE" && e.employee_id !== editing?.employee_id
+            )}
+            onSubmit={handleSubmit}
+          />
+        )}
       </div>
     );
   }
 
-  const { roots, childrenOf } = buildOrgTree(employees);
   return (
-    <div className="card p-6">
-      <p className="mb-4 text-xs text-zinc-400">
-        Reporting lines — employees without a manager (or whose manager is inactive) appear at the top.
-      </p>
-      <ul className="space-y-2">
-        {roots.map((r) => (
-          <OrgNode key={r.employee_id} employee={r} childrenOf={childrenOf} ancestors={new Set()} />
-        ))}
-      </ul>
+    <div className="space-y-4">
+      <OrgChart
+        employees={employees}
+        departments={departments}
+        designations={designations}
+        onEditEmployee={(emp) => {
+          setEditing(emp);
+          setPresetManagerId(null);
+          setFormOpen(true);
+        }}
+        onAddEmployee={(mgrId) => {
+          setEditing(null);
+          setPresetManagerId(mgrId || null);
+          setFormOpen(true);
+        }}
+      />
+
+      {formOpen && (
+        <EmployeeFormModal
+          isOpen
+          onClose={() => {
+            setFormOpen(false);
+            setEditing(null);
+            setPresetManagerId(null);
+          }}
+          employee={editing}
+          initialManagerId={presetManagerId}
+          departments={departments}
+          designations={designations}
+          managers={employees.filter(
+            (e) => e.employment_status === "ACTIVE" && e.employee_id !== editing?.employee_id
+          )}
+          onSubmit={handleSubmit}
+        />
+      )}
     </div>
   );
 }
