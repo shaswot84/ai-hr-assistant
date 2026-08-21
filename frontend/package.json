@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "geist": "^1.7.2",
+    "mouse-trail-effect": "^0.0.6",
     "next": "^16.3.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

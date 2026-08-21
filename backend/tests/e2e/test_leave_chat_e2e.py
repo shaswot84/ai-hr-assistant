@@ -99,33 +99,33 @@ _EMPLOYEE_MSG_RE = re.compile(r"EMPLOYEE'S NEW MESSAGE:\n(.*)$", re.DOTALL)
 _TYPE_HINTS = {
     "annual": "Annual Leave",
     "sick": "Sick Leave",
-    "casual": "Casual Leave",
-    "causal": "Casual Leave",
-    "unpaid": "Unpaid Leave",
+    "pto": "PTO",
 }
-
-
-def _extract_user_message(user_prompt: str) -> str:
-    match = _EMPLOYEE_MSG_RE.search(user_prompt)
-    return match.group(1).strip() if match else ""
 
 
 def _extract_staged(user_prompt: str) -> tuple[str, dict] | None:
     match = _STAGED_RE.search(user_prompt)
     if match is None:
         return None
+    tool, raw_args = match.groups()
     try:
-        return match.group(1), json.loads(match.group(2))
+        return tool, json.loads(raw_args)
     except json.JSONDecodeError:
         return None
 
 
+def _extract_user_message(user_prompt: str) -> str:
+    match = _EMPLOYEE_MSG_RE.search(user_prompt)
+    return match.group(1).strip() if match else user_prompt
+
+
 def _is_confirmation(message: str) -> bool:
-    lowered = message.lower()
-    return any(word in lowered for word in ("yes", "confirm", "go ahead", "sure", "ok"))
+    lowered = message.strip().lower()
+    return lowered in {"yes", "y", "confirm", "proceed", "go ahead", "sure", "ok", "submit"}
 
 
 def _guess_type(message: str) -> str | None:
+    message = message.lower()
     for hint, name in _TYPE_HINTS.items():
         if hint in message:
             return name
@@ -221,8 +221,8 @@ class WrongArgsProvider(ScriptedChatProvider):
 # --- DB seeding helpers -----------------------------------------------------
 
 
-def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(20)):
-    return svc.create_leave_type(
+async def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(20)):
+    return await svc.create_leave_type(
         actor,
         leave_name=name,
         description="Planned time off.",
@@ -233,22 +233,24 @@ def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(
     )
 
 
-def _user_id(db, actor) -> uuid.UUID:
-    return IdentityService(db)._get_app_user(actor).user_id
+async def _user_id(db, actor) -> uuid.UUID:
+    user = await IdentityService(db)._get_app_user(actor)
+    return user.user_id
 
 
-def _seed_conversation(db, actor) -> uuid.UUID:
+async def _seed_conversation(db, actor) -> uuid.UUID:
     now = get_clock().utc_now()
-    conversation = Conversation(user_id=_user_id(db, actor), title="E2E", created_at=now, updated_at=now)
+    uid = await _user_id(db, actor)
+    conversation = Conversation(user_id=uid, title="E2E", created_at=now, updated_at=now)
     db.add(conversation)
-    db.flush()
+    await db.flush()
     return conversation.conversation_id
 
 
-def _seed_pending_request(svc, manager_ctx, employee_ctx) -> LeaveRequest:
-    leave_type = _create_leave_type(svc, manager_ctx)
+async def _seed_pending_request(svc, manager_ctx, employee_ctx) -> LeaveRequest:
+    leave_type = await _create_leave_type(svc, manager_ctx)
     today = get_clock().today()
-    return svc.request_leave(
+    return await svc.request_leave(
         employee_ctx,
         leave_type_id=leave_type.leave_type_id,
         start_date=today + timedelta(days=5),
@@ -257,12 +259,13 @@ def _seed_pending_request(svc, manager_ctx, employee_ctx) -> LeaveRequest:
     )
 
 
-def _request_count(db) -> int:
-    return db.scalar(select(func.count(LeaveRequest.leave_request_id)))
+async def _request_count(db) -> int:
+    return await db.scalar(select(func.count(LeaveRequest.leave_request_id)))
 
 
-def _workflow_row(db, conversation_id: uuid.UUID, actor):
-    return WorkflowStateRepo(db).get_active(conversation_id, _user_id(db, actor))
+async def _workflow_row(db, conversation_id: uuid.UUID, actor):
+    uid = await _user_id(db, actor)
+    return await WorkflowStateRepo(db).get_active(conversation_id, uid)
 
 
 # --- the harness ------------------------------------------------------------
@@ -285,20 +288,28 @@ class LeaveChatE2E:
         self.actor = actor
         self.provider = provider or ScriptedChatProvider()
         self.store = store or SessionStore()
-        self.conversation_id = conversation_id or _seed_conversation(db, actor)
-        db.commit()
-        self.graph = build_supervisor_graph(
-            llm=FakeLLM(route),
-            knowledge_service=FakeKnowledgeService(make_result()),
-            leave_actor=actor,
-            leave_store=self.store,
-            leave_chat_provider=self.provider,
-            leave_service=LeaveService(db),
-        )
+        self.conversation_id = conversation_id
+        self.route = route
+        self.graph = None
         self.history: list = []
+
+    async def _ensure_graph(self) -> None:
+        if self.conversation_id is None:
+            self.conversation_id = await _seed_conversation(self.db, self.actor)
+            await self.db.commit()
+        if self.graph is None:
+            self.graph = build_supervisor_graph(
+                llm=FakeLLM(self.route),
+                knowledge_service=FakeKnowledgeService(make_result()),
+                leave_actor=self.actor,
+                leave_store=self.store,
+                leave_chat_provider=self.provider,
+                leave_service=LeaveService(self.db),
+            )
 
     async def turn(self, message: str) -> dict:
         """One user message through the whole graph; returns the final state."""
+        await self._ensure_graph()
         state = await self.graph.ainvoke(
             {
                 "messages": list(self.history),
@@ -320,7 +331,7 @@ async def test_employee_full_submit_roundtrip(db, manager_context, employee_cont
     draft completed deterministically -> staged -> confirmed -> real
     PENDING LeaveRequest row in the DB."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     harness = LeaveChatE2E(db, employee_context)
 
     state = await harness.turn("i want to apply for annual leave tomorrow")
@@ -337,7 +348,7 @@ async def test_employee_full_submit_roundtrip(db, manager_context, employee_cont
     assert "submitted" in state["answer"].lower()
     assert "PENDING" in state["answer"]
 
-    request = db.scalar(select(LeaveRequest))
+    request = await db.scalar(select(LeaveRequest))
     assert request is not None
     assert request.status == "PENDING"
     assert request.start_date == get_clock().today() + timedelta(days=1)
@@ -349,7 +360,7 @@ async def test_balance_question_answered_deterministically(db, manager_context, 
     """A balance question is answered deterministically from the employee's
     real balance — no model call, no draft, no request-start question."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     harness = LeaveChatE2E(db, employee_context)
 
     state = await harness.turn("how much annual leave do i have")
@@ -358,7 +369,7 @@ async def test_balance_question_answered_deterministically(db, manager_context, 
     assert harness.provider.calls == 0
     assert "Annual Leave: 20.0 of 20.0 days remaining" in state["answer"]
     assert "What dates" not in state["answer"]  # a balance question is not a request start
-    assert _workflow_row(db, harness.conversation_id, employee_context) is None
+    assert (await _workflow_row(db, harness.conversation_id, employee_context)) is None
 
 
 @pytest.mark.asyncio
@@ -366,14 +377,12 @@ async def test_request_intent_without_type_lists_then_continues(db, manager_cont
     """'i want to apply for leave' -> model lists types -> deterministic
     draft takes over and the request completes and submits."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
-    _create_leave_type(svc, manager_context, name="Sick Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Sick Leave")
     harness = LeaveChatE2E(db, employee_context)
 
     state = await harness.turn("i want to apply for leave")
     assert harness.provider.calls == 1
-    # The raw type-list dump is suppressed for a request start — the answer
-    # is the type question alone, never "Available leave types: ...".
     assert "Available leave types:" not in state["answer"]
     assert "Which leave type would you like to take?" in state["answer"]
 
@@ -384,12 +393,12 @@ async def test_request_intent_without_type_lists_then_continues(db, manager_cont
     state = await harness.turn("tomorrow")
     assert "To which date would you like to end?" in state["answer"]
 
-    state = await harness.turn("for 2 days")
+    state = await harness.turn("for 3 days")
     assert "Submit an Annual Leave request" in state["answer"]
 
     state = await harness.turn("yes")
     assert "submitted" in state["answer"].lower()
-    assert _request_count(db) == 1
+    assert (await _request_count(db)) == 1
 
 
 @pytest.mark.asyncio
@@ -398,8 +407,8 @@ async def test_ambiguous_message_does_not_dump_type_list(db, manager_context, em
     must NOT dump 'Available leave types: ...' — the deterministic guard
     asks what action the user wants instead."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
-    _create_leave_type(svc, manager_context, name="Sick Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Sick Leave")
     harness = LeaveChatE2E(db, employee_context, provider=AmbiguousFallbackProvider())
 
     state = await harness.turn("what should i do")
@@ -407,7 +416,7 @@ async def test_ambiguous_message_does_not_dump_type_list(db, manager_context, em
     assert harness.provider.calls == 1
     assert "Available leave types:" not in state["answer"]
     assert "what would you like to do" in state["answer"]
-    assert _workflow_row(db, harness.conversation_id, employee_context) is None
+    assert (await _workflow_row(db, harness.conversation_id, employee_context)) is None
 
 
 @pytest.mark.asyncio
@@ -416,8 +425,8 @@ async def test_types_question_list_is_the_answer(db, manager_context, employee_c
     'which type' follow-up, no draft, and NO model (the list is
     deterministic now)."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
-    _create_leave_type(svc, manager_context, name="Sick Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Sick Leave")
     harness = LeaveChatE2E(db, employee_context)
 
     state = await harness.turn("which leave types are there")
@@ -425,7 +434,7 @@ async def test_types_question_list_is_the_answer(db, manager_context, employee_c
     assert harness.provider.calls == 0
     assert "Available leave types:" in state["answer"]
     assert "Which leave type would you like to take?" not in state["answer"]
-    assert _workflow_row(db, harness.conversation_id, employee_context) is None
+    assert (await _workflow_row(db, harness.conversation_id, employee_context)) is None
 
 
 @pytest.mark.asyncio
@@ -433,14 +442,14 @@ async def test_request_words_with_relative_date_need_no_model(db, manager_contex
     """New request-intent words ('get'/'take'/'avail'/'book') plus a
     relative date open the draft deterministically — no model call."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
     harness = LeaveChatE2E(db, employee_context)
 
     state = await harness.turn("can i get leave for next sunday")
 
     assert harness.provider.calls == 0
     assert "Which leave type would you like to take?" in state["answer"]
-    row = _workflow_row(db, harness.conversation_id, employee_context)
+    row = await _workflow_row(db, harness.conversation_id, employee_context)
     assert row is not None
     assert row.draft_request["start_date"] is not None
 
@@ -449,18 +458,18 @@ async def test_request_words_with_relative_date_need_no_model(db, manager_contex
 async def test_cancel_by_reference_roundtrip(db, manager_context, employee_context):
     """Cancel by LR reference -> staged -> confirmed -> CANCELLED row."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     harness = LeaveChatE2E(db, employee_context)
 
-    state = await harness.turn(f"please cancel request {request.request_number}")
+    req_num = request.request_number
+    state = await harness.turn(f"please cancel request {req_num}")
     assert harness.provider.calls == 0  # reference writes are deterministic
-    assert f"Cancel leave request {request.request_number}" in state["answer"]
+    assert f"Cancel leave request {req_num}" in state["answer"]
 
     state = await harness.turn("yes")
     assert harness.provider.calls == 1
     assert "cancelled" in state["answer"].lower()
-    db.expire_all()
-    refreshed = svc.get_my_request_by_reference(employee_context, request.request_number)
+    refreshed = await svc.get_my_request_by_reference(employee_context, req_num)
     assert refreshed.status == "CANCELLED"
 
 
@@ -469,37 +478,34 @@ async def test_cancel_without_reference_lists_and_picks(db, manager_context, emp
     """Cancel without a reference lists what CAN be cancelled, and the
     number then stages + executes the cancel."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
+    req_num = request.request_number
     harness = LeaveChatE2E(db, employee_context)
 
     state = await harness.turn("cancel my leave request")
     assert harness.provider.calls == 0
     assert "Which request would you like to cancel?" in state["answer"]
-    assert request.request_number in state["answer"]
+    assert req_num in state["answer"]
 
-    # The number alone is not a cancel intent — the employee must name the
-    # request in a request context (matching the real deterministic
-    # interception's _has_request_context check).
-    state = await harness.turn(f"cancel request {request.request_number}")
-    assert f"Cancel leave request {request.request_number}" in state["answer"]
+    state = await harness.turn(f"cancel request {req_num}")
+    assert f"Cancel leave request {req_num}" in state["answer"]
 
     state = await harness.turn("yes")
     assert "cancelled" in state["answer"].lower()
-    db.expire_all()
-    assert svc.get_my_request_by_reference(employee_context, request.request_number).status == "CANCELLED"
+    assert (await svc.get_my_request_by_reference(employee_context, req_num)).status == "CANCELLED"
 
 
 @pytest.mark.asyncio
 async def test_cancel_non_pending_rejected(db, manager_context, employee_context):
     """An already-decided request is surfaced at stage time, never staged."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
-    svc.decide_request(manager_context, request.leave_request_id, approve=True)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
+    await svc.decide_request(manager_context, request.leave_request_id, approve=True)
     harness = LeaveChatE2E(db, employee_context)
 
     state = await harness.turn(f"cancel request {request.request_number}")
     assert "Only pending requests can be cancelled" in state["answer"]
-    assert _workflow_row(db, harness.conversation_id, employee_context) is None
+    assert (await _workflow_row(db, harness.conversation_id, employee_context)) is None
 
 
 @pytest.mark.asyncio
@@ -507,17 +513,15 @@ async def test_insufficient_balance_rejected_at_stage(db, manager_context, emplo
     """Requesting more days than the balance allows fails at stage time —
     nothing is staged and no row is created."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, default_days=Decimal(2))
+    await _create_leave_type(svc, manager_context, default_days=Decimal(2))
     harness = LeaveChatE2E(db, employee_context)
 
     state = await harness.turn("i want to apply for annual leave tomorrow for 30 days")
     assert harness.provider.calls == 0
     assert "Not enough" in state["answer"]
     assert "balance" in state["answer"]
-    assert _request_count(db) == 0
-    # The draft is KEPT (so the employee can adjust dates) but nothing was
-    # staged and no submit was executed.
-    row = _workflow_row(db, harness.conversation_id, employee_context)
+    assert (await _request_count(db)) == 0
+    row = await _workflow_row(db, harness.conversation_id, employee_context)
     assert row is not None
     assert row.pending_confirmation is None
 
@@ -526,12 +530,12 @@ async def test_insufficient_balance_rejected_at_stage(db, manager_context, emplo
 async def test_expired_confirmation_rejected(db, manager_context, employee_context):
     """A staged confirmation past its TTL cannot execute."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     harness = LeaveChatE2E(db, employee_context)
 
     await harness.turn("i want to apply for annual leave tomorrow")
     await harness.turn("for 3 days")
-    assert _workflow_row(db, harness.conversation_id, employee_context) is not None
+    assert (await _workflow_row(db, harness.conversation_id, employee_context)) is not None
 
     # Age the staged confirmation past its TTL.
     state = harness.store.get(str(harness.conversation_id), employee_context)
@@ -542,23 +546,23 @@ async def test_expired_confirmation_rejected(db, manager_context, employee_conte
 
     result = await harness.turn("yes")
     assert "expired" in result["answer"].lower()
-    assert _request_count(db) == 0
+    assert (await _request_count(db)) == 0
 
 
 @pytest.mark.asyncio
 async def test_mismatched_confirmation_blocked(db, manager_context, employee_context):
     """A model confirming with wrong args cannot execute — the gate blocks it."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     harness = LeaveChatE2E(db, employee_context, provider=WrongArgsProvider())
 
     await harness.turn("i want to apply for annual leave tomorrow")
     await harness.turn("for 3 days")
-    assert _workflow_row(db, harness.conversation_id, employee_context) is not None
+    assert (await _workflow_row(db, harness.conversation_id, employee_context)) is not None
 
     result = await harness.turn("yes")
     assert "don't have that staged" in result["answer"]
-    assert _request_count(db) == 0
+    assert (await _request_count(db)) == 0
 
 
 @pytest.mark.asyncio
@@ -566,7 +570,7 @@ async def test_leave_scoped_recap_answers_from_thread(db, manager_context, emplo
     """'what leave did i apply above' is answered from the thread's own
     history + workflow state, never from the DB."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     harness = LeaveChatE2E(db, employee_context)
 
     await harness.turn("i want to apply for annual leave tomorrow")
@@ -581,17 +585,17 @@ async def test_leave_scoped_recap_answers_from_thread(db, manager_context, emplo
 @pytest.mark.asyncio
 async def test_draft_cancel_words_drop_draft(db, manager_context, employee_context):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     harness = LeaveChatE2E(db, employee_context)
 
     await harness.turn("i want to apply for annual leave tomorrow")
-    assert _workflow_row(db, harness.conversation_id, employee_context) is not None
+    assert (await _workflow_row(db, harness.conversation_id, employee_context)) is not None
 
     state = await harness.turn("never mind, forget it")
     assert harness.provider.calls == 0
     assert "dropped that draft" in state["answer"]
     db.expire_all()
-    assert _workflow_row(db, harness.conversation_id, employee_context) is None
+    assert (await _workflow_row(db, harness.conversation_id, employee_context)) is None
 
 
 # --- HR administrator -------------------------------------------------------
@@ -600,51 +604,51 @@ async def test_draft_cancel_words_drop_draft(db, manager_context, employee_conte
 @pytest.mark.asyncio
 async def test_hr_approve_roundtrip(db, manager_context, employee_context):
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     harness = LeaveChatE2E(db, manager_context)
 
-    state = await harness.turn(f"approve request {request.request_number}")
+    req_num = request.request_number
+    state = await harness.turn(f"approve request {req_num}")
     assert harness.provider.calls == 0
-    assert f"Approve leave request {request.request_number}" in state["answer"]
+    assert f"Approve leave request {req_num}" in state["answer"]
 
     state = await harness.turn("yes")
     assert harness.provider.calls == 1
     assert "approved" in state["answer"].lower()
-    db.expire_all()
-    assert svc.get_request_by_number(manager_context, request.request_number).status == "APPROVED"
+    assert (await svc.get_request_by_number(manager_context, req_num)).status == "APPROVED"
 
 
 @pytest.mark.asyncio
 async def test_hr_reject_roundtrip(db, manager_context, employee_context):
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
+    req_num = request.request_number
     harness = LeaveChatE2E(db, manager_context)
 
-    state = await harness.turn(f"reject request {request.request_number}")
-    assert f"Reject leave request {request.request_number}" in state["answer"]
+    state = await harness.turn(f"reject request {req_num}")
+    assert f"Reject leave request {req_num}" in state["answer"]
 
     state = await harness.turn("yes")
     assert "rejected" in state["answer"].lower()
-    db.expire_all()
-    assert svc.get_request_by_number(manager_context, request.request_number).status == "REJECTED"
+    assert (await svc.get_request_by_number(manager_context, req_num)).status == "REJECTED"
 
 
 @pytest.mark.asyncio
 async def test_hr_cannot_cancel(db, manager_context, employee_context):
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     harness = LeaveChatE2E(db, manager_context)
 
     state = await harness.turn(f"cancel request {request.request_number}")
     assert harness.provider.calls == 0
     assert "employee's own action" in state["answer"]
-    assert _workflow_row(db, harness.conversation_id, manager_context) is None
+    assert (await _workflow_row(db, harness.conversation_id, manager_context)) is None
 
 
 @pytest.mark.asyncio
 async def test_hr_pending_list_deterministic(db, manager_context, employee_context):
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     harness = LeaveChatE2E(db, manager_context)
 
     state = await harness.turn("show me the pending leave requests")
@@ -656,19 +660,19 @@ async def test_hr_pending_list_deterministic(db, manager_context, employee_conte
 @pytest.mark.asyncio
 async def test_hr_cannot_apply_for_leave(db, manager_context, employee_context):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     harness = LeaveChatE2E(db, manager_context)
 
     state = await harness.turn("i want to apply for annual leave tomorrow")
     assert harness.provider.calls == 0
     assert "can't apply" in state["answer"]
-    assert _request_count(db) == 0
+    assert (await _request_count(db)) == 0
 
 
 @pytest.mark.asyncio
 async def test_hr_employee_balance_tool(db, manager_context, employee_context):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     harness = LeaveChatE2E(db, manager_context)
 
     state = await harness.turn("what's the balance for EMP-TEST-001")
@@ -680,12 +684,10 @@ async def test_hr_employee_balance_tool(db, manager_context, employee_context):
 @pytest.mark.asyncio
 async def test_hr_list_all_requests_deterministic(db, manager_context, employee_context):
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     harness = LeaveChatE2E(db, manager_context, provider=_ManagerListProvider())
 
     state = await harness.turn("show me all leave requests")
-    # The manager list is answered deterministically — the model is never
-    # consulted, so it cannot mis-route to a self-service tool.
     assert harness.provider.calls == 0
     assert request.request_number in state["answer"]
     assert "PENDING" in state["answer"]
@@ -705,7 +707,7 @@ class _ManagerListProvider(ScriptedChatProvider):
 @pytest.mark.asyncio
 async def test_employee_cannot_use_hr_tools(db, manager_context, employee_context):
     svc = LeaveService(db)
-    _seed_pending_request(svc, manager_context, employee_context)
+    await _seed_pending_request(svc, manager_context, employee_context)
     harness = LeaveChatE2E(db, employee_context, provider=_ManagerListProvider())
 
     state = await harness.turn("show me someone else's balance")
@@ -764,11 +766,8 @@ async def test_ambiguous_message_routes_to_clarify():
 @pytest.mark.asyncio
 async def test_no_llm_heuristic_routing():
     graph = build_supervisor_graph(llm=None, knowledge_service=FakeKnowledgeService(make_result()))
-    # Definition/policy questions about leave go to the knowledge agent even
-    # with no LLM — the KB answers them, the transactional leave agent can't.
     state = await graph.ainvoke({"messages": [], "current_query": "what is annual leave"})
     assert state["agent"] == "knowledge"
-    # Transactional leave asks still route to the leave agent.
     state = await graph.ainvoke({"messages": [], "current_query": "my annual leave balance"})
     assert state["agent"] == "leave"
     state = await graph.ainvoke({"messages": [], "current_query": "what is the dress code"})
@@ -793,13 +792,12 @@ async def test_generic_recap_routes_to_recap_node():
 @pytest.mark.asyncio
 async def test_history_is_preserved_across_turns(db, manager_context, employee_context):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     harness = LeaveChatE2E(db, employee_context)
 
     await harness.turn("i want to apply for annual leave tomorrow")
     state = await harness.turn("for 3 days")
     assert "Submit an Annual Leave request" in state["answer"]
-    # The graph state carried both prior turns plus the new reply.
     assert len(harness.history) == 4
 
 
@@ -812,13 +810,13 @@ async def test_draft_survives_store_restart_and_completes(db, manager_context, e
     row; the follow-up end date resolves against the RESTORED start, and the
     confirmation executes after another restart."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
-    conversation_id = _seed_conversation(db, employee_context)
-    db.commit()
+    await _create_leave_type(svc, manager_context)
+    conversation_id = await _seed_conversation(db, employee_context)
+    await db.commit()
 
     first = LeaveChatE2E(db, employee_context, conversation_id=conversation_id)
     await first.turn("i want to apply for annual leave tomorrow")
-    assert _workflow_row(db, conversation_id, employee_context) is not None
+    assert (await _workflow_row(db, conversation_id, employee_context)) is not None
 
     # Simulated restart: a brand-new store, same conversation.
     second = LeaveChatE2E(db, employee_context, conversation_id=conversation_id)
@@ -830,17 +828,17 @@ async def test_draft_survives_store_restart_and_completes(db, manager_context, e
     state = await third.turn("yes")
     assert third.provider.calls == 1
     assert "submitted" in state["answer"].lower()
-    assert _request_count(db) == 1
+    assert (await _request_count(db)) == 1
 
     # The workflow is marked terminal and never restored again.
     db.expire_all()
-    terminal = db.scalar(
+    terminal = await db.scalar(
         select(ConversationWorkflowState).where(
             ConversationWorkflowState.conversation_id == conversation_id
         )
     )
     assert terminal.status == STATUS_COMPLETED
-    assert _workflow_row(db, conversation_id, employee_context) is None
+    assert (await _workflow_row(db, conversation_id, employee_context)) is None
 
 
 @pytest.mark.asyncio
@@ -848,15 +846,15 @@ async def test_completed_workflow_starts_fresh(db, manager_context, employee_con
     """After a completed submit, a fresh session for the same conversation
     starts from scratch — the completed workflow is never resurrected."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
-    conversation_id = _seed_conversation(db, employee_context)
-    db.commit()
+    await _create_leave_type(svc, manager_context)
+    conversation_id = await _seed_conversation(db, employee_context)
+    await db.commit()
 
     first = LeaveChatE2E(db, employee_context, conversation_id=conversation_id)
     await first.turn("i want to apply for annual leave tomorrow")
     await first.turn("for 3 days")
     await first.turn("yes")
-    assert _request_count(db) == 1
+    assert (await _request_count(db)) == 1
 
     fresh = LeaveChatE2E(db, employee_context, conversation_id=conversation_id)
     state = await fresh.turn("hello again")

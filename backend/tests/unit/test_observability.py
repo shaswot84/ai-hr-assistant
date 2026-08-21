@@ -1,0 +1,323 @@
+"""Unit tests for OpenTelemetry, OpenInference, and Phoenix observability integration."""
+
+from __future__ import annotations
+
+import json
+import uuid
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from openinference.semconv.trace import (
+    DocumentAttributes,
+    MessageAttributes,
+    OpenInferenceSpanKindValues,
+    SpanAttributes,
+)
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+from app.config.settings import ObservabilitySettings
+from app.knowledge.contracts import RetrievedChunk
+from app.knowledge.models import DocumentCategory
+from app.observability import (
+    async_trace_span,
+    init_observability,
+    set_retrieval_documents,
+    shutdown_observability,
+    trace_agent_turn,
+    trace_llm_call,
+    trace_span,
+    trace_tool_call,
+)
+
+
+@pytest.fixture()
+def memory_exporter():
+    """Set up an in-memory span exporter for testing trace emission."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return exporter, provider
+
+
+def test_init_observability_disabled(monkeypatch):
+    """When OTEL_ENABLED=false, init_observability should return None."""
+    with patch("app.observability.setup.get_settings") as mock_settings:
+        mock_settings.return_value.observability = ObservabilitySettings(enabled=False)
+        provider = init_observability()
+        assert provider is None
+
+
+def test_init_observability_enabled(monkeypatch):
+    """When enabled, init_observability should initialize TracerProvider and instrumentations."""
+    with patch("app.observability.setup.get_settings") as mock_settings:
+        mock_settings.return_value.observability = ObservabilitySettings(
+            enabled=True,
+            service_name="test-service",
+            exporter_otlp_endpoint="http://localhost:6006/v1/traces",
+            project_name="test-project",
+            instrument_fastapi=False,
+            instrument_langchain=False,
+        )
+        mock_settings.return_value.app_env = "test"
+        provider = init_observability()
+        assert provider is not None
+        shutdown_observability()
+
+
+def test_trace_span_sync(memory_exporter):
+    exporter, provider = memory_exporter
+    with (
+        patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")),
+        trace_span(
+            "test.sync_span",
+            span_kind=OpenInferenceSpanKindValues.CHAIN,
+            attributes={"custom.key": "custom.value"},
+        ) as span,
+    ):
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, "result")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.name == "test.sync_span"
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "CHAIN"
+    assert s.attributes["custom.key"] == "custom.value"
+    assert s.attributes[SpanAttributes.OUTPUT_VALUE] == "result"
+
+
+@pytest.mark.asyncio
+async def test_trace_span_async(memory_exporter):
+    exporter, provider = memory_exporter
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        async with async_trace_span(
+            "test.async_span",
+            span_kind=OpenInferenceSpanKindValues.AGENT,
+            attributes={"agent.step": 1},
+        ) as span:
+            span.set_attribute("agent.done", True)
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.name == "test.async_span"
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "AGENT"
+    assert s.attributes["agent.step"] == 1
+    assert s.attributes["agent.done"] is True
+
+
+@pytest.mark.asyncio
+async def test_trace_span_error_recording(memory_exporter):
+    exporter, provider = memory_exporter
+    with (
+        patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")),
+        pytest.raises(ValueError, match="test error"),
+    ):
+        async with async_trace_span("test.error_span"):
+            raise ValueError("test error")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.status.status_code.name == "ERROR"
+    assert len(s.events) == 1
+    assert s.events[0].name == "exception"
+
+
+def test_set_retrieval_documents_with_parent_expansion(memory_exporter):
+    exporter, provider = memory_exporter
+    chunk_id = uuid.uuid4()
+    doc_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+
+    chunk = RetrievedChunk(
+        chunk_id=chunk_id,
+        document_id=doc_id,
+        document_version_id=version_id,
+        version_number=1,
+        document_title="Employee Handbook",
+        category=DocumentCategory.POLICY,
+        mime_type="application/pdf",
+        page=5,
+        section_title="Sick Leave",
+        text="Employees receive 10 paid sick days per year.",
+        parent_context="Section 4: Leave Types and Benefits\nEmployees receive 10 paid sick days per year.",
+        retrieval_score=0.92,
+        provenance={"rank": 1},
+    )
+
+    with (
+        patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")),
+        trace_span("rag.retrieve", span_kind=OpenInferenceSpanKindValues.RETRIEVER) as span,
+    ):
+        set_retrieval_documents(span, [chunk])
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "RETRIEVER"
+    assert s.attributes["rag.document_count"] == 1
+
+    doc_prefix = f"{SpanAttributes.RETRIEVAL_DOCUMENTS}.0"
+    assert s.attributes[f"{doc_prefix}.{DocumentAttributes.DOCUMENT_ID}"] == str(chunk_id)
+    assert "[Context: Sick Leave]" in s.attributes[f"{doc_prefix}.{DocumentAttributes.DOCUMENT_CONTENT}"]
+    assert s.attributes[f"{doc_prefix}.{DocumentAttributes.DOCUMENT_SCORE}"] == 0.92
+
+    meta = json.loads(s.attributes[f"{doc_prefix}.{DocumentAttributes.DOCUMENT_METADATA}"])
+    assert meta["document_title"] == "Employee Handbook"
+    assert meta["has_parent_context"] is True
+    assert meta["section_title"] == "Sick Leave"
+    assert meta["page"] == 5
+
+
+@pytest.mark.asyncio
+async def test_trace_agent_turn(memory_exporter):
+    exporter, provider = memory_exporter
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        async with trace_agent_turn(
+            "leave",
+            query="how many vacation days do I have?",
+            conversation_id="conv-123",
+            user_id="user-456",
+        ) as span:
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, "You have 15 days.")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.name == "agent.leave"
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "AGENT"
+    assert s.attributes[SpanAttributes.AGENT_NAME] == "leave"
+    assert s.attributes[SpanAttributes.INPUT_VALUE] == "how many vacation days do I have?"
+    assert s.attributes[SpanAttributes.SESSION_ID] == "conv-123"
+    assert s.attributes[SpanAttributes.USER_ID] == "user-456"
+    assert s.attributes[SpanAttributes.OUTPUT_VALUE] == "You have 15 days."
+
+
+@pytest.mark.asyncio
+async def test_trace_tool_call(memory_exporter):
+    exporter, provider = memory_exporter
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        async with trace_tool_call(
+            "get_leave_balance",
+            parameters={"leave_type": "Annual Leave"},
+            description="Fetch remaining balance",
+        ) as span:
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, json.dumps({"remaining_days": 12}))
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.name == "tool.get_leave_balance"
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "TOOL"
+    assert s.attributes[SpanAttributes.TOOL_NAME] == "get_leave_balance"
+    assert json.loads(s.attributes[SpanAttributes.TOOL_PARAMETERS]) == {"leave_type": "Annual Leave"}
+    assert s.attributes[SpanAttributes.TOOL_DESCRIPTION] == "Fetch remaining balance"
+
+
+@pytest.mark.asyncio
+async def test_trace_llm_call(memory_exporter):
+    exporter, provider = memory_exporter
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        async with trace_llm_call(
+            "gpt-oss:120b-cloud",
+            system_prompt="You are an HR assistant.",
+            user_prompt="Explain paternity leave.",
+            invocation_parameters={"temperature": 0.2},
+        ) as span:
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, "Paternity leave is 14 days.")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.name == "llm.gpt-oss:120b-cloud"
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "LLM"
+    assert s.attributes[SpanAttributes.LLM_MODEL_NAME] == "gpt-oss:120b-cloud"
+    assert s.attributes[SpanAttributes.INPUT_VALUE] == "Explain paternity leave."
+    assert s.attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.0.{MessageAttributes.MESSAGE_ROLE}"] == "system"
+    assert s.attributes[f"{SpanAttributes.LLM_INPUT_MESSAGES}.1.{MessageAttributes.MESSAGE_ROLE}"] == "user"
+    assert s.attributes[SpanAttributes.OUTPUT_VALUE] == "Paternity leave is 14 days."
+
+
+@pytest.mark.asyncio
+async def test_rag_pipeline_spans(memory_exporter):
+    exporter, provider = memory_exporter
+    from app.knowledge.repository import RetrievalHit
+    from app.knowledge.service import KnowledgeService
+
+    chunk_id = uuid.uuid4()
+    doc_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+
+    hit = RetrievalHit(
+        chunk_id=chunk_id,
+        document_id=doc_id,
+        document_version_id=version_id,
+        version_number=1,
+        document_title="Remote Work Policy",
+        category=DocumentCategory.POLICY,
+        mime_type="application/pdf",
+        page=2,
+        section_title="Eligibility",
+        content="Remote work is permitted 2 days per week.",
+        score=0.88,
+        provenance={"rank": 1},
+    )
+
+    mock_repo = AsyncMock()
+    mock_repo.has_indexed_documents.return_value = True
+    mock_repo.bm25_search.return_value = [hit]
+    mock_repo.vector_search.return_value = [hit]
+    mock_repo.fetch_parent_context.return_value = {
+        chunk_id: "Section: Remote Work Policy\nRemote work is permitted 2 days per week."
+    }
+
+    mock_embedder = AsyncMock()
+    mock_embedder.embed.return_value = [[0.1] * 768]
+
+    service = KnowledgeService(repository=mock_repo, embedder=mock_embedder)
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        result = await service.retrieve("can I work from home?")
+
+    assert result.grounded_context != ""
+    assert len(result.citations) == 1
+
+    spans = exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
+
+    # Verify that all RAG stages generated spans
+    assert "rag.embedding" in span_names
+    assert "rag.search.bm25" in span_names
+    assert "rag.search.vector" in span_names
+    assert "rag.ranking.rrf" in span_names
+    assert "rag.reranker" in span_names
+    assert "rag.parent_expansion" in span_names
+    assert "rag.confidence" in span_names
+    assert "rag.grounding" in span_names
+    assert "rag.retrieve" in span_names
+
+    # Verify top retriever span has OpenInference RETRIEVAL_DOCUMENTS
+    retriever_span = next(s for s in spans if s.name == "rag.retrieve")
+    assert retriever_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "RETRIEVER"
+    assert retriever_span.attributes[SpanAttributes.INPUT_VALUE] == "can I work from home?"
+    assert f"{SpanAttributes.RETRIEVAL_DOCUMENTS}.0.{DocumentAttributes.DOCUMENT_ID}" in retriever_span.attributes
+
+
+@pytest.mark.asyncio
+async def test_supervisor_route_intent_tracing(memory_exporter):
+    exporter, provider = memory_exporter
+    from app.agents.supervisor.route_intent import route_intent
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        route = await route_intent(llm=None, query="how much annual leave do I have?", history=[])
+
+    assert route == "leave"
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.name == "supervisor.route_intent"
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "CHAIN"
+    assert s.attributes["agent.route"] == "leave"
+    assert s.attributes[SpanAttributes.INPUT_VALUE] == "how much annual leave do I have?"

@@ -126,11 +126,12 @@ class FakeLeaveService:
         ]
         self.types = types or [_FakeLeaveType("Sick Leave")]
 
-    def list_leave_types(self):
+    async def list_leave_types(self):
         return self.types
 
-    def list_my_balance(self, actor, year=None):
+    async def list_my_balance(self, actor, year=None):
         return self.rows
+
 
 
 def _employee() -> UserContext:

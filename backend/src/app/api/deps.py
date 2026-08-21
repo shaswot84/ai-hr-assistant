@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import JwtAuthProvider
 from app.auth.provider import AuthProvider
 from app.config.settings import get_settings
 from app.contracts.auth import UserContext
-from app.db.sync_session import get_db
+from app.db.session import get_db
 
 _bearer = HTTPBearer(auto_error=False)
 
 
-def get_auth_provider(db: Session = Depends(get_db)) -> AuthProvider:
+def get_auth_provider(db: AsyncSession = Depends(get_db)) -> AuthProvider:
     """Instantiate the active AuthProvider (self-issued JWT is the only provider)."""
     settings = get_settings()
     if settings.auth.provider != "jwt":
@@ -21,35 +21,24 @@ def get_auth_provider(db: Session = Depends(get_db)) -> AuthProvider:
     return JwtAuthProvider(db=db)
 
 
-def get_current_user(
+async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     provider: AuthProvider = Depends(get_auth_provider),
 ) -> UserContext:
-    """Resolve the authenticated user from the signed JWT.
-
-    The short-lived HS256 JWT is verified against the local secret; the coarse
-    role is re-read from the DB on every request (authoritative). Authorization
-    (role checks) happens in the capability layer, not here.
-    """
-    user = provider.authenticate(request)
+    """Resolve the authenticated user from the signed JWT."""
+    user = await provider.authenticate(request)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     return user
 
 
-def get_optional_user(
+async def get_optional_user(
     request: Request,
     provider: AuthProvider = Depends(get_auth_provider),
 ) -> UserContext | None:
-    """Resolve the authenticated user, or None for public (anonymous) routes.
-
-    Used by endpoints anyone may call (e.g. browsing open vacancies): a valid
-    token still resolves to a user so the route can tailor the response, but
-    no token / an invalid token is treated as an anonymous visitor rather than
-    a 401.
-    """
-    return provider.authenticate(request)
+    """Resolve the authenticated user, or None for public (anonymous) routes."""
+    return await provider.authenticate(request)
 
 
 def require_role(*roles: str):
@@ -62,3 +51,4 @@ def require_role(*roles: str):
         return user
 
     return checker
+

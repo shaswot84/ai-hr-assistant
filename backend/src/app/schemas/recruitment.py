@@ -213,6 +213,7 @@ class ApplicationOut(BaseModel):
     vacancy_title: str | None = None
     application_status: str
     applied_at: datetime
+    withdrawn_at: datetime | None = None
     evaluated: bool = False
     evaluation: EvaluationOut | None = None
     # True once the candidate was converted into an employee via the hire
@@ -240,6 +241,7 @@ class ApplicationStatusOut(BaseModel):
     vacancy_title: str | None = None
     application_status: str
     applied_at: datetime
+    withdrawn_at: datetime | None = None
 
 
 class DecisionRequest(BaseModel):

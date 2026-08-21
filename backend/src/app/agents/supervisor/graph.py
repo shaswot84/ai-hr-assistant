@@ -48,7 +48,7 @@ from app.agents.supervisor.state import SupervisorState
 from app.capabilities.leave import LeaveService
 from app.capabilities.recruitment import RecruitmentService
 from app.contracts.auth import UserContext
-from app.db.sync_session import SessionLocal
+from app.db.session import async_session_factory
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.interfaces import LLM
 from app.model_gateway.provider import ChatProvider
@@ -106,7 +106,7 @@ def make_knowledge_node(
 
     ``actor`` (+ optional ``leave_service``) enable balance reconciliation:
     on a balance-relevant employee question the REAL leave balance is fetched
-    (a request-scoped ``LeaveService`` on the sync session when none is
+    (a request-scoped ``LeaveService`` on the async session when none is
     injected, mirroring the leave node) and appended to the policy answer —
     see ``knowledge_agent.agent._employee_balance_block``.
     """
@@ -119,7 +119,7 @@ def make_knowledge_node(
             and actor.coarse_role == "EMPLOYEE"
             and balance_relevant(state["current_query"])
         ):
-            with SessionLocal() as db:
+            async with async_session_factory() as db:
                 balance_service = LeaveService(db)
                 return await stream_knowledge_turn(
                     service=service,
@@ -166,6 +166,13 @@ def _leave_stub_node() -> Callable[[SupervisorState, StreamWriter], dict]:
         }
 
     return leave_node
+
+
+def _subagent_fallback_router(state: SupervisorState) -> str:
+    """If a subagent indicates it could not handle the request, route to clarify."""
+    if state.get("can_handle") is False:
+        return "clarify"
+    return END
 
 
 def build_supervisor_graph(
@@ -227,6 +234,12 @@ def build_supervisor_graph(
     builder.add_node("recap", make_recap_node(llm))
     builder.add_edge(START, "route")
     builder.add_conditional_edges("route", _select_route, ROUTE_TO_NODE)
-    for node in ("knowledge", "leave", "recruitment", "clarify", "recap"):
+    for node in ("knowledge", "leave", "recruitment"):
+        builder.add_conditional_edges(
+            node,
+            _subagent_fallback_router,
+            {"clarify": "clarify", END: END},
+        )
+    for node in ("clarify", "recap"):
         builder.add_edge(node, END)
     return builder.compile()

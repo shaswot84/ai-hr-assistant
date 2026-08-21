@@ -28,30 +28,21 @@ from app.domain.outbox import OutboxJob
 # ---- shared helpers ------------------------------------------------------
 
 
-def _make_dept_and_designation(svc, manager_context, *, dept: str | None = None, title="Specialist"):
-    """Create a department + designation via the service and return them.
-
-    Departments get a unique name per call unless one is passed explicitly, so
-    tests can call this helper repeatedly without tripping the unique-name
-    guard (the seeded fixtures already create "Human Resources").
-    """
-    import uuid
-
+async def _make_dept_and_designation(svc, manager_context, *, dept: str | None = None, title="Specialist"):
+    """Create a department + designation via the service and return them."""
     dept = dept or f"People Ops {uuid.uuid4().hex[:6]}"
-    department = svc.create_department(manager_context, name=dept)
-    designation = svc.create_designation(
+    department = await svc.create_department(manager_context, name=dept)
+    designation = await svc.create_designation(
         manager_context, department_id=department.department_id, title=title
     )
     return department, designation
 
 
-def _create_employee(svc, manager_context, *, email=None, code=None, **overrides):
+async def _create_employee(svc, manager_context, *, email=None, code=None, **overrides):
     """Create an employee via the service with sensible (unique) defaults."""
-    import uuid
-
     email = email or f"new.employee.{uuid.uuid4().hex[:6]}@acme-hr-test.dev"
     code = code or f"EMP-{uuid.uuid4().hex[:6]}"
-    department, designation = _make_dept_and_designation(svc, manager_context)
+    department, designation = await _make_dept_and_designation(svc, manager_context)
     defaults = {
         "first_name": "New",
         "last_name": "Hire",
@@ -65,13 +56,13 @@ def _create_employee(svc, manager_context, *, email=None, code=None, **overrides
         "password": "temp-password-1",
     }
     defaults.update(overrides)
-    return svc.create_employee(manager_context, **defaults)
+    return await svc.create_employee(manager_context, **defaults)
 
 
-def _shortlist_application(db, manager_context, candidate_context):
+async def _shortlist_application(db, manager_context, candidate_context):
     """Create a vacancy, apply as the candidate, and shortlist — return the Application."""
     recruitment = RecruitmentService(db)
-    vacancy = recruitment.create_vacancy(
+    vacancy = await recruitment.create_vacancy(
         manager_context,
         title="Senior Backend Engineer",
         department_name="Engineering",
@@ -81,70 +72,70 @@ def _shortlist_application(db, manager_context, candidate_context):
         closing_date=None,
         scoring_keywords=[{"keyword": "python", "tier": "critical"}],
     )
-    application = recruitment.apply(
+    application = await recruitment.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
     )
-    recruitment.decide_application(manager_context, application.application_id, approve=True)
+    await recruitment.decide_application(manager_context, application.application_id, approve=True)
     return application
 
 
-def _employee_of(svc, context) -> Employee:
+async def _employee_of(svc, context) -> Employee:
     """Resolve a UserContext to its Employee row."""
-    return svc._identity.get_employee(context)
+    return await svc._identity.get_employee(context)
 
 
 # ---- departments ---------------------------------------------------------
 
 
-def test_create_department_requires_hr_admin(db, candidate_context):
+async def test_create_department_requires_hr_admin(db, candidate_context):
     svc = PeopleService(db)
     with pytest.raises(PermissionError_):
-        svc.create_department(candidate_context, name="Security")
+        await svc.create_department(candidate_context, name="Security")
 
 
-def test_create_department_duplicate_conflicts(db, manager_context):
+async def test_create_department_duplicate_conflicts(db, manager_context):
     svc = PeopleService(db)
-    svc.create_department(manager_context, name="Operations")
+    await svc.create_department(manager_context, name="Operations")
     with pytest.raises(ConflictError_, match="already exists"):
-        svc.create_department(manager_context, name="Operations")
+        await svc.create_department(manager_context, name="Operations")
 
 
 # ---- designations --------------------------------------------------------
 
 
-def test_create_designation_duplicate_conflicts(db, manager_context):
+async def test_create_designation_duplicate_conflicts(db, manager_context):
     svc = PeopleService(db)
-    department, _ = _make_dept_and_designation(svc, manager_context, title="Specialist")
+    department, _ = await _make_dept_and_designation(svc, manager_context, title="Specialist")
     with pytest.raises(ConflictError_, match="already exists"):
-        svc.create_designation(manager_context, department_id=department.department_id, title="Specialist")
+        await svc.create_designation(manager_context, department_id=department.department_id, title="Specialist")
 
 
-def test_list_designations_filters_by_department(db, manager_context):
+async def test_list_designations_filters_by_department(db, manager_context):
     svc = PeopleService(db)
-    dept_a, _ = _make_dept_and_designation(svc, manager_context, dept="Alpha", title="Role A")
-    dept_b, _ = _make_dept_and_designation(svc, manager_context, dept="Beta", title="Role B")
-    titles = {d.title for d in svc.list_designations(department_id=dept_a.department_id)}
+    dept_a, _ = await _make_dept_and_designation(svc, manager_context, dept="Alpha", title="Role A")
+    dept_b, _ = await _make_dept_and_designation(svc, manager_context, dept="Beta", title="Role B")
+    desigs_a = await svc.list_designations(department_id=dept_a.department_id)
+    titles = {d.title for d in desigs_a}
     assert titles == {"Role A"}
-    # The unfiltered list spans both departments (the fixture's seeded
-    # "Human Resources" designation is present too, so use subset).
-    all_ids = {d.department_id for d in svc.list_designations()}
+    all_desigs = await svc.list_designations()
+    all_ids = {d.department_id for d in all_desigs}
     assert {dept_a.department_id, dept_b.department_id} <= all_ids
 
 
-def test_list_designations_unknown_department_raises(db, manager_context):
+async def test_list_designations_unknown_department_raises(db, manager_context):
     svc = PeopleService(db)
     with pytest.raises(NotFoundError_):
-        svc.list_designations(department_id=uuid.UUID("00000000-0000-0000-0000-000000000000"))
+        await svc.list_designations(department_id=uuid.UUID("00000000-0000-0000-0000-000000000000"))
 
 
 # ---- employees: create ---------------------------------------------------
 
 
-def test_create_employee_requires_hr_admin(db, manager_context, candidate_context):
+async def test_create_employee_requires_hr_admin(db, manager_context, candidate_context):
     svc = PeopleService(db)
-    department, designation = _make_dept_and_designation(svc, manager_context)
+    department, designation = await _make_dept_and_designation(svc, manager_context)
     with pytest.raises(PermissionError_):
-        svc.create_employee(
+        await svc.create_employee(
             candidate_context,
             first_name="X",
             last_name="Y",
@@ -159,42 +150,42 @@ def test_create_employee_requires_hr_admin(db, manager_context, candidate_contex
         )
 
 
-def test_create_employee_provisions_person_user_and_employee(db, manager_context):
+async def test_create_employee_provisions_person_user_and_employee(db, manager_context):
     svc = PeopleService(db)
-    employee = _create_employee(svc, manager_context, email="prov@acme-hr-test.dev", code="EMP-101")
-    db.refresh(employee)
+    employee = await _create_employee(svc, manager_context, email="prov@acme-hr-test.dev", code="EMP-101")
+    await db.refresh(employee)
 
-    # All three rows exist, linked by person_id, and the login works.
-    person = db.get(Person, employee.person_id)
-    app_user = db.scalar(
+    person = await db.get(Person, employee.person_id)
+    app_user = await db.scalar(
         select(ApplicationUser).where(ApplicationUser.person_id == person.person_id)
     )
     assert person.email == "prov@acme-hr-test.dev"
     assert app_user.coarse_role == "EMPLOYEE"
     assert app_user.status == "ACTIVE"
     assert employee.employment_status == "ACTIVE"
-    assert employee in svc.list_employees()
+    employees = await svc.list_employees()
+    assert any(e.employee_id == employee.employee_id for e in employees)
 
 
-def test_create_employee_duplicate_email_conflicts(db, manager_context):
+async def test_create_employee_duplicate_email_conflicts(db, manager_context):
     svc = PeopleService(db)
-    _create_employee(svc, manager_context, email="dup@acme-hr-test.dev")
+    await _create_employee(svc, manager_context, email="dup@acme-hr-test.dev")
     with pytest.raises(ConflictError_, match="email already exists"):
-        _create_employee(svc, manager_context, email="dup@acme-hr-test.dev", code="EMP-200")
+        await _create_employee(svc, manager_context, email="dup@acme-hr-test.dev", code="EMP-200")
 
 
-def test_create_employee_duplicate_code_conflicts(db, manager_context):
+async def test_create_employee_duplicate_code_conflicts(db, manager_context):
     svc = PeopleService(db)
-    _create_employee(svc, manager_context, code="EMP-300")
+    await _create_employee(svc, manager_context, code="EMP-300")
     with pytest.raises(ConflictError_, match="code already exists"):
-        _create_employee(svc, manager_context, email="other@acme-hr-test.dev", code="EMP-300")
+        await _create_employee(svc, manager_context, email="other@acme-hr-test.dev", code="EMP-300")
 
 
-def test_create_employee_unknown_department_raises(db, manager_context):
+async def test_create_employee_unknown_department_raises(db, manager_context):
     svc = PeopleService(db)
-    _, designation = _make_dept_and_designation(svc, manager_context)
+    _, designation = await _make_dept_and_designation(svc, manager_context)
     with pytest.raises(NotFoundError_, match="Department not found"):
-        _create_employee(
+        await _create_employee(
             svc,
             manager_context,
             department_id=uuid.UUID("00000000-0000-0000-0000-000000000000"),
@@ -202,71 +193,73 @@ def test_create_employee_unknown_department_raises(db, manager_context):
         )
 
 
-def test_create_employee_manager_must_be_active(db, manager_context, employee_context):
+async def test_create_employee_manager_must_be_active(db, manager_context, employee_context):
     svc = PeopleService(db)
-    manager = _employee_of(svc, manager_context)
-    # Deactivate the would-be manager, then try to assign them.
-    svc.deactivate_employee(manager_context, manager.employee_id)
+    manager = await _employee_of(svc, manager_context)
+    await svc.deactivate_employee(manager_context, manager.employee_id)
     with pytest.raises(ConflictError_, match="active employee"):
-        _create_employee(svc, manager_context, manager_employee_id=manager.employee_id)
+        await _create_employee(svc, manager_context, manager_employee_id=manager.employee_id)
 
 
-def test_create_employee_stores_email_lowercase_for_login(db, manager_context):
+async def test_create_employee_stores_email_lowercase_for_login(db, manager_context):
     svc = PeopleService(db)
-    employee = _create_employee(svc, manager_context, email="Mixed.Case@Acme-Hr-Test.Dev")
-    person = db.get(Person, employee.person_id)
+    employee = await _create_employee(svc, manager_context, email="Mixed.Case@Acme-Hr-Test.Dev")
+    person = await db.get(Person, employee.person_id)
     assert person.email == "mixed.case@acme-hr-test.dev"
 
 
 # ---- employees: list / get / update --------------------------------------
 
 
-def test_list_employees_filters_by_search_and_status(db, manager_context):
+async def test_list_employees_filters_by_search_and_status(db, manager_context):
     svc = PeopleService(db)
-    active = _create_employee(svc, manager_context, first_name="Zara", last_name="Active", code="EMP-400")
-    _create_employee(svc, manager_context, first_name="Bob", last_name="Inactive", code="EMP-401")
-    svc.deactivate_employee(manager_context, active.employee_id)
+    active = await _create_employee(svc, manager_context, first_name="Zara", last_name="Active", code="EMP-400")
+    await _create_employee(svc, manager_context, first_name="Bob", last_name="Inactive", code="EMP-401")
+    await svc.deactivate_employee(manager_context, active.employee_id)
 
-    # Search by name fragment.
-    names = {f"{e.person.first_name} {e.person.last_name}" for e in svc.list_employees(search="zara")}
+    zaras = await svc.list_employees(search="zara")
+    names = {f"{e.person.first_name} {e.person.last_name}" for e in zaras}
     assert names == {"Zara Active"}
-    # Status filter: the deactivated one shows up under INACTIVE only (the
-    # fixture's HR-manager employee is ACTIVE too, so compare by membership).
-    inactive_codes = {e.employee_code for e in svc.list_employees(employment_status="INACTIVE")}
+    inactives = await svc.list_employees(employment_status="INACTIVE")
+    inactive_codes = {e.employee_code for e in inactives}
     assert inactive_codes == {"EMP-400"}
-    active_codes = {e.employee_code for e in svc.list_employees(employment_status="ACTIVE")}
+    actives = await svc.list_employees(employment_status="ACTIVE")
+    active_codes = {e.employee_code for e in actives}
     assert "EMP-400" not in active_codes
     assert "EMP-401" in active_codes
 
 
-def test_employee_can_view_own_profile_only(db, manager_context, employee_context):
+async def test_employee_can_view_own_profile_only(db, manager_context, employee_context):
     svc = PeopleService(db)
-    own = _employee_of(svc, employee_context)
-    other = _employee_of(svc, manager_context)
+    own = await _employee_of(svc, employee_context)
+    other = await _employee_of(svc, manager_context)
 
-    assert svc.get_employee(employee_context, own.employee_id).employee_id == own.employee_id
+    own_profile = await svc.get_employee(employee_context, own.employee_id)
+    assert own_profile.employee_id == own.employee_id
     with pytest.raises(PermissionError_):
-        svc.get_employee(employee_context, other.employee_id)
-    # HR admins can view anyone.
-    assert svc.get_employee(manager_context, own.employee_id).employee_id == own.employee_id
-    assert svc.get_employee(manager_context, other.employee_id).employee_id == other.employee_id
+        await svc.get_employee(employee_context, other.employee_id)
+    mgr_view_own = await svc.get_employee(manager_context, own.employee_id)
+    assert mgr_view_own.employee_id == own.employee_id
+    mgr_view_other = await svc.get_employee(manager_context, other.employee_id)
+    assert mgr_view_other.employee_id == other.employee_id
 
 
-def test_update_employee_patch_and_audit(db, manager_context):
+async def test_update_employee_patch_and_audit(db, manager_context):
     svc = PeopleService(db)
-    employee = _create_employee(svc, manager_context)
-    manager = _employee_of(svc, manager_context)
+    employee = await _create_employee(svc, manager_context)
+    manager = await _employee_of(svc, manager_context)
 
-    updated = svc.update_employee(
+    await svc.update_employee(
         manager_context, employee.employee_id, first_name="Renamed", manager_employee_id=manager.employee_id
     )
-    db.refresh(updated)
+    updated = await svc.get_employee(manager_context, employee.employee_id)
     assert updated.person.first_name == "Renamed"
     assert updated.manager_employee_id == manager.employee_id
 
-    entry = db.scalars(
+
+    entry = (await db.scalars(
         select(AuditLog).where(AuditLog.action == "EMPLOYEE_UPDATED")
-    ).first()
+    )).first()
     assert entry is not None
     assert entry.new_state["manager_employee_id"] == str(manager.employee_id)
 
@@ -274,44 +267,41 @@ def test_update_employee_patch_and_audit(db, manager_context):
 # ---- employees: deactivate -----------------------------------------------
 
 
-def test_deactivate_employee_revokes_login(db, manager_context, employee_context):
+async def test_deactivate_employee_revokes_login(db, manager_context, employee_context):
     svc = PeopleService(db)
-    employee = _employee_of(svc, employee_context)
+    employee = await _employee_of(svc, employee_context)
 
-    deactivated = svc.deactivate_employee(manager_context, employee.employee_id)
+    deactivated = await svc.deactivate_employee(manager_context, employee.employee_id)
     assert deactivated.employment_status == "INACTIVE"
 
-    # The ApplicationUser status flipped in the same transaction.
-    app_user = db.scalar(
+    app_user = await db.scalar(
         select(ApplicationUser).where(ApplicationUser.person_id == employee.person_id)
     )
     assert app_user.status == "INACTIVE"
-    # Audit row records the change.
-    entry = db.scalars(
+    entry = (await db.scalars(
         select(AuditLog).where(AuditLog.action == "EMPLOYEE_DEACTIVATED")
-    ).first()
+    )).first()
     assert entry is not None
 
 
-def test_deactivate_employee_blocked_with_active_reports(db, manager_context, employee_context):
+async def test_deactivate_employee_blocked_with_active_reports(db, manager_context, employee_context):
     svc = PeopleService(db)
-    manager = _employee_of(svc, manager_context)
-    report = _employee_of(svc, employee_context)
-    # Make the employee report to the manager, then try to deactivate the manager.
-    svc.update_employee(manager_context, report.employee_id, manager_employee_id=manager.employee_id)
+    manager = await _employee_of(svc, manager_context)
+    report = await _employee_of(svc, employee_context)
+    await svc.update_employee(manager_context, report.employee_id, manager_employee_id=manager.employee_id)
     with pytest.raises(ConflictError_, match="manages active reports"):
-        svc.deactivate_employee(manager_context, manager.employee_id)
+        await svc.deactivate_employee(manager_context, manager.employee_id)
 
 
 # ---- hire handoff --------------------------------------------------------
 
 
-def test_hire_candidate_requires_hr_admin(db, manager_context, candidate_context):
+async def test_hire_candidate_requires_hr_admin(db, manager_context, candidate_context):
     svc = PeopleService(db)
-    application = _shortlist_application(db, manager_context, candidate_context)
-    department, designation = _make_dept_and_designation(svc, manager_context)
+    application = await _shortlist_application(db, manager_context, candidate_context)
+    department, designation = await _make_dept_and_designation(svc, manager_context)
     with pytest.raises(PermissionError_):
-        svc.hire_candidate(
+        await svc.hire_candidate(
             candidate_context,
             application.application_id,
             employee_code="EMP-500",
@@ -322,12 +312,12 @@ def test_hire_candidate_requires_hr_admin(db, manager_context, candidate_context
         )
 
 
-def test_hire_candidate_creates_employee_and_links_candidate(db, manager_context, candidate_context):
+async def test_hire_candidate_creates_employee_and_links_candidate(db, manager_context, candidate_context):
     svc = PeopleService(db)
-    application = _shortlist_application(db, manager_context, candidate_context)
-    department, designation = _make_dept_and_designation(svc, manager_context)
+    application = await _shortlist_application(db, manager_context, candidate_context)
+    department, designation = await _make_dept_and_designation(svc, manager_context)
 
-    employee = svc.hire_candidate(
+    employee = await svc.hire_candidate(
         manager_context,
         application.application_id,
         employee_code="EMP-500",
@@ -336,32 +326,28 @@ def test_hire_candidate_creates_employee_and_links_candidate(db, manager_context
         manager_employee_id=None,
         joining_date=date(2026, 2, 1),
     )
-    db.refresh(employee)
+    await db.refresh(employee)
 
-    # Employee row exists on the candidate's Person.
-    candidate = svc._identity.get_candidate_for_application(application)
+    candidate = await svc._identity.get_candidate_for_application(application)
     assert employee.person_id == candidate.person_id
     assert employee.employment_status == "ACTIVE"
-    # Candidate is linked + marked hired.
-    db.refresh(candidate)
+    await db.refresh(candidate)
     assert candidate.hired_employee_id == employee.employee_id
     assert candidate.candidate_status == "HIRED"
     assert candidate.hired_at is not None
-    # Role flipped so the hiree can use the employee portal.
-    app_user = db.scalar(
+    app_user = await db.scalar(
         select(ApplicationUser).where(ApplicationUser.person_id == candidate.person_id)
     )
     assert app_user.coarse_role == "EMPLOYEE"
-    # Audit row records the hire.
-    entry = db.scalars(select(AuditLog).where(AuditLog.action == "CANDIDATE_HIRED")).first()
+    entry = (await db.scalars(select(AuditLog).where(AuditLog.action == "CANDIDATE_HIRED"))).first()
     assert entry is not None
     assert entry.new_state["employee_id"] == str(employee.employee_id)
 
 
-def test_hire_candidate_requires_shortlisted(db, manager_context, candidate_context):
+async def test_hire_candidate_requires_shortlisted(db, manager_context, candidate_context):
     svc = PeopleService(db)
     recruitment = RecruitmentService(db)
-    vacancy = recruitment.create_vacancy(
+    vacancy = await recruitment.create_vacancy(
         manager_context,
         title="Junior Engineer",
         department_name="Engineering",
@@ -371,12 +357,12 @@ def test_hire_candidate_requires_shortlisted(db, manager_context, candidate_cont
         closing_date=None,
         scoring_keywords=[{"keyword": "python", "tier": "critical"}],
     )
-    application = recruitment.apply(
+    application = await recruitment.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/b.pdf"
     )
-    department, designation = _make_dept_and_designation(svc, manager_context)
+    department, designation = await _make_dept_and_designation(svc, manager_context)
     with pytest.raises(ConflictError_, match="SHORTLISTED"):
-        svc.hire_candidate(
+        await svc.hire_candidate(
             manager_context,
             application.application_id,
             employee_code="EMP-501",
@@ -387,11 +373,11 @@ def test_hire_candidate_requires_shortlisted(db, manager_context, candidate_cont
         )
 
 
-def test_hire_candidate_already_hired_conflicts(db, manager_context, candidate_context):
+async def test_hire_candidate_already_hired_conflicts(db, manager_context, candidate_context):
     svc = PeopleService(db)
-    application = _shortlist_application(db, manager_context, candidate_context)
-    department, designation = _make_dept_and_designation(svc, manager_context)
-    svc.hire_candidate(
+    application = await _shortlist_application(db, manager_context, candidate_context)
+    department, designation = await _make_dept_and_designation(svc, manager_context)
+    await svc.hire_candidate(
         manager_context,
         application.application_id,
         employee_code="EMP-502",
@@ -401,7 +387,7 @@ def test_hire_candidate_already_hired_conflicts(db, manager_context, candidate_c
         joining_date=date(2026, 2, 1),
     )
     with pytest.raises(ConflictError_, match="already been hired"):
-        svc.hire_candidate(
+        await svc.hire_candidate(
             manager_context,
             application.application_id,
             employee_code="EMP-503",
@@ -412,27 +398,27 @@ def test_hire_candidate_already_hired_conflicts(db, manager_context, candidate_c
         )
 
 
-def test_hire_candidate_withdraws_other_open_applications(db, manager_context, candidate_context):
+async def test_hire_candidate_withdraws_other_open_applications(db, manager_context, candidate_context):
     """Hiring from one application withdraws the candidate's other open ones and emails them."""
     svc = PeopleService(db)
     recruitment = RecruitmentService(db)
-    v1 = recruitment.create_vacancy(
+    v1 = await recruitment.create_vacancy(
         manager_context, title="Senior Backend Engineer", department_name="Engineering",
         description="Build APIs.", employment_type="full_time", opening_date=None, closing_date=None,
         scoring_keywords=[{"keyword": "python", "tier": "critical"}],
     )
-    v2 = recruitment.create_vacancy(
+    v2 = await recruitment.create_vacancy(
         manager_context, title="Data Analyst", department_name="Data",
         description="Analyze data.", employment_type="full_time", opening_date=None, closing_date=None,
         scoring_keywords=[{"keyword": "sql", "tier": "critical"}],
     )
-    hired_app = recruitment.apply(candidate_context, vacancy_id=v1.vacancy_id, cv_object_key="resumes/a.pdf")
-    other_app = recruitment.apply(candidate_context, vacancy_id=v2.vacancy_id, cv_object_key="resumes/b.pdf")
-    recruitment.decide_application(manager_context, hired_app.application_id, approve=True)
-    recruitment.decide_application(manager_context, other_app.application_id, approve=True)
+    hired_app = await recruitment.apply(candidate_context, vacancy_id=v1.vacancy_id, cv_object_key="resumes/a.pdf")
+    other_app = await recruitment.apply(candidate_context, vacancy_id=v2.vacancy_id, cv_object_key="resumes/b.pdf")
+    await recruitment.decide_application(manager_context, hired_app.application_id, approve=True)
+    await recruitment.decide_application(manager_context, other_app.application_id, approve=True)
 
-    department, designation = _make_dept_and_designation(svc, manager_context)
-    svc.hire_candidate(
+    department, designation = await _make_dept_and_designation(svc, manager_context)
+    await svc.hire_candidate(
         manager_context,
         hired_app.application_id,
         employee_code="EMP-600",
@@ -442,40 +428,38 @@ def test_hire_candidate_withdraws_other_open_applications(db, manager_context, c
         joining_date=date(2026, 2, 1),
     )
 
-    # The hired application stays SHORTLISTED; the sibling one is withdrawn.
-    db.refresh(hired_app)
-    db.refresh(other_app)
+    await db.refresh(hired_app)
+    await db.refresh(other_app)
     assert hired_app.application_status == "SHORTLISTED"
     assert other_app.application_status == "WITHDRAWN"
     assert other_app.withdrawn_at is not None
 
-    # One notification email was enqueued for the withdrawn application.
-    jobs = db.scalars(
+    jobs = (await db.scalars(
         select(OutboxJob).where(OutboxJob.job_type == "SEND_APPLICATION_WITHDRAWN")
-    ).all()
+    )).all()
     assert len(jobs) == 1
     assert jobs[0].payload["to_email"] == candidate_context.email
     assert jobs[0].payload["application_id"] == str(other_app.application_id)
 
 
-def test_application_detail_exposes_hired_flag(
+async def test_application_detail_exposes_hired_flag(
     db, client, manager_context, candidate_context, manager_password
 ):
     """The manager API marks an application as hired once the candidate was converted."""
     svc = PeopleService(db)
     recruitment = RecruitmentService(db)
-    vacancy = recruitment.create_vacancy(
+    vacancy = await recruitment.create_vacancy(
         manager_context, title="Product Designer", department_name="Design",
         description="Design products.", employment_type="full_time",
         opening_date=None, closing_date=None,
         scoring_keywords=[{"keyword": "figma", "tier": "critical"}],
     )
-    application = recruitment.apply(
+    application = await recruitment.apply(
         candidate_context, vacancy_id=vacancy.vacancy_id, cv_object_key="resumes/a.pdf"
     )
-    recruitment.decide_application(manager_context, application.application_id, approve=True)
-    department, designation = _make_dept_and_designation(svc, manager_context)
-    svc.hire_candidate(
+    await recruitment.decide_application(manager_context, application.application_id, approve=True)
+    department, designation = await _make_dept_and_designation(svc, manager_context)
+    await svc.hire_candidate(
         manager_context,
         application.application_id,
         employee_code="EMP-700",
@@ -547,9 +531,9 @@ def test_http_create_employee_happy_path_and_login(db, client, manager_context, 
     assert login.status_code == 200
 
 
-def test_http_deactivate_revokes_login(db, client, manager_context, manager_password, employee_context, employee_password):
+async def test_http_deactivate_revokes_login(db, client, manager_context, manager_password, employee_context, employee_password):
     svc = PeopleService(db)
-    employee = _employee_of(svc, employee_context)
+    employee = await _employee_of(svc, employee_context)
     headers = _login(client, manager_context.email, manager_password)
 
     res = client.post(f"/api/people/employees/{employee.employee_id}/deactivate", headers=headers)
@@ -578,12 +562,12 @@ def test_http_me_requires_employee_role(db, client, candidate_context, candidate
     assert client.get("/api/people/me", headers=headers).status_code == 403
 
 
-def test_http_employee_can_view_own_profile_but_not_others(
+async def test_http_employee_can_view_own_profile_but_not_others(
     db, client, manager_context, employee_context, employee_password
 ):
     svc = PeopleService(db)
-    own = _employee_of(svc, employee_context)
-    other = _employee_of(svc, manager_context)
+    own = await _employee_of(svc, employee_context)
+    other = await _employee_of(svc, manager_context)
     headers = _login(client, employee_context.email, employee_password)
 
     assert client.get(f"/api/people/employees/{own.employee_id}", headers=headers).status_code == 200

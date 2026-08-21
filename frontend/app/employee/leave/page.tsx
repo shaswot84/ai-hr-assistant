@@ -9,9 +9,25 @@ import { ListSkeleton, StatsSkeleton } from "@/components/loading";
 import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
-import type { LeaveBalance, LeaveRequest, LeaveType } from "@/lib/types";
+import type {
+  CompanyHoliday,
+  LeaveBalance,
+  LeaveRequest,
+  LeaveType,
+  TeamMemberOutOfOffice,
+  WorkingDaysCalculation,
+} from "@/lib/types";
 
-const emptyForm = { leaveTypeId: "", startDate: "", endDate: "", reason: "" };
+type EmployeeTab = "my_requests" | "team_calendar" | "holidays";
+
+const emptyForm = {
+  leaveTypeId: "",
+  startDate: "",
+  endDate: "",
+  isHalfDay: false,
+  halfDayPeriod: "MORNING" as "MORNING" | "AFTERNOON",
+  reason: "",
+};
 
 function formatDate(value: string) {
   return new Date(value).toLocaleDateString("en-US", {
@@ -60,8 +76,6 @@ function RequestLeaveModal({
 }) {
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Request Leave" size="md">
-      {/* Rendered fresh each time the modal opens, so its form state starts
-          clean without syncing via an effect. */}
       {isOpen && <RequestLeaveForm leaveTypes={leaveTypes} onClose={onClose} onCreated={onCreated} />}
     </Modal>
   );
@@ -77,9 +91,45 @@ function RequestLeaveForm({
   onCreated: () => void;
 }) {
   const { addToast } = useToast();
-  const [form, setForm] = useState({ ...emptyForm, leaveTypeId: leaveTypes[0]?.leave_type_id ?? "" });
+  const [form, setForm] = useState({
+    ...emptyForm,
+    leaveTypeId: leaveTypes[0]?.leave_type_id ?? "",
+  });
+  const [calculation, setCalculation] = useState<WorkingDaysCalculation | null>(null);
+  const [calcLoading, setCalcLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Live working days calculation
+  useEffect(() => {
+    if (!form.startDate || (!form.isHalfDay && !form.endDate)) {
+      setCalculation(null);
+      return;
+    }
+    const end = form.isHalfDay ? form.startDate : form.endDate;
+    if (end < form.startDate) {
+      setCalculation(null);
+      return;
+    }
+
+    setCalcLoading(true);
+    api
+      .calculateWorkingDays({
+        start_date: form.startDate,
+        end_date: end,
+        is_half_day: form.isHalfDay,
+        half_day_period: form.isHalfDay ? form.halfDayPeriod : undefined,
+      })
+      .then((res) => {
+        setCalculation(res);
+        setError(null);
+      })
+      .catch((err) => {
+        setCalculation(null);
+        if (err instanceof ApiError) setError(err.detail);
+      })
+      .finally(() => setCalcLoading(false));
+  }, [form.startDate, form.endDate, form.isHalfDay, form.halfDayPeriod]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -89,10 +139,12 @@ function RequestLeaveForm({
       await api.requestLeave({
         leave_type_id: form.leaveTypeId,
         start_date: form.startDate,
-        end_date: form.endDate,
+        end_date: form.isHalfDay ? form.startDate : form.endDate,
+        is_half_day: form.isHalfDay,
+        half_day_period: form.isHalfDay ? form.halfDayPeriod : null,
         reason: form.reason || null,
       });
-      addToast("Leave request submitted.", "success");
+      addToast("Leave request submitted successfully.", "success");
       onClose();
       onCreated();
     } catch (err) {
@@ -103,22 +155,80 @@ function RequestLeaveForm({
   }
 
   return (
-      <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="label">Leave Type *</label>
+        <select
+          required
+          className="input"
+          value={form.leaveTypeId}
+          onChange={(e) => setForm({ ...form, leaveTypeId: e.target.value })}
+        >
+          {leaveTypes.map((t) => (
+            <option key={t.leave_type_id} value={t.leave_type_id}>
+              {t.leave_name} {!t.is_paid ? "(Unpaid)" : ""}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Half Day Option */}
+      <div className="flex items-center justify-between rounded-lg border border-zinc-200 bg-zinc-50 p-3">
         <div>
-          <label className="label">Leave Type *</label>
-          <select
-            required
-            className="input"
-            value={form.leaveTypeId}
-            onChange={(e) => setForm({ ...form, leaveTypeId: e.target.value })}
-          >
-            {leaveTypes.map((t) => (
-              <option key={t.leave_type_id} value={t.leave_type_id}>
-                {t.leave_name}
-              </option>
-            ))}
-          </select>
+          <span className="text-sm font-medium text-zinc-900">Half-Day Leave</span>
+          <p className="text-xs text-zinc-500">Deduct 0.5 days for morning or afternoon absence</p>
         </div>
+        <label className="relative inline-flex cursor-pointer items-center">
+          <input
+            type="checkbox"
+            className="sr-only peer"
+            checked={form.isHalfDay}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setForm({
+                ...form,
+                isHalfDay: checked,
+                endDate: checked ? form.startDate : form.endDate,
+              });
+            }}
+          />
+          <div className="w-11 h-6 bg-zinc-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+        </label>
+      </div>
+
+      {form.isHalfDay ? (
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="label">Date *</label>
+            <input
+              required
+              type="date"
+              min={todayISO()}
+              className="input"
+              value={form.startDate}
+              onChange={(e) =>
+                setForm({ ...form, startDate: e.target.value, endDate: e.target.value })
+              }
+            />
+          </div>
+          <div>
+            <label className="label">Period *</label>
+            <select
+              className="input"
+              value={form.halfDayPeriod}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  halfDayPeriod: e.target.value as "MORNING" | "AFTERNOON",
+                })
+              }
+            >
+              <option value="MORNING">Morning (First Half)</option>
+              <option value="AFTERNOON">Afternoon (Second Half)</option>
+            </select>
+          </div>
+        </div>
+      ) : (
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="label">Start Date *</label>
@@ -136,35 +246,64 @@ function RequestLeaveForm({
             <input
               required
               type="date"
-              min={todayISO()}
+              min={form.startDate || todayISO()}
               className="input"
               value={form.endDate}
               onChange={(e) => setForm({ ...form, endDate: e.target.value })}
             />
           </div>
         </div>
-        <div>
-          <label className="label">Reason</label>
-          <textarea
-            className="input"
-            rows={3}
-            value={form.reason}
-            onChange={(e) => setForm({ ...form, reason: e.target.value })}
-            placeholder="Optional context for your manager…"
-          />
-        </div>
+      )}
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
-
-        <div className="flex justify-end gap-3 pt-2">
-          <button type="button" onClick={onClose} className="btn-secondary">
-            Cancel
-          </button>
-          <button type="submit" disabled={submitting} className="btn-primary">
-            {submitting ? "Submitting…" : "Submit Request"}
-          </button>
+      {/* Live Working Days Calculation Preview */}
+      {calcLoading ? (
+        <div className="text-xs text-zinc-500 animate-pulse">Calculating working days…</div>
+      ) : calculation ? (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50/70 p-3 text-xs text-emerald-900 space-y-1">
+          <div className="flex items-center justify-between font-semibold">
+            <span>Working Days Deducted:</span>
+            <span className="text-sm font-bold text-emerald-800">
+              {calculation.total_working_days} {Number(calculation.total_working_days) === 1 ? "day" : "days"}
+            </span>
+          </div>
+          <div className="text-zinc-600 flex gap-3 text-[11px] pt-1">
+            <span>📅 {calculation.calendar_days} calendar days</span>
+            {calculation.weekend_days > 0 && <span>🏖️ {calculation.weekend_days} weekend days excluded</span>}
+            {calculation.holiday_days > 0 && <span>🎉 {calculation.holiday_days} public holiday excluded</span>}
+          </div>
+          {calculation.holidays_in_range?.length > 0 && (
+            <div className="text-[11px] text-zinc-600 pt-1">
+              🎉 <span className="font-semibold">Company Holidays in Range:</span>{" "}
+              {calculation.holidays_in_range
+                .map((h) => `${h.name} (${h.is_recurring_yearly ? "Annual Recurring" : "Custom Company Holiday"})`)
+                .join(", ")}
+            </div>
+          )}
         </div>
-      </form>
+      ) : null}
+
+      <div>
+        <label className="label">Reason</label>
+        <textarea
+          className="input"
+          rows={3}
+          value={form.reason}
+          onChange={(e) => setForm({ ...form, reason: e.target.value })}
+          placeholder="Optional context for your manager…"
+        />
+      </div>
+
+      {error && <p className="text-sm text-red-600">{error}</p>}
+
+      <div className="flex justify-end gap-3 pt-2">
+        <button type="button" onClick={onClose} className="btn-secondary">
+          Cancel
+        </button>
+        <button type="submit" disabled={submitting} className="btn-primary">
+          {submitting ? "Submitting…" : "Submit Request"}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -194,7 +333,151 @@ function CancelButton({ request, onCancelled }: { request: LeaveRequest; onCance
   );
 }
 
+function TeamCalendarTab() {
+  const [entries, setEntries] = useState<TeamMemberOutOfOffice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .teamOutOfOffice()
+      .then(setEntries)
+      .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load team calendar."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (error) return <div className="notice border-red-200 bg-red-50 text-red-700">{error}</div>;
+  if (loading) return <ListSkeleton rows={4} />;
+
+  if (entries.length === 0) {
+    return (
+      <div className="card">
+        <EmptyState
+          title="Everyone is in the office"
+          description="No upcoming scheduled absences or out-of-office leaves in your team."
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="p-4 border-b border-zinc-100 bg-zinc-50/60 flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-zinc-900">Upcoming Team Out-of-Office</h3>
+          <p className="text-xs text-zinc-500">Upcoming scheduled absences to help coordinate staffing</p>
+        </div>
+        <span className="text-xs font-medium bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full border border-blue-100">
+          {entries.length} scheduled
+        </span>
+      </div>
+      <div className="table-scroll">
+        <table className="w-full">
+          <thead className="bg-zinc-50">
+            <tr>
+              <th className="table-th">Colleague</th>
+              <th className="table-th">Department</th>
+              <th className="table-th">Leave Type</th>
+              <th className="table-th">Dates</th>
+              <th className="table-th">Duration</th>
+              <th className="table-th">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100">
+            {entries.map((e) => (
+              <tr key={e.leave_request_id} className="table-row">
+                <td className="table-td font-medium text-zinc-900">{e.employee_name}</td>
+                <td className="table-td text-zinc-500">{e.department_name || "General"}</td>
+                <td className="table-td text-zinc-700">{e.leave_type_name}</td>
+                <td className="table-td text-xs text-zinc-600">
+                  {formatDate(e.start_date)} {e.start_date !== e.end_date ? `– ${formatDate(e.end_date)}` : ""}
+                </td>
+                <td className="table-td text-xs text-zinc-600">
+                  {e.is_half_day && e.half_day_period
+                    ? `0.5 day (${e.half_day_period.toLowerCase()})`
+                    : `${e.total_days} day(s)`}
+                </td>
+                <td className="table-td">
+                  <StatusBadge status={e.status} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function HolidaysTab() {
+  const [holidays, setHolidays] = useState<CompanyHoliday[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .listCompanyHolidays()
+      .then(setHolidays)
+      .catch((err) => setError(err instanceof ApiError ? err.detail : "Failed to load company holidays."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (error) return <div className="notice border-red-200 bg-red-50 text-red-700">{error}</div>;
+  if (loading) return <ListSkeleton rows={4} />;
+
+  if (holidays.length === 0) {
+    return (
+      <div className="card">
+        <EmptyState
+          title="No company holidays listed"
+          description="Official office closures and public holidays will be listed here."
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="p-4 border-b border-zinc-100 bg-zinc-50/60">
+        <h3 className="text-sm font-semibold text-zinc-900">Official Company Holidays</h3>
+        <p className="text-xs text-zinc-500">Official closures are automatically deducted from leave requests</p>
+      </div>
+      <div className="table-scroll">
+        <table className="w-full">
+          <thead className="bg-zinc-50">
+            <tr>
+              <th className="table-th">Holiday</th>
+              <th className="table-th">Date</th>
+              <th className="table-th">Description</th>
+              <th className="table-th">Recurring</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100">
+            {holidays.map((h) => (
+              <tr key={h.holiday_id} className="table-row">
+                <td className="table-td font-medium text-zinc-900">{h.name}</td>
+                <td className="table-td text-xs text-zinc-700">{formatDate(h.holiday_date)}</td>
+                <td className="table-td text-xs text-zinc-500">{h.description || "—"}</td>
+                <td className="table-td text-xs text-zinc-500">
+                  {h.is_recurring_yearly ? (
+                    <span className="inline-flex items-center text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-[11px] font-medium">
+                      Every year
+                    </span>
+                  ) : (
+                    "One-time"
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function EmployeeLeavePage() {
+  const [tab, setTab] = useState<EmployeeTab>("my_requests");
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [balances, setBalances] = useState<LeaveBalance[]>([]);
   const [requests, setRequests] = useState<LeaveRequest[]>([]);
@@ -225,7 +508,7 @@ export default function EmployeeLeavePage() {
     <div className="space-y-6">
       <PageHeader
         title="Leave"
-        description="Check your balance and submit or track leave requests."
+        description="Check your balance, submit requests, and check team out-of-office schedules."
         actions={
           <button
             type="button"
@@ -243,56 +526,105 @@ export default function EmployeeLeavePage() {
 
       <BalanceGrid balances={balances} loading={loading} />
 
-      {loading ? (
-        <ListSkeleton rows={4} />
-      ) : requests.length === 0 ? (
-        <div className="card">
-          <EmptyState
-            title="No leave requests yet"
-            description="Requests you submit will show up here so you can track their status."
-            action={
-              <button type="button" className="btn-primary" onClick={() => setModalOpen(true)}>
-                Request Leave
-              </button>
-            }
-          />
-        </div>
-      ) : (
-        <div className="card overflow-hidden">
-          <div className="table-scroll">
-            <table className="w-full">
-              <thead className="bg-zinc-50">
-                <tr>
-                  <th className="table-th">Reference</th>
-                  <th className="table-th">Type</th>
-                  <th className="table-th">Dates</th>
-                  <th className="table-th">Days</th>
-                  <th className="table-th">Status</th>
-                  <th className="table-th text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-100">
-                {requests.map((r) => (
-                  <tr key={r.leave_request_id} className="table-row">
-                    <td className="table-td font-medium text-zinc-900">{r.request_number}</td>
-                    <td className="table-td text-zinc-600">{r.leave_type_name}</td>
-                    <td className="table-td text-xs text-zinc-500">
-                      {formatDate(r.start_date)} – {formatDate(r.end_date)}
-                    </td>
-                    <td className="table-td tabular-nums text-zinc-600">{r.total_days}</td>
-                    <td className="table-td">
-                      <StatusBadge status={r.status} />
-                    </td>
-                    <td className="table-td text-right">
-                      <CancelButton request={r} onCancelled={refresh} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      {/* Tabs */}
+      <div className="flex border-b border-zinc-200 space-x-6">
+        <button
+          type="button"
+          onClick={() => setTab("my_requests")}
+          className={`pb-3 text-sm font-medium transition-colors border-b-2 ${
+            tab === "my_requests"
+              ? "border-blue-600 text-blue-600"
+              : "border-transparent text-zinc-500 hover:text-zinc-700"
+          }`}
+        >
+          My Requests ({requests.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("team_calendar")}
+          className={`pb-3 text-sm font-medium transition-colors border-b-2 ${
+            tab === "team_calendar"
+              ? "border-blue-600 text-blue-600"
+              : "border-transparent text-zinc-500 hover:text-zinc-700"
+          }`}
+        >
+          Team Out-of-Office
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("holidays")}
+          className={`pb-3 text-sm font-medium transition-colors border-b-2 ${
+            tab === "holidays"
+              ? "border-blue-600 text-blue-600"
+              : "border-transparent text-zinc-500 hover:text-zinc-700"
+          }`}
+        >
+          Company Holidays
+        </button>
+      </div>
+
+      {tab === "my_requests" && (
+        <>
+          {loading ? (
+            <ListSkeleton rows={4} />
+          ) : requests.length === 0 ? (
+            <div className="card">
+              <EmptyState
+                title="No leave requests yet"
+                description="Requests you submit will show up here so you can track their status."
+                action={
+                  <button type="button" className="btn-primary" onClick={() => setModalOpen(true)}>
+                    Request Leave
+                  </button>
+                }
+              />
+            </div>
+          ) : (
+            <div className="card overflow-hidden">
+              <div className="table-scroll">
+                <table className="w-full">
+                  <thead className="bg-zinc-50">
+                    <tr>
+                      <th className="table-th">Reference</th>
+                      <th className="table-th">Type</th>
+                      <th className="table-th">Dates</th>
+                      <th className="table-th">Days</th>
+                      <th className="table-th">Status</th>
+                      <th className="table-th text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-100">
+                    {requests.map((r) => (
+                      <tr key={r.leave_request_id} className="table-row">
+                        <td className="table-td font-medium text-zinc-900">{r.request_number}</td>
+                        <td className="table-td text-zinc-600">{r.leave_type_name}</td>
+                        <td className="table-td text-xs text-zinc-500">
+                          {formatDate(r.start_date)}
+                          {r.start_date !== r.end_date ? ` – ${formatDate(r.end_date)}` : ""}
+                        </td>
+                        <td className="table-td tabular-nums text-zinc-600">
+                          {r.is_half_day && r.half_day_period
+                            ? `0.5 (${r.half_day_period.toLowerCase()})`
+                            : r.total_days}
+                        </td>
+                        <td className="table-td">
+                          <StatusBadge status={r.status} />
+                        </td>
+                        <td className="table-td text-right">
+                          <CancelButton request={r} onCancelled={refresh} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
       )}
+
+      {tab === "team_calendar" && <TeamCalendarTab />}
+      {tab === "holidays" && <HolidaysTab />}
 
       <RequestLeaveModal
         isOpen={modalOpen}

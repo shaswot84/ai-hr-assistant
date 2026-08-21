@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.knowledge import router as knowledge_router
+from app.api.routes import audit as audit_router
 from app.api.routes import auth as auth_router
 from app.api.routes import chat as chat_router
 from app.api.routes import leave as leave_router
@@ -14,20 +15,18 @@ from app.api.routes import people as people_router
 from app.api.routes import recruitment as recruitment_router
 from app.api.routes import settings as settings_router
 from app.config.settings import get_settings
-from app.db.sync_session import init_db
+from app.db.session import init_db
 from app.integrations.object_store import SyncS3ObjectStore
+from app.observability import init_observability, shutdown_observability
 
 log = logging.getLogger("app")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application startup/shutdown hook: dev-fallback table creation + ensure the MinIO bucket exists.
-
-    Real schema management is Alembic (`make migrate`), not `init_db()` —
-    see `db.sync_session.init_db` for why it's still called here.
-    """
-    init_db()
+    """Application startup/shutdown hook: observability + dev-fallback table creation + MinIO bucket setup."""
+    init_observability(app)
+    await init_db()
     settings = get_settings()
     if settings.minio.auto_init:
         try:
@@ -36,6 +35,7 @@ async def lifespan(app: FastAPI):
         except Exception as err:  # noqa: BLE001 - don't crash API if MinIO is briefly unavailable
             log.warning("MinIO bucket setup skipped: %s", err)
     yield
+    shutdown_observability()
 
 
 app = FastAPI(title="AI HR Assistant", lifespan=lifespan)
@@ -57,6 +57,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router.router)
+app.include_router(audit_router.router)
 app.include_router(chat_router.router)
 app.include_router(recruitment_router.router)
 app.include_router(settings_router.router)

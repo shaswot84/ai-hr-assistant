@@ -48,3 +48,7 @@ class SupervisorState(TypedDict, total=False):
     safety: str
     # Structured UI widget descriptor (leave balance, date picker, requests list, staged action, etc.)
     ui_widget: dict | None
+    # Subagent execution flags: set can_handle=False when a subagent cannot fulfill a misrouted query
+    can_handle: bool
+    # Context/hint provided by a subagent for the clarify agent when fallback is triggered
+    clarification_hint: str | None

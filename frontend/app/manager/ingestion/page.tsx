@@ -158,6 +158,7 @@ export default function ManagerIngestionPage() {
 
   async function handleUpload(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    const formElement = e.currentTarget;
     if (files.length === 0) {
       setNotice({ kind: "err", text: "Choose at least one file to upload." });
       return;
@@ -198,7 +199,7 @@ export default function ManagerIngestionPage() {
     }
 
     setFiles([]);
-    e.currentTarget.reset();
+    formElement?.reset();
 
     const lines = results.map((r) => {
       if (r.error) return `${r.name} — failed: ${r.error}`;

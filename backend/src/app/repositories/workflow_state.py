@@ -1,16 +1,11 @@
-"""Data access for durable agent workflow state (conversation_workflow_state).
-
-Sync (Session) like the other domain repositories — this row is written from
-the leave agent's sync path (node.py), which already opens a ``SessionLocal``
-for LeaveService. The chat layer's async session never touches this table.
-"""
+"""Data access for durable agent workflow state (conversation_workflow_state)."""
 
 from __future__ import annotations
 
 import uuid
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.conversation import ConversationWorkflowState
 from app.shared.clock import get_clock
@@ -24,11 +19,11 @@ WORKFLOW_TYPE_LEAVE = "LEAVE"
 class WorkflowStateRepo:
     """Data access for conversation_workflow_state rows."""
 
-    def __init__(self, db: Session) -> None:
-        """Bind the repository to a DB session."""
+    def __init__(self, db: AsyncSession) -> None:
+        """Bind the repository to an async DB session."""
         self._db = db
 
-    def get_active(
+    async def get_active(
         self, conversation_id: uuid.UUID, actor_user_id: uuid.UUID
     ) -> ConversationWorkflowState | None:
         """The conversation's resumable workflow row, or None if there is none.
@@ -41,9 +36,9 @@ class WorkflowStateRepo:
             ConversationWorkflowState.actor_user_id == actor_user_id,
             ConversationWorkflowState.status == STATUS_ACTIVE,
         )
-        return self._db.scalar(stmt)
+        return await self._db.scalar(stmt)
 
-    def create(
+    async def create(
         self,
         *,
         conversation_id: uuid.UUID,
@@ -64,10 +59,10 @@ class WorkflowStateRepo:
             updated_at=now,
         )
         self._db.add(row)
-        self._db.flush()
+        await self._db.flush()
         return row
 
-    def update(
+    async def update(
         self,
         row: ConversationWorkflowState,
         *,
@@ -81,7 +76,9 @@ class WorkflowStateRepo:
         row.expires_at = expires_at
         row.updated_at = get_clock().utc_now()
 
-    def complete(self, row: ConversationWorkflowState) -> None:
+    async def complete(self, row: ConversationWorkflowState) -> None:
         """Mark the workflow terminal so it is never restored again."""
         row.status = STATUS_COMPLETED
         row.updated_at = get_clock().utc_now()
+
+

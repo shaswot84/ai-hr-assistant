@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -15,6 +15,28 @@ const ROLE_HOME: Record<string, string> = {
   CANDIDATE: "/candidate",
   EMPLOYEE: "/employee",
 };
+
+/**
+ * Strips markdown formatting, code blocks, links, headers, and bullet points
+ * so SpeechSynthesis produces natural and coherent voice narration.
+ */
+function cleanTextForSpeech(markdown: string): string {
+  if (!markdown) return "";
+  return markdown
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/(\*\*|__)(.*?)\1/g, "$2")
+    .replace(/(\*|_)(.*?)\1/g, "$2")
+    .replace(/^\s*>\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/\n{2,}/g, ". ")
+    .replace(/\n/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
 
 interface ChatBubble {
   id: string;
@@ -133,6 +155,230 @@ export default function WelcomePage() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Web Speech API Voice Input
+  const [isListening, setIsListening] = useState(false);
+  const [speechSupported, setSpeechSupported] = useState(true);
+  const [speechInterim, setSpeechInterim] = useState("");
+  const [speechError, setSpeechError] = useState<string | null>(null);
+  const recognitionRef = useRef<any>(null);
+
+  // Speech Synthesis (Text-to-Speech via Web Speech API)
+  const [ttsSupported, setTtsSupported] = useState(true);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const hasSpeech =
+        "SpeechRecognition" in window || "webkitSpeechRecognition" in window;
+      setSpeechSupported(Boolean(hasSpeech));
+      setTtsSupported("speechSynthesis" in window);
+    }
+  }, []);
+
+  const stopSpeech = useCallback(() => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // ignore
+      }
+    }
+    setSpeakingMessageId(null);
+    currentUtteranceRef.current = null;
+  }, []);
+
+  const speakMessage = useCallback(
+    (messageId: string, rawText: string) => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+
+      if (speakingMessageId === messageId) {
+        stopSpeech();
+        return;
+      }
+
+      stopSpeech();
+
+      const cleaned = cleanTextForSpeech(rawText);
+      if (!cleaned) return;
+
+      try {
+        const utterance = new SpeechSynthesisUtterance(cleaned);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.lang = typeof navigator !== "undefined" ? navigator.language || "en-US" : "en-US";
+
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length > 0) {
+          const naturalVoice =
+            voices.find(
+              (v) =>
+                v.lang.startsWith("en") &&
+                (v.name.includes("Natural") ||
+                  v.name.includes("Google") ||
+                  v.name.includes("Samantha") ||
+                  v.name.includes("David") ||
+                  v.name.includes("Alex"))
+            ) ||
+            voices.find((v) => v.lang.startsWith("en")) ||
+            voices[0];
+          if (naturalVoice) utterance.voice = naturalVoice;
+        }
+
+        utterance.onstart = () => {
+          setSpeakingMessageId(messageId);
+        };
+
+        utterance.onend = () => {
+          setSpeakingMessageId(null);
+          currentUtteranceRef.current = null;
+        };
+
+        utterance.onerror = (e) => {
+          if (e.error !== "canceled" && e.error !== "interrupted") {
+            console.warn("SpeechSynthesis error:", e.error);
+          }
+          setSpeakingMessageId(null);
+          currentUtteranceRef.current = null;
+        };
+
+        currentUtteranceRef.current = utterance;
+        window.speechSynthesis.speak(utterance);
+      } catch (err) {
+        console.warn("Failed to invoke SpeechSynthesis:", err);
+        setSpeakingMessageId(null);
+      }
+    },
+    [speakingMessageId, stopSpeech]
+  );
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
+    setIsListening(false);
+    setSpeechInterim("");
+  };
+
+  const startListening = () => {
+    if (typeof window === "undefined" || sending) return;
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setSpeechError("Speech recognition is not supported in this browser.");
+      return;
+    }
+
+    try {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch {
+          // ignore
+        }
+      }
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = typeof navigator !== "undefined" ? navigator.language || "en-US" : "en-US";
+
+      recognition.onstart = () => {
+        setIsListening(true);
+        setSpeechInterim("");
+        setSpeechError(null);
+      };
+
+      recognition.onresult = (event: any) => {
+        let interim = "";
+        let finalTranscript = "";
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const transcript = event.results[i][0]?.transcript || "";
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interim += transcript;
+          }
+        }
+
+        if (interim) {
+          setSpeechInterim(interim);
+        }
+
+        if (finalTranscript) {
+          setDraft((prev) => {
+            const trimmed = prev.trim();
+            const separator = trimmed.length > 0 ? " " : "";
+            return trimmed + separator + finalTranscript.trim();
+          });
+          setSpeechInterim("");
+          if (inputRef.current) {
+            inputRef.current.focus();
+          }
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        setIsListening(false);
+        setSpeechInterim("");
+        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          setSpeechError("Microphone access was denied. Please check your browser permissions.");
+        } else if (event.error === "network") {
+          setSpeechError("Speech recognition network error. Please check your connection.");
+        }
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+        setSpeechInterim("");
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch {
+      setIsListening(false);
+      setSpeechInterim("");
+      setSpeechError("Failed to start voice recognition.");
+    }
+  };
+
+  const toggleVoiceInput = () => {
+    if (isListening) stopListening();
+    else startListening();
+  };
+
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch {
+          // ignore
+        }
+      }
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (sending && isListening) {
+      stopListening();
+    }
+  }, [sending, isListening]);
 
   useEffect(() => {
     let cancelled = false;
@@ -369,12 +615,45 @@ export default function WelcomePage() {
                 className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}
               >
                 <div
-                  className={`max-w-[92%] sm:max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                  className={`group relative max-w-[92%] sm:max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                     m.role === "user"
                       ? "bg-blue-600 text-white shadow-xs rounded-br-xs"
-                      : "border border-zinc-200/80 bg-white text-zinc-800 shadow-2xs rounded-bl-xs"
+                      : "border border-zinc-200/80 bg-white text-zinc-800 shadow-2xs rounded-bl-xs pr-12"
                   }`}
                 >
+                  {m.role === "assistant" && !m.loading && m.text && (
+                    <div className="absolute right-2 top-2 flex items-center gap-1">
+                      {ttsSupported && (
+                        <button
+                          type="button"
+                          onClick={() => speakMessage(m.id, m.text)}
+                          className={`rounded-md p-1.5 transition-all ${
+                            speakingMessageId === m.id
+                              ? "bg-blue-50 text-blue-600 ring-1 ring-blue-400 opacity-100 shadow-2xs"
+                              : "text-zinc-400 opacity-0 hover:bg-zinc-100 hover:text-zinc-700 group-hover:opacity-100 focus:opacity-100"
+                          }`}
+                          aria-label={speakingMessageId === m.id ? "Stop speaking" : "Read message aloud"}
+                          title={speakingMessageId === m.id ? "Stop speaking" : "Read aloud (Text-to-Speech)"}
+                        >
+                          {speakingMessageId === m.id ? (
+                            <svg className="h-3.5 w-3.5 text-blue-600 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+                            </svg>
+                          ) : (
+                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M15.536 8.464a5 5 0 010 7.072M11 5L6 9H2v6h4l5 4V5z"
+                              />
+                            </svg>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   {m.loading ? (
                     <div className="flex items-center gap-2 text-zinc-500 py-0.5">
                       <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-600" />
@@ -408,8 +687,65 @@ export default function WelcomePage() {
             ))}
           </div>
 
+          {speakingMessageId && (
+            <div className="flex items-center justify-between gap-2 px-3.5 py-2 mx-4 mt-2 bg-blue-50 border border-blue-200/90 rounded-xl text-blue-800 text-xs shadow-2xs animate-fade-in">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-600"></span>
+                </span>
+                <span className="font-semibold text-blue-900 shrink-0">Reading response aloud…</span>
+              </div>
+              <button
+                type="button"
+                onClick={stopSpeech}
+                className="shrink-0 text-[11px] font-semibold text-blue-700 hover:text-blue-900 bg-blue-100/90 hover:bg-blue-200 px-2.5 py-0.5 rounded-md transition-colors"
+              >
+                Stop Audio
+              </button>
+            </div>
+          )}
+
+          {isListening && (
+            <div className="flex items-center justify-between gap-2 px-3.5 py-2 mx-4 mt-2 bg-rose-50 border border-rose-200/90 rounded-xl text-rose-700 text-xs shadow-2xs animate-fade-in">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-600"></span>
+                </span>
+                <span className="font-semibold text-rose-900 shrink-0">Listening…</span>
+                {speechInterim ? (
+                  <span className="italic text-zinc-800 font-medium truncate">&ldquo;{speechInterim}&rdquo;</span>
+                ) : (
+                  <span className="text-rose-600/80 truncate">Speak into your microphone…</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={stopListening}
+                className="shrink-0 text-[11px] font-semibold text-rose-700 hover:text-rose-900 bg-rose-100/90 hover:bg-rose-200 px-2 py-0.5 rounded-md transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          )}
+
+          {speechError && (
+            <div className="mx-4 mt-2 rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700 flex items-center justify-between">
+              <span>{speechError}</span>
+              <button
+                type="button"
+                onClick={() => setSpeechError(null)}
+                className="text-red-500 hover:text-red-800 ml-2 font-bold"
+              >
+                ×
+              </button>
+            </div>
+          )}
+
           <form onSubmit={handleSend} className="flex items-center gap-2 border-t border-zinc-200 bg-zinc-50/70 p-3 sm:p-4">
             <input
+              ref={inputRef}
               type="text"
               value={draft}
               disabled={sending}
@@ -417,6 +753,41 @@ export default function WelcomePage() {
               placeholder="Ask about policy, vacancies, or how to apply…"
               className="input flex-1 bg-white"
             />
+            {/* Voice Input Button */}
+            <button
+              type="button"
+              onClick={toggleVoiceInput}
+              disabled={sending || !speechSupported}
+              className={`inline-flex items-center justify-center h-10 w-10 rounded-xl transition-all shrink-0 ${
+                isListening
+                  ? "bg-rose-600 hover:bg-rose-700 text-white shadow-md ring-4 ring-rose-200/80 animate-pulse"
+                  : "border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 hover:border-zinc-300 active:scale-95 shadow-2xs"
+              } ${!speechSupported ? "opacity-40 cursor-not-allowed" : ""}`}
+              title={
+                !speechSupported
+                  ? "Voice input not supported in this browser"
+                  : isListening
+                  ? "Listening... Click to stop"
+                  : "Voice input (Speak to Type)"
+              }
+              aria-label={isListening ? "Stop voice input" : "Start voice input"}
+            >
+              {isListening ? (
+                <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+                  <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+                </svg>
+              ) : (
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+                  />
+                </svg>
+              )}
+            </button>
             <button
               type="submit"
               className="btn-primary shrink-0"

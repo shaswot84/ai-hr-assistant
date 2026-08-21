@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.passwords import hash_password
-from app.db.sync_session import SessionLocal, init_db
+from app.db.session import async_session_factory, init_db
 from app.domain.identity import (
     ApplicationUser,
     Candidate,
@@ -28,16 +30,6 @@ SAMPLE_LEAVE_TYPES = [
     ("Unpaid Leave", "Leave beyond paid entitlements.", Decimal(0), True, False, None),
 ]
 
-# A deliberately small, varied spread of departments and seniority levels
-# (junior IC, senior IC, mid-level manager, junior/mid IC, senior exec) —
-# not meant to be exhaustive, just enough for the requirements-gate/ranking
-# UI to have believable, differently-shaped roles to demo against.
-# `scoring_keywords` is a hardcoded example rubric per role (not
-# LLM-generated — seeding must stay fast and work with no AI provider
-# configured) mirroring what "Generate Weighted Keywords" would plausibly
-# suggest from the description: critical = stated as a requirement,
-# important = a strongly implied core skill, nice_to_have = mentioned but
-# not central.
 SAMPLE_VACANCIES = [
     {
         "title": "Junior Frontend Developer",
@@ -120,13 +112,32 @@ SAMPLE_VACANCIES = [
         ],
     },
     {
-        "title": "Director of Sales",
+        "title": "HR Generalist",
+        "department": "Human Resources",
+        "employment_type": "FULL_TIME",
+        "description": (
+            "We're hiring an HR Generalist to handle onboarding, benefits administration, "
+            "and employee relations. Requirements: 2+ years in an HR role, working "
+            "knowledge of employment law compliance, and strong interpersonal skills. "
+            "Experience administering leave policies is a plus."
+        ),
+        "days_open": 14,
+        "scoring_keywords": [
+            {"keyword": "hr operations", "tier": "critical"},
+            {"keyword": "employee relations", "tier": "critical"},
+            {"keyword": "onboarding", "tier": "important"},
+            {"keyword": "benefits administration", "tier": "important"},
+            {"keyword": "employment law", "tier": "important"},
+            {"keyword": "hris", "tier": "nice_to_have"},
+        ],
+    },
+    {
+        "title": "VP of Sales",
         "department": "Sales",
         "employment_type": "FULL_TIME",
         "description": (
-            "We're hiring a Director of Sales to lead our sales organization through its "
-            "next stage of growth. Requirements: 10+ years of sales experience with at "
-            "least 5 years in a sales leadership role, a proven track record of building "
+            "We're hiring a VP of Sales to build and execute our go-to-market strategy. "
+            "Requirements: 10+ years in enterprise B2B software sales, a track record of hiring "
             "and leading high-performing sales teams, and experience driving significant "
             "revenue growth. Strong executive communication skills and enterprise sales "
             "experience are essential."
@@ -144,31 +155,31 @@ SAMPLE_VACANCIES = [
 ]
 
 
-def _get_or_create_department(db, name: str) -> Department:
+async def _get_or_create_department(db: AsyncSession, name: str) -> Department:
     """Return the department matching `name`, creating it if it does not yet exist."""
-    dept = db.scalar(select(Department).where(Department.name == name))
+    dept = await db.scalar(select(Department).where(Department.name == name))
     if dept is None:
         dept = Department(name=name)
         db.add(dept)
-        db.flush()
+        await db.flush()
     return dept
 
 
-def _get_or_create_designation(db, department: Department, title: str) -> Designation:
+async def _get_or_create_designation(db: AsyncSession, department: Department, title: str) -> Designation:
     """Return the designation matching (department, title), creating it if needed."""
     stmt = select(Designation).where(
         Designation.department_id == department.department_id, Designation.title == title
     )
-    designation = db.scalar(stmt)
+    designation = await db.scalar(stmt)
     if designation is None:
         designation = Designation(department_id=department.department_id, title=title)
         db.add(designation)
-        db.flush()
+        await db.flush()
     return designation
 
 
-def _provision_user(
-    db,
+async def _provision_user(
+    db: AsyncSession,
     *,
     email: str,
     first: str,
@@ -183,15 +194,15 @@ def _provision_user(
     clock = get_clock()
     now = clock.now()
 
-    person = db.scalar(select(Person).where(Person.email == email))
+    person = await db.scalar(select(Person).where(Person.email == email))
     if person is None:
         person = Person(
             first_name=first, last_name=last, email=email, created_at=now, updated_at=now
         )
         db.add(person)
-        db.flush()
+        await db.flush()
 
-    app_user = db.scalar(
+    app_user = await db.scalar(
         select(ApplicationUser).where(
             ApplicationUser.identity_provider == "local",
             ApplicationUser.person_id == person.person_id,
@@ -207,12 +218,12 @@ def _provision_user(
             updated_at=now,
         )
         db.add(app_user)
-        db.flush()
+        await db.flush()
     elif not app_user.password_hash:
         app_user.password_hash = hash_password(password)
 
     if role == "CANDIDATE":
-        if db.scalar(select(Candidate).where(Candidate.person_id == person.person_id)) is None:
+        if (await db.scalar(select(Candidate).where(Candidate.person_id == person.person_id))) is None:
             db.add(
                 Candidate(
                     person_id=person.person_id,
@@ -222,7 +233,7 @@ def _provision_user(
                 )
             )
     elif role in ("HR_ADMIN", "EMPLOYEE") and (
-        db.scalar(select(Employee).where(Employee.person_id == person.person_id)) is None
+        (await db.scalar(select(Employee).where(Employee.person_id == person.person_id))) is None
     ):
         if department is None or designation is None:
             raise ValueError("department and designation are required to seed an employee.")
@@ -239,12 +250,12 @@ def _provision_user(
         )
 
 
-def _seed_leave_types(db) -> list[LeaveType]:
+async def _seed_leave_types(db: AsyncSession) -> list[LeaveType]:
     """Idempotently create the standard leave types, returning all active ones."""
     for name, description, default_days, requires_approval, is_paid, max_consecutive in (
         SAMPLE_LEAVE_TYPES
     ):
-        if db.scalar(select(LeaveType).where(LeaveType.leave_name == name)) is not None:
+        if (await db.scalar(select(LeaveType).where(LeaveType.leave_name == name))) is not None:
             continue
         db.add(
             LeaveType(
@@ -257,11 +268,12 @@ def _seed_leave_types(db) -> list[LeaveType]:
                 status="ACTIVE",
             )
         )
-    db.flush()
-    return list(db.scalars(select(LeaveType).where(LeaveType.status == "ACTIVE")))
+    await db.flush()
+    scalars = await db.scalars(select(LeaveType).where(LeaveType.status == "ACTIVE"))
+    return list(scalars)
 
 
-def _seed_leave_balances(db, employee: Employee, leave_types: list[LeaveType], year: int) -> None:
+async def _seed_leave_balances(db: AsyncSession, employee: Employee, leave_types: list[LeaveType], year: int) -> None:
     """Idempotently give an employee a balance row per leave type for the given year."""
     now = get_clock().now()
     for leave_type in leave_types:
@@ -270,7 +282,7 @@ def _seed_leave_balances(db, employee: Employee, leave_types: list[LeaveType], y
             LeaveBalance.leave_type_id == leave_type.leave_type_id,
             LeaveBalance.year == year,
         )
-        if db.scalar(stmt) is not None:
+        if (await db.scalar(stmt)) is not None:
             continue
         db.add(
             LeaveBalance(
@@ -284,20 +296,19 @@ def _seed_leave_balances(db, employee: Employee, leave_types: list[LeaveType], y
         )
 
 
-def seed() -> None:
+async def seed() -> None:
     """Idempotently seed the database with demo users and a sample vacancy."""
-    init_db()
-    db = SessionLocal()
-    try:
+    await init_db()
+    async with async_session_factory() as db:
         clock = get_clock()
         now = clock.now()
 
-        hr_dept = _get_or_create_department(db, "Human Resources")
-        hr_manager_designation = _get_or_create_designation(db, hr_dept, "HR Manager")
-        eng_dept = _get_or_create_department(db, "Engineering")
-        eng_designation = _get_or_create_designation(db, eng_dept, "Software Engineer")
+        hr_dept = await _get_or_create_department(db, "Human Resources")
+        hr_manager_designation = await _get_or_create_designation(db, hr_dept, "HR Manager")
+        eng_dept = await _get_or_create_department(db, "Engineering")
+        eng_designation = await _get_or_create_designation(db, eng_dept, "Software Engineer")
 
-        _provision_user(
+        await _provision_user(
             db,
             email="manager@example.com",
             first="Hiring",
@@ -308,7 +319,7 @@ def seed() -> None:
             designation=hr_manager_designation,
             employee_code="EMP-MGR-001",
         )
-        _provision_user(
+        await _provision_user(
             db,
             email="employee@example.com",
             first="Sam",
@@ -319,7 +330,7 @@ def seed() -> None:
             designation=eng_designation,
             employee_code="EMP-STAFF-001",
         )
-        _provision_user(
+        await _provision_user(
             db,
             email="candidate@example.com",
             first="Alex",
@@ -328,22 +339,17 @@ def seed() -> None:
             role="CANDIDATE",
         )
 
-        manager = db.scalar(
+        manager = await db.scalar(
             select(Employee)
             .join(Person, Employee.person_id == Person.person_id)
             .where(Person.email == "manager@example.com")
         )
 
-        # ---- people module demo data: a small org tree ------------------
-        # Two more employees (Engineering lead + Finance analyst) plus
-        # reporting lines: Priya -> Sam -> Hiring Manager. Idempotent: the
-        # user/employee rows are created once, the manager links are
-        # re-applied every run.
-        eng_lead_designation = _get_or_create_designation(db, eng_dept, "Engineering Lead")
-        finance_dept = _get_or_create_department(db, "Finance")
-        analyst_designation = _get_or_create_designation(db, finance_dept, "Financial Analyst")
+        eng_lead_designation = await _get_or_create_designation(db, eng_dept, "Engineering Lead")
+        finance_dept = await _get_or_create_department(db, "Finance")
+        analyst_designation = await _get_or_create_designation(db, finance_dept, "Financial Analyst")
 
-        _provision_user(
+        await _provision_user(
             db,
             email="priya@example.com",
             first="Priya",
@@ -354,7 +360,7 @@ def seed() -> None:
             designation=eng_lead_designation,
             employee_code="EMP-ENG-001",
         )
-        _provision_user(
+        await _provision_user(
             db,
             email="arjun@example.com",
             first="Arjun",
@@ -366,38 +372,35 @@ def seed() -> None:
             employee_code="EMP-FIN-001",
         )
 
-        def _employee_by_email(db, email):
-            return db.scalar(
+        async def _employee_by_email(session, email):
+            return await session.scalar(
                 select(Employee)
                 .join(Person, Employee.person_id == Person.person_id)
                 .where(Person.email == email)
             )
 
-        sam = _employee_by_email(db, "employee@example.com")
-        priya = _employee_by_email(db, "priya@example.com")
-        arjun = _employee_by_email(db, "arjun@example.com")
+        sam = await _employee_by_email(db, "employee@example.com")
+        priya = await _employee_by_email(db, "priya@example.com")
+        arjun = await _employee_by_email(db, "arjun@example.com")
         if sam is not None and manager is not None:
             sam.manager_employee_id = manager.employee_id
         if priya is not None and sam is not None:
             priya.manager_employee_id = sam.employee_id
-        db.commit()
+        await db.commit()
 
-        # ---- leave management demo data: standard leave types + a starting
-        # balance per employee for the current year (idempotent).
-        leave_types = _seed_leave_types(db)
+        leave_types = await _seed_leave_types(db)
         this_year = clock.today().year
         for employee in (manager, sam, priya, arjun):
             if employee is not None:
-                _seed_leave_balances(db, employee, leave_types, this_year)
-        db.commit()
+                await _seed_leave_balances(db, employee, leave_types, this_year)
+        await db.commit()
 
-        # sample vacancies, one per title (idempotent: skip titles that already exist)
         created = 0
         if manager is not None:
             for vac in SAMPLE_VACANCIES:
-                if db.scalar(select(Vacancy).where(Vacancy.title == vac["title"])) is not None:
+                if (await db.scalar(select(Vacancy).where(Vacancy.title == vac["title"]))) is not None:
                     continue
-                dept = _get_or_create_department(db, vac["department"])
+                dept = await _get_or_create_department(db, vac["department"])
                 db.add(
                     Vacancy(
                         title=vac["title"],
@@ -416,7 +419,7 @@ def seed() -> None:
                 )
                 created += 1
 
-        db.commit()
+        await db.commit()
 
         print(
             f"Seed complete: demo manager + employee + candidate ready, "
@@ -424,9 +427,7 @@ def seed() -> None:
             f"seeded separately via `python -m app.db.seed_sample_applications` (requires a "
             f"configured AI provider and the worker running)."
         )
-    finally:
-        db.close()
 
 
 if __name__ == "__main__":
-    seed()
+    asyncio.run(seed())

@@ -35,6 +35,37 @@ const AGENT_LABELS: Record<string, string> = {
   recap: "Summary",
 };
 
+/**
+ * Strips markdown formatting, code blocks, links, headers, and bullet points
+ * so SpeechSynthesis produces natural and coherent voice narration.
+ */
+function cleanTextForSpeech(markdown: string): string {
+  if (!markdown) return "";
+  return markdown
+    // Remove fenced code blocks with their contents
+    .replace(/```[\s\S]*?```/g, "")
+    // Strip inline code delimiters
+    .replace(/`([^`]+)`/g, "$1")
+    // Convert markdown links [text](url) to just text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    // Remove headings (# Heading)
+    .replace(/^#{1,6}\s+/gm, "")
+    // Remove bold and italics
+    .replace(/(\*\*|__)(.*?)\1/g, "$2")
+    .replace(/(\*|_)(.*?)\1/g, "$2")
+    // Remove blockquotes
+    .replace(/^\s*>\s+/gm, "")
+    // Remove bullet points / list markers
+    .replace(/^\s*[-*+]\s+/gm, "")
+    // Remove numbered list prefixes
+    .replace(/^\s*\d+\.\s+/gm, "")
+    // Convert multiple linebreaks to periods for natural speech pauses
+    .replace(/\n{2,}/g, ". ")
+    .replace(/\n/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 /** Markdown renderer shared by assistant bubbles (same styles as knowledge-chat). */
 function Markdown({ children }: { children: string }) {
   return (
@@ -136,10 +167,16 @@ const MessageBubble = memo(function MessageBubble({
   message,
   onAction,
   disabled,
+  isSpeaking,
+  onToggleSpeak,
+  ttsSupported,
 }: {
   message: ViewMessage;
   onAction?: (actionText: string) => void;
   disabled?: boolean;
+  isSpeaking?: boolean;
+  onToggleSpeak?: (messageId: string, text: string) => void;
+  ttsSupported?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -176,32 +213,62 @@ const MessageBubble = memo(function MessageBubble({
     <div className="group relative flex justify-start">
       <div className="max-w-[85%] rounded-2xl rounded-bl-sm border border-zinc-200 bg-white px-4 py-3 shadow-sm">
         {message.content && !message.streaming && (
-          <button
-            type="button"
-            onClick={handleCopy}
-            className={`absolute right-2 top-2 rounded-md p-1.5 transition-opacity ${
-              copied
-                ? "text-green-600 opacity-100"
-                : "text-zinc-400 opacity-0 hover:bg-zinc-100 hover:text-zinc-700 group-hover:opacity-100 focus:opacity-100"
-            }`}
-            aria-label={copied ? "Copied" : "Copy message"}
-            title={copied ? "Copied" : "Copy message"}
-          >
-            {copied ? (
-              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-            ) : (
-              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                />
-              </svg>
+          <div className="absolute right-2 top-2 flex items-center gap-1">
+            {ttsSupported && (
+              <button
+                type="button"
+                onClick={() => onToggleSpeak?.(message.id, message.content)}
+                className={`rounded-md p-1.5 transition-all ${
+                  isSpeaking
+                    ? "bg-blue-50 text-blue-600 ring-1 ring-blue-400 opacity-100 shadow-2xs"
+                    : "text-zinc-400 opacity-0 hover:bg-zinc-100 hover:text-zinc-700 group-hover:opacity-100 focus:opacity-100"
+                }`}
+                aria-label={isSpeaking ? "Stop speaking" : "Read message aloud"}
+                title={isSpeaking ? "Stop speaking" : "Read aloud (Text-to-Speech)"}
+              >
+                {isSpeaking ? (
+                  <svg className="h-3.5 w-3.5 text-blue-600 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+                  </svg>
+                ) : (
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M15.536 8.464a5 5 0 010 7.072M11 5L6 9H2v6h4l5 4V5z"
+                    />
+                  </svg>
+                )}
+              </button>
             )}
-          </button>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className={`rounded-md p-1.5 transition-opacity ${
+                copied
+                  ? "text-green-600 opacity-100"
+                  : "text-zinc-400 opacity-0 hover:bg-zinc-100 hover:text-zinc-700 group-hover:opacity-100 focus:opacity-100"
+              }`}
+              aria-label={copied ? "Copied" : "Copy message"}
+              title={copied ? "Copied" : "Copy message"}
+            >
+              {copied ? (
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : (
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                  />
+                </svg>
+              )}
+            </button>
+          </div>
         )}
         {message.content ? (
           /* While streaming, render plain text so markdown isn't re-parsed on
@@ -374,18 +441,51 @@ export function AssistantChat() {
   // below) — prevents a failed regeneration from looping.
   const recoveredRef = useRef<Set<string>>(new Set());
 
+  // Voice Input (Web Speech API Speech-to-Text)
+  const [isListening, setIsListening] = useState(false);
+  const [speechSupported, setSpeechSupported] = useState(true);
+  const [speechInterim, setSpeechInterim] = useState("");
+  const recognitionRef = useRef<any>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Speech Synthesis (Text-to-Speech via Web Speech API)
+  const [ttsSupported, setTtsSupported] = useState(true);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const hasSpeech =
+        "SpeechRecognition" in window || "webkitSpeechRecognition" in window;
+      setSpeechSupported(Boolean(hasSpeech));
+      setTtsSupported("speechSynthesis" in window);
+    }
+  }, []);
+
   const refreshConversations = useCallback(async () => {
     try {
       const list = await api.listConversations();
       // The API already orders by last activity, but sort here too so the
       // rail is always most-recent-first regardless of backend behavior.
-      setConversations(
-        [...list].sort(
-          (a, b) =>
-            new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime() ||
-            b.conversation_id.localeCompare(a.conversation_id)
-        )
+      const sorted = [...list].sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime() ||
+          b.conversation_id.localeCompare(a.conversation_id)
       );
+      setConversations(sorted);
+      setActiveId((currentActive) => {
+        if (!currentActive) return null;
+        const exists = sorted.some((c) => c.conversation_id === currentActive);
+        if (!exists) {
+          try {
+            localStorage.removeItem(LAST_ACTIVE_KEY);
+          } catch {
+            // ignore
+          }
+          return null;
+        }
+        return currentActive;
+      });
     } catch {
       // offline / not authed; keep current
     }
@@ -470,6 +570,17 @@ export function AssistantChat() {
       })
       .catch((err) => {
         if (cancelled) return;
+        if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
+          setActiveId(null);
+          setMessages([]);
+          setError(null);
+          try {
+            localStorage.removeItem(LAST_ACTIVE_KEY);
+          } catch {
+            // ignore
+          }
+          return;
+        }
         setError(err instanceof ApiError ? err.detail : "Failed to load conversation.");
       })
       .finally(() => {
@@ -540,6 +651,231 @@ export function AssistantChat() {
   const handleScroll = useCallback(() => {
     setAtBottom(isNearBottom());
   }, [isNearBottom]);
+
+  const stopListening = useCallback(() => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
+    setIsListening(false);
+    setSpeechInterim("");
+  }, []);
+
+  const startListening = useCallback(() => {
+    if (typeof window === "undefined" || streaming) return;
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setError("Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.");
+      return;
+    }
+
+    try {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch {
+          // ignore
+        }
+      }
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = typeof navigator !== "undefined" ? navigator.language || "en-US" : "en-US";
+
+      recognition.onstart = () => {
+        setIsListening(true);
+        setSpeechInterim("");
+        setError(null);
+      };
+
+      recognition.onresult = (event: any) => {
+        let interim = "";
+        let finalTranscript = "";
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const transcript = event.results[i][0]?.transcript || "";
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interim += transcript;
+          }
+        }
+
+        if (interim) {
+          setSpeechInterim(interim);
+        }
+
+        if (finalTranscript) {
+          setInput((prev) => {
+            const trimmed = prev.trim();
+            const separator = trimmed.length > 0 ? " " : "";
+            const updated = trimmed + separator + finalTranscript.trim();
+            writeDraft(activeId ?? "new", updated);
+            return updated;
+          });
+          setSpeechInterim("");
+          if (textareaRef.current) {
+            textareaRef.current.focus();
+          }
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        setIsListening(false);
+        setSpeechInterim("");
+        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          setError("Microphone access was denied. Please allow microphone permissions in your browser.");
+        } else if (event.error === "no-speech") {
+          // Silent timeout or no audio detected
+        } else if (event.error === "network") {
+          setError("Speech recognition network error. Please check your connection.");
+        } else {
+          console.warn("Speech recognition error:", event.error);
+        }
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+        setSpeechInterim("");
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      setIsListening(false);
+      setSpeechInterim("");
+      setError("Failed to start speech recognition.");
+    }
+  }, [streaming, activeId]);
+
+  const toggleVoiceInput = useCallback(() => {
+    if (isListening) {
+      stopListening();
+    } else {
+      startListening();
+    }
+  }, [isListening, startListening, stopListening]);
+
+  // Clean up speech recognition on unmount or when stream begins
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (streaming && isListening) {
+      stopListening();
+    }
+  }, [streaming, isListening, stopListening]);
+
+  // Speech Synthesis Handlers
+  const stopSpeech = useCallback(() => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // ignore
+      }
+    }
+    setSpeakingMessageId(null);
+    currentUtteranceRef.current = null;
+  }, []);
+
+  const speakMessage = useCallback(
+    (messageId: string, rawText: string) => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+
+      // If already speaking this message, toggle off
+      if (speakingMessageId === messageId) {
+        stopSpeech();
+        return;
+      }
+
+      // Cancel any ongoing speech
+      stopSpeech();
+
+      const cleaned = cleanTextForSpeech(rawText);
+      if (!cleaned) return;
+
+      try {
+        const utterance = new SpeechSynthesisUtterance(cleaned);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.lang = typeof navigator !== "undefined" ? navigator.language || "en-US" : "en-US";
+
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length > 0) {
+          const naturalVoice =
+            voices.find(
+              (v) =>
+                v.lang.startsWith("en") &&
+                (v.name.includes("Natural") ||
+                  v.name.includes("Google") ||
+                  v.name.includes("Samantha") ||
+                  v.name.includes("David") ||
+                  v.name.includes("Alex"))
+            ) ||
+            voices.find((v) => v.lang.startsWith("en")) ||
+            voices[0];
+          if (naturalVoice) utterance.voice = naturalVoice;
+        }
+
+        utterance.onstart = () => {
+          setSpeakingMessageId(messageId);
+        };
+
+        utterance.onend = () => {
+          setSpeakingMessageId(null);
+          currentUtteranceRef.current = null;
+        };
+
+        utterance.onerror = (e) => {
+          if (e.error !== "canceled" && e.error !== "interrupted") {
+            console.warn("SpeechSynthesis error:", e.error);
+          }
+          setSpeakingMessageId(null);
+          currentUtteranceRef.current = null;
+        };
+
+        currentUtteranceRef.current = utterance;
+        window.speechSynthesis.speak(utterance);
+      } catch (err) {
+        console.warn("Failed to invoke SpeechSynthesis:", err);
+        setSpeakingMessageId(null);
+      }
+    },
+    [speakingMessageId, stopSpeech]
+  );
+
+  // Stop speech when component unmounts or active conversation changes
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    stopSpeech();
+  }, [activeId, stopSpeech]);
 
   function selectConversation(id: string) {
     if (streaming) return;
@@ -1044,6 +1380,9 @@ export function AssistantChat() {
                 key={m.id}
                 message={m}
                 onAction={handleAction}
+                isSpeaking={speakingMessageId === m.id}
+                onToggleSpeak={speakMessage}
+                ttsSupported={ttsSupported}
                 // Freeze widgets in PAST turns (any message that is not the
                 // last one): once the conversation has moved past a widget it
                 // must not be operated again. The current (last) widget stays
@@ -1076,9 +1415,53 @@ export function AssistantChat() {
           <div className="mx-4 mb-2 notice border-red-200 bg-red-50 text-red-700">{error}</div>
         )}
 
-        <form onSubmit={handleSend} className="border-t border-zinc-200 p-3 sm:p-4">
+        <form onSubmit={handleSend} className="border-t border-zinc-200 p-3 sm:p-4 bg-white/50 backdrop-blur-sm">
+          {speakingMessageId && (
+            <div className="flex items-center justify-between gap-2 px-3.5 py-2 mb-2.5 bg-blue-50 border border-blue-200/90 rounded-xl text-blue-800 text-xs shadow-2xs animate-fade-in">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-600"></span>
+                </span>
+                <span className="font-semibold text-blue-900 shrink-0">Reading response aloud…</span>
+              </div>
+              <button
+                type="button"
+                onClick={stopSpeech}
+                className="shrink-0 text-[11px] font-semibold text-blue-700 hover:text-blue-900 bg-blue-100/90 hover:bg-blue-200 px-2.5 py-1 rounded-lg transition-colors"
+              >
+                Stop Audio
+              </button>
+            </div>
+          )}
+
+          {isListening && (
+            <div className="flex items-center justify-between gap-2 px-3.5 py-2 mb-2.5 bg-rose-50 border border-rose-200/90 rounded-xl text-rose-700 text-xs shadow-sm animate-fade-in">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="relative flex h-3 w-3 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-rose-600"></span>
+                </span>
+                <span className="font-semibold text-rose-900 shrink-0">Listening…</span>
+                {speechInterim ? (
+                  <span className="italic text-zinc-800 font-medium truncate">&ldquo;{speechInterim}&rdquo;</span>
+                ) : (
+                  <span className="text-rose-600/80 truncate">Speak into your microphone…</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={stopListening}
+                className="shrink-0 text-[11px] font-semibold text-rose-700 hover:text-rose-900 bg-rose-100/90 hover:bg-rose-200 px-2.5 py-1 rounded-lg transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          )}
+
           <div className="flex items-end gap-2">
             <textarea
+              ref={textareaRef}
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);
@@ -1087,6 +1470,7 @@ export function AssistantChat() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
+                  if (isListening) stopListening();
                   handleSend(e);
                 }
               }}
@@ -1096,11 +1480,48 @@ export function AssistantChat() {
               className="input max-h-40 min-h-[44px] flex-1 resize-y"
               aria-label="Message"
             />
+
+            {/* Voice Input (Speech-to-Text) Button */}
+            <button
+              type="button"
+              onClick={toggleVoiceInput}
+              disabled={streaming || !speechSupported}
+              className={`inline-flex items-center justify-center h-[44px] w-[44px] rounded-xl transition-all shrink-0 ${
+                isListening
+                  ? "bg-rose-600 hover:bg-rose-700 text-white shadow-md ring-4 ring-rose-200/80 animate-pulse"
+                  : "border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 hover:border-zinc-300 active:scale-95 shadow-sm"
+              } ${!speechSupported ? "opacity-40 cursor-not-allowed" : ""}`}
+              title={
+                !speechSupported
+                  ? "Voice input not supported in this browser"
+                  : isListening
+                  ? "Listening... Click to stop"
+                  : "Voice input (Speak to Type)"
+              }
+              aria-label={isListening ? "Stop voice input" : "Start voice input"}
+            >
+              {isListening ? (
+                <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+                  <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+                </svg>
+              ) : (
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+                  />
+                </svg>
+              )}
+            </button>
+
             {streaming ? (
               <button
                 type="button"
                 onClick={() => abortRef.current?.abort()}
-                className="btn-secondary shrink-0"
+                className="btn-secondary shrink-0 h-[44px] px-3.5"
               >
                 <span aria-hidden="true" className="h-3 w-3 rounded-[2px] bg-current" />
                 Stop
@@ -1109,7 +1530,7 @@ export function AssistantChat() {
               <button
                 type="submit"
                 disabled={!input.trim()}
-                className="btn-primary shrink-0"
+                className="btn-primary shrink-0 h-[44px] w-[44px] inline-flex items-center justify-center p-0"
                 aria-label="Send"
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

@@ -23,8 +23,8 @@ from app.domain.leave import LeaveRequest
 from app.shared.clock import get_clock
 
 
-def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(20)):
-    return svc.create_leave_type(
+async def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(20)):
+    return await svc.create_leave_type(
         actor,
         leave_name=name,
         description="Planned time off.",
@@ -57,12 +57,12 @@ class FakeChatProvider:
         return self.payload
 
 
-def _seed_pending_request(svc, manager_ctx, employee_ctx) -> LeaveRequest:
+async def _seed_pending_request(svc, manager_ctx, employee_ctx) -> LeaveRequest:
     """A real PENDING request for the seeded employee (leave types are
     manager-only)."""
-    leave_type = _create_leave_type(svc, manager_ctx)
+    leave_type = await _create_leave_type(svc, manager_ctx)
     today = get_clock().today()
-    return svc.request_leave(
+    return await svc.request_leave(
         employee_ctx,
         leave_type_id=leave_type.leave_type_id,
         start_date=today + timedelta(days=5),
@@ -71,11 +71,11 @@ def _seed_pending_request(svc, manager_ctx, employee_ctx) -> LeaveRequest:
     )
 
 
-def _request_count(db) -> int:
-    return len(db.scalars(select(LeaveRequest)).all())
+async def _request_count(db) -> int:
+    return len((await db.scalars(select(LeaveRequest))).all())
 
 
-def _seed_second_employee(db) -> UserContext:
+async def _seed_second_employee(db) -> UserContext:
     """A second, distinct EMPLOYEE identity (someone else's request owner)."""
     from app.auth.passwords import hash_password
     from app.domain.identity import ApplicationUser, Department, Designation, Employee, Person
@@ -86,13 +86,13 @@ def _seed_second_employee(db) -> UserContext:
         created_at=now, updated_at=now,
     )
     db.add(person)
-    db.flush()
+    await db.flush()
     dept = Department(name="Finance")
     db.add(dept)
-    db.flush()
+    await db.flush()
     desig = Designation(department_id=dept.department_id, title="Analyst")
     db.add(desig)
-    db.flush()
+    await db.flush()
     db.add(
         Employee(
             person_id=person.person_id,
@@ -114,7 +114,7 @@ def _seed_second_employee(db) -> UserContext:
             updated_at=now,
         )
     )
-    db.commit()
+    await db.commit()
     return UserContext(
         subject="emp2-subject", email=person.email, display_name="Bob Worker",
         coarse_role="EMPLOYEE",
@@ -131,7 +131,7 @@ async def test_cancel_without_reference_lists_pending_requests(
     """"Cancel my leave request" with no reference lists what CAN be cancelled
     and asks for the number — the model is never asked to guess one."""
     svc = LeaveService(db)
-    _seed_pending_request(svc, manager_context, employee_context)
+    await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(employee_context)
     provider = FakeChatProvider({"reply": "x", "action": "reply", "tool": None, "args": {}})
 
@@ -154,7 +154,7 @@ async def test_cancel_with_no_pending_requests_replies_honestly(
     db, manager_context, employee_context
 ):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     provider = FakeChatProvider({"reply": "x", "action": "reply", "tool": None, "args": {}})
 
@@ -175,7 +175,7 @@ async def test_cancel_by_reference_stages_then_executes(db, manager_context, emp
     """A message naming the reference stages the cancel deterministically,
     and a "yes" cancels the real request through the confirmation gate."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(employee_context)
 
     provider = FakeChatProvider({})
@@ -210,7 +210,7 @@ async def test_cancel_by_reference_stages_then_executes(db, manager_context, emp
 
     assert confirm.calls == 1
     assert result.tool_called == "cancel_leave_request"
-    refreshed = svc.get_my_request_by_reference(employee_context, request.request_number)
+    refreshed = await svc.get_my_request_by_reference(employee_context, request.request_number)
     assert refreshed.status == "CANCELLED"
 
 
@@ -220,8 +220,8 @@ async def test_cancel_non_pending_request_is_rejected_before_staging(
 ):
     """An already-decided request is surfaced at stage time, never staged."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
-    svc.decide_request(
+    request = await _seed_pending_request(svc, manager_context, employee_context)
+    await svc.decide_request(
         manager_context, request.leave_request_id, approve=True
     )
     state = _state(employee_context)
@@ -243,7 +243,7 @@ async def test_cancel_non_pending_request_is_rejected_before_staging(
 @pytest.mark.asyncio
 async def test_cancel_unknown_reference_rejected(db, manager_context, employee_context):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
 
     result = await handle_turn(
@@ -263,8 +263,8 @@ async def test_cancel_other_employees_reference_rejected(db, manager_context, em
     """An employee can only cancel their OWN request — someone else's
     reference fails closed as not found."""
     svc = LeaveService(db)
-    _seed_pending_request(svc, manager_context, employee_context)
-    other = _seed_second_employee(db)
+    await _seed_pending_request(svc, manager_context, employee_context)
+    other = await _seed_second_employee(db)
     state = _state(other)
 
     result = await handle_turn(
@@ -287,7 +287,7 @@ async def test_cancel_intent_message_is_never_treated_as_draft_continuation(
     even when it contains a relative date ("from tomorrow") — and the pivot
     drops the stale draft."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     state.set_draft(
         DraftRequest(leave_type_name="Annual Leave", start_date=date(2026, 9, 1)),
@@ -316,7 +316,7 @@ async def test_cancel_listing_clears_stale_draft_and_staged_action(
     """Pivoting to cancel drops any in-progress application draft AND any
     previously staged action — a later "yes" cannot fire the stale submit."""
     svc = LeaveService(db)
-    _seed_pending_request(svc, manager_context, employee_context)
+    await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(employee_context)
     state.set_draft(
         DraftRequest(leave_type_name="Annual Leave", start_date=date(2026, 9, 1)),
@@ -356,7 +356,7 @@ async def test_descriptive_reply_to_cancel_question_is_not_a_new_application(
     request intent the draft flow stays out, the model handles the turn, and
     no draft is created."""
     svc = LeaveService(db)
-    _seed_pending_request(svc, manager_context, employee_context)
+    await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(employee_context)
     provider = FakeChatProvider(
         {
@@ -390,7 +390,7 @@ async def test_hr_approve_by_reference_stages_then_executes(
     """HR "approve request LR-..." stages a deterministic decision; "yes"
     approves the real request and books the balance days."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(manager_context)
     provider = FakeChatProvider({})
 
@@ -430,14 +430,14 @@ async def test_hr_approve_by_reference_stages_then_executes(
     assert confirm.calls == 1
     assert result.tool_called == "decide_leave_request"
     assert "approved" in result.reply
-    refreshed = svc.get_request_by_number(manager_context, request.request_number)
+    refreshed = await svc.get_request_by_number(manager_context, request.request_number)
     assert refreshed.status == "APPROVED"
 
 
 @pytest.mark.asyncio
 async def test_hr_reject_by_reference(db, manager_context, employee_context):
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(manager_context)
 
     result = await handle_turn(
@@ -470,7 +470,7 @@ async def test_hr_reject_by_reference(db, manager_context, employee_context):
     )
 
     assert "rejected" in result.reply
-    assert svc.get_request_by_number(manager_context, request.request_number).status == "REJECTED"
+    assert (await svc.get_request_by_number(manager_context, request.request_number)).status == "REJECTED"
 
 
 @pytest.mark.asyncio
@@ -479,7 +479,7 @@ async def test_hr_cannot_cancel_requests(db, manager_context, employee_context):
     cancel — with or without a reference — is refused deterministically and
     nothing is staged or executed."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(manager_context)
     provider = FakeChatProvider({})
 
@@ -494,7 +494,7 @@ async def test_hr_cannot_cancel_requests(db, manager_context, employee_context):
     assert provider.calls == 0
     assert "employee's own action" in result.reply
     assert state.pending_confirmation is None
-    assert svc.get_request_by_number(manager_context, request.request_number).status == "PENDING"
+    assert (await svc.get_request_by_number(manager_context, request.request_number)).status == "PENDING"
 
     without = await handle_turn(
         actor=manager_context,
@@ -512,7 +512,7 @@ async def test_hr_action_without_reference_lists_pending(db, manager_context, em
     """A manager's approve/cancel intent without a reference shows the real
     pending list to pick from — no number recall, no model guessing."""
     svc = LeaveService(db)
-    _seed_pending_request(svc, manager_context, employee_context)
+    await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(manager_context)
     provider = FakeChatProvider({})
 
@@ -536,7 +536,7 @@ async def test_hr_lists_pending_requests_deterministically(db, manager_context, 
     """"show me the pending leave requests" is answered without the model —
     the manager sees exactly what CAN be approved/rejected/cancelled."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(manager_context)
     provider = FakeChatProvider({})
 
@@ -558,7 +558,7 @@ async def test_hr_lists_pending_requests_deterministically(db, manager_context, 
 @pytest.mark.asyncio
 async def test_hr_no_pending_requests_reply(db, manager_context, employee_context):
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(manager_context)
 
     result = await handle_turn(
@@ -579,7 +579,7 @@ async def test_hr_list_all_requests_deterministic(db, manager_context, employee_
     the near-identical list_my_leave_requests cannot derail it into the
     "you have no leave of your own" refusal."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(manager_context)
     provider = FakeChatProvider(
         {
@@ -621,7 +621,7 @@ async def test_hr_list_all_requests_phrasing_is_deterministic(
     deterministically from the manager tool — the model is never consulted
     and the "you have no leave of your own" refusal never appears."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(manager_context)
     provider = FakeChatProvider({"reply": "x", "action": "reply", "tool": None, "args": {}})
 
@@ -649,7 +649,7 @@ async def test_hr_list_all_recovers_when_model_picks_self_service_tool(
     list_my_leave_requests, the role-gate rejection is recovered into the
     manager list instead of the "you have no leave of your own" dead end."""
     svc = LeaveService(db)
-    request = _seed_pending_request(svc, manager_context, employee_context)
+    request = await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(manager_context)
     provider = FakeChatProvider(
         {
@@ -678,7 +678,7 @@ async def test_hr_list_all_recovers_when_model_picks_self_service_tool(
 async def test_hr_employee_balance_tool(db, manager_context, employee_context):
     """HR can read another employee's balance by employee code via the tool."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(manager_context)
     provider = FakeChatProvider(
         {
@@ -707,7 +707,7 @@ async def test_hr_employee_balance_tool(db, manager_context, employee_context):
 async def test_hr_list_all_employee_balances_deterministic(db, manager_context, employee_context):
     """HR can list all employees' leave balances deterministically."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(manager_context)
     provider = FakeChatProvider({})
 
@@ -732,7 +732,7 @@ async def test_hr_cannot_apply_for_leave(db, manager_context, employee_context):
     """An HR administrator is refused deterministically — no draft, no model,
     no leave_request row — when they try to start an application."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(manager_context)
     provider = FakeChatProvider({"reply": "x", "action": "reply", "tool": None, "args": {}})
 
@@ -748,7 +748,7 @@ async def test_hr_cannot_apply_for_leave(db, manager_context, employee_context):
     assert state.draft is None
     assert state.pending_confirmation is None
     assert "can't apply" in result.reply
-    assert _request_count(db) == 0
+    assert await _request_count(db) == 0
 
 
 @pytest.mark.asyncio
@@ -757,7 +757,7 @@ async def test_hr_cannot_use_self_service_tools(db, manager_context, employee_co
     self-service view tools for an administrator is stopped by the role gate
     with a clear message — nothing is staged or executed."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(manager_context)
 
     staged = await handle_turn(
@@ -781,7 +781,7 @@ async def test_hr_cannot_use_self_service_tools(db, manager_context, employee_co
     )
     assert "HR administrator" in staged.reply
     assert state.pending_confirmation is None
-    assert _request_count(db) == 0
+    assert await _request_count(db) == 0
 
     balance = await handle_turn(
         actor=manager_context,
@@ -811,8 +811,6 @@ async def test_hr_cannot_use_self_service_tools(db, manager_context, employee_co
                 "args": {},
             }
         ),
-        # A balance ask is not a listing ask, so the self-service tool is not
-        # recovered into list_leave_requests — the gate's refusal stands.
         user_message="show my leave balance",
     )
     assert "HR administrator" in mine.reply
@@ -824,7 +822,7 @@ async def test_employee_cannot_use_hr_tools(db, manager_context, employee_contex
     by the role gate, and a manager WRITE call never reaches the service —
     there is no staged confirmation to match."""
     svc = LeaveService(db)
-    _seed_pending_request(svc, manager_context, employee_context)
+    await _seed_pending_request(svc, manager_context, employee_context)
     state = _state(employee_context)
 
     read = await handle_turn(
@@ -859,7 +857,7 @@ async def test_employee_cannot_use_hr_tools(db, manager_context, employee_contex
         user_message="yes",
     )
     assert "staged" in write.reply
-    assert svc.get_request_by_number(manager_context, "LR-2026-001").status == "PENDING"
+    assert (await svc.get_request_by_number(manager_context, "LR-2026-001")).status == "PENDING"
 
 
 @pytest.mark.asyncio

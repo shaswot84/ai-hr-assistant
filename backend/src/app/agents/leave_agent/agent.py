@@ -19,7 +19,7 @@ from typing import Any
 
 from app.agents.context import is_history_question
 from app.agents.leave_agent import prompts
-from app.agents.leave_agent.dates import extract_dates, format_short, resolve_end_date
+from app.agents.leave_agent.dates import extract_dates, extract_half_day_info, format_short, resolve_end_date
 from app.agents.leave_agent.state import DraftRequest, LeaveAgentState
 from app.agents.leave_agent.tools import (
     TOOLS,
@@ -28,8 +28,10 @@ from app.agents.leave_agent.tools import (
     format_tool_result,
     get_employee_leave_balance,
     get_leave_balance,
+    get_team_out_of_office,
     hr_pending_request_lines,
     list_all_employee_balances,
+    list_company_holidays,
     list_leave_requests,
     list_leave_types,
     list_my_leave_requests,
@@ -157,6 +159,8 @@ def _leave_date_picker_widget(draft: DraftRequest, today: date | None = None) ->
         "leave_type_name": draft.leave_type_name,
         "start_date": draft.start_date.isoformat() if draft.start_date else None,
         "end_date": draft.end_date.isoformat() if draft.end_date else None,
+        "is_half_day": draft.is_half_day,
+        "half_day_period": draft.half_day_period,
         "min_date": today.isoformat() if today else None,
     }
 
@@ -182,25 +186,36 @@ async def handle_turn(
     """
     clock = clock or get_clock()
 
-    intercepted = _intercept_list_requests(state, service, actor, user_message, clock=clock)
+    intercepted = await _intercept_list_requests(state, service, actor, user_message, clock=clock)
     if intercepted is not None:
         state.add_turn("employee", user_message, clock=clock)
         return intercepted
 
-    intercepted = _intercept_types_question(state, service, actor, user_message, clock=clock)
+    intercepted = await _intercept_holidays_question(state, service, actor, user_message, clock=clock)
     if intercepted is not None:
         state.add_turn("employee", user_message, clock=clock)
         return intercepted
 
-    intercepted = _intercept_draft_turn(state, service, actor, user_message, clock=clock)
+    intercepted = await _intercept_team_calendar_question(state, service, actor, user_message, clock=clock)
     if intercepted is not None:
         state.add_turn("employee", user_message, clock=clock)
         return intercepted
 
-    intercepted = _intercept_reference_writes(state, service, actor, user_message, clock=clock)
+    intercepted = await _intercept_types_question(state, service, actor, user_message, clock=clock)
     if intercepted is not None:
         state.add_turn("employee", user_message, clock=clock)
         return intercepted
+
+    intercepted = await _intercept_draft_turn(state, service, actor, user_message, clock=clock)
+    if intercepted is not None:
+        state.add_turn("employee", user_message, clock=clock)
+        return intercepted
+
+    intercepted = await _intercept_reference_writes(state, service, actor, user_message, clock=clock)
+    if intercepted is not None:
+        state.add_turn("employee", user_message, clock=clock)
+        return intercepted
+
 
     system_prompt = prompts.build_system_prompt()
     turn_prompt = prompts.build_turn_prompt(
@@ -406,7 +421,7 @@ def _is_types_question(user_message: str) -> bool:
     return mentions_types and not request_start_without_listing
 
 
-def _intercept_list_requests(
+async def _intercept_list_requests(
     state: LeaveAgentState,
     service: LeaveService,
     actor: UserContext,
@@ -418,7 +433,7 @@ def _intercept_list_requests(
     if actor.coarse_role == "HR_ADMIN":
         if _is_all_employees_balance_ask(user_message):
             try:
-                result = list_all_employee_balances(service, actor)
+                result = await list_all_employee_balances(service, actor)
             except ToolError as err:
                 return _reply(state, str(err), clock=clock)
             text = format_tool_result("list_all_employee_balances", result)
@@ -431,7 +446,7 @@ def _intercept_list_requests(
         if not _is_list_hr_requests(user_message):
             return None
         try:
-            result = list_leave_requests(service, actor)
+            result = await list_leave_requests(service, actor)
         except ToolError as err:
             return _reply(state, str(err), clock=clock)
         text = format_tool_result("list_leave_requests", result)
@@ -445,7 +460,7 @@ def _intercept_list_requests(
         if not _is_list_my_requests(user_message):
             return None
         try:
-            result = list_my_leave_requests(service, actor)
+            result = await list_my_leave_requests(service, actor)
         except ToolError as err:
             return _reply(state, str(err), clock=clock)
         text = format_tool_result("list_my_leave_requests", result)
@@ -457,7 +472,87 @@ def _intercept_list_requests(
     return None
 
 
-def _intercept_types_question(
+async def _intercept_holidays_question(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    user_message: str,
+    *,
+    clock: Clock,
+) -> AgentTurnResult | None:
+    """Answer questions about company holidays / office closures deterministically."""
+    lowered = user_message.lower()
+    holiday_phrases = (
+        "company holiday",
+        "company holidays",
+        "public holiday",
+        "public holidays",
+        "office closure",
+        "office closures",
+        "official holiday",
+        "official holidays",
+        "holiday calendar",
+        "holidays this year",
+        "upcoming holidays",
+        "next holiday",
+    )
+    if not any(phrase in lowered for phrase in holiday_phrases):
+        return None
+    try:
+        result = await list_company_holidays(service, actor)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock)
+    text = format_tool_result("list_company_holidays", result)
+    return _reply(
+        state,
+        text,
+        clock=clock,
+        tool_called="list_company_holidays",
+        tool_result=result,
+        ui_widget={"type": "company_holidays", "holidays": result},
+    )
+
+
+async def _intercept_team_calendar_question(
+    state: LeaveAgentState,
+    service: LeaveService,
+    actor: UserContext,
+    user_message: str,
+    *,
+    clock: Clock,
+) -> AgentTurnResult | None:
+    """Answer questions about team out of office / absences deterministically."""
+    lowered = user_message.lower()
+    team_phrases = (
+        "who is out of office",
+        "who is off today",
+        "who is on leave",
+        "who is away",
+        "team out of office",
+        "team calendar",
+        "team absence",
+        "team absences",
+        "department leave",
+        "out of office",
+    )
+    if not any(phrase in lowered for phrase in team_phrases):
+        return None
+    try:
+        result = await get_team_out_of_office(service, actor)
+    except ToolError as err:
+        return _reply(state, str(err), clock=clock)
+    text = format_tool_result("get_team_out_of_office", result)
+    return _reply(
+        state,
+        text,
+        clock=clock,
+        tool_called="get_team_out_of_office",
+        tool_result=result,
+        ui_widget={"type": "team_out_of_office", "entries": result},
+    )
+
+
+async def _intercept_types_question(
     state: LeaveAgentState,
     service: LeaveService,
     actor: UserContext,
@@ -471,7 +566,7 @@ def _intercept_types_question(
     if not _is_types_question(user_message):
         return None
     try:
-        result = list_leave_types(service, actor)
+        result = await list_leave_types(service, actor)
     except ToolError as err:
         return _reply(state, str(err), clock=clock)
     text = format_tool_result("list_leave_types", result)
@@ -480,6 +575,7 @@ def _intercept_types_question(
         tool_called="list_leave_types", tool_result=result,
         ui_widget=_leave_types_widget(result),
     )
+
 
 
 # ---- deterministic request-draft flow -------------------------------------
@@ -559,12 +655,14 @@ def _draft_canonical(draft: DraftRequest) -> dict:
     return {
         "leave_type_name": draft.leave_type_name,
         "start_date": draft.start_date.isoformat(),
-        "end_date": draft.end_date.isoformat(),
+        "end_date": draft.end_date.isoformat() if draft.end_date else draft.start_date.isoformat(),
+        "is_half_day": draft.is_half_day,
+        "half_day_period": draft.half_day_period,
         "reason": draft.reason,
     }
 
 
-def _stage_draft(
+async def _stage_draft(
     state: LeaveAgentState,
     service: LeaveService,
     actor: UserContext,
@@ -572,27 +670,28 @@ def _stage_draft(
     *,
     clock: Clock,
 ) -> AgentTurnResult:
-    """Preflight + stage a completed draft deterministically.
-
-    Preflight runs against the employee's REAL balance and existing
-    requests before anything is staged — a draft that can't succeed is
-    surfaced as a plain-language reply, and the draft is kept so the
-    employee can adjust the dates.
-    """
+    """Preflight + stage a completed draft deterministically."""
     canonical = _draft_canonical(draft)
     try:
         preflight_args = validate_args("submit_leave_request", canonical)
-        preflight_submit(
+        working_days, holidays_in_range = await preflight_submit(
             service,
             actor,
             leave_type_name=preflight_args["leave_type_name"],
             start_date=preflight_args["start_date"],
             end_date=preflight_args["end_date"],
+            is_half_day=preflight_args.get("is_half_day", False),
+            half_day_period=preflight_args.get("half_day_period"),
         )
     except ToolError as err:
         return _reply(state, str(err), clock=clock)
 
-    summary = prompts.summarize_for_confirmation("submit_leave_request", canonical)
+    summary = prompts.summarize_for_confirmation(
+        "submit_leave_request",
+        canonical,
+        working_days=working_days,
+        holidays=holidays_in_range,
+    )
     state.stage("submit_leave_request", canonical, summary, clock=clock)
     state.clear_draft(clock=clock)
     return _reply(
@@ -620,21 +719,10 @@ _BALANCE_POSSESSIVE_PHRASES = (
 
 
 def _is_balance_ask(user_message: str) -> bool:
-    """Is this employee message asking for their OWN leave balance?
-
-    Balance words ("balance", "remaining", "left", "how much", "do i have")
-    count at face value unless the message is about requests; possessive
-    leave phrasing ("my pto", "my time off") is a balance ask too unless
-    the message also starts a request ("can I book my time off") — except
-    "get my leave", the existing bare balance ask. Never true for
-    request/listing asks ("show my leave requests", "can i get leave?").
-    """
+    """Is this employee message asking for their OWN leave balance?"""
     lowered = user_message.lower()
     if "request" in lowered:
         return False
-    # Someone else's balance is an HR-only view, never a self-balance ask:
-    # "show me someone else's balance" must keep routing to the manager tool
-    # (whose role gate refuses it), not read the employee's OWN balance.
     if "someone else" in lowered or "another" in lowered or "other employee" in lowered or "their" in lowered:
         return False
     if any(word in lowered for word in _BALANCE_ASK_WORDS):
@@ -671,7 +759,7 @@ def _extract_employee_lookup_target(user_message: str) -> str | None:
     return None
 
 
-def _intercept_draft_turn(
+async def _intercept_draft_turn(
     state: LeaveAgentState,
     service: LeaveService,
     actor: UserContext,
@@ -679,12 +767,7 @@ def _intercept_draft_turn(
     *,
     clock: Clock,
 ) -> AgentTurnResult | None:
-    """Answer a date-bearing or draft-continuing turn WITHOUT the model.
-
-    Returns None when there is nothing deterministic to say — the normal
-    model flow takes over. Never guesses: unresolved dates are asked for
-    again in plain language.
-    """
+    """Answer a date-bearing or draft-continuing turn WITHOUT the model."""
     lowered = user_message.lower().strip()
 
     if state.draft is not None and any(word in lowered for word in _DRAFT_CANCEL_WORDS):
@@ -699,27 +782,16 @@ def _intercept_draft_turn(
     if any(word in lowered for word in _CANCEL_INTENT_WORDS) or any(
         word in lowered for word in _DECIDE_INTENT_WORDS
     ) or "approve" in lowered:
-        # Cancel/decision turns belong to the reference-write interception
-        # below, never to the draft flow: a relative date in such a message
-        # ("cancel the one from last monday") must not read as "start the
-        # application", and the pivot clears any in-progress draft there.
         return None
 
     if is_history_question(user_message):
-        # "what leave did i apply above?" — answered from this thread's own
-        # history + workflow state, never from the DB or the model.
         return _recap_reply(state, clock=clock)
 
     today = clock.today()
     if actor.coarse_role == "EMPLOYEE" and _is_balance_ask(user_message):
-        # "get me leave balance" / "get my leave" / "how much leave do i
-        # have" — answered from the employee's REAL balance deterministically.
-        # The model is never asked to route between the balance/request/list
-        # tools, and a balance question can never be mistaken for a request
-        # start ("Which leave type...?").
-        mentioned = mentioned_leave_type(service, user_message)
+        mentioned = await mentioned_leave_type(service, user_message)
         try:
-            result = get_leave_balance(service, actor, leave_type_name=mentioned)
+            result = await get_leave_balance(service, actor, leave_type_name=mentioned)
         except ToolError as err:
             return _reply(state, str(err), clock=clock)
         text = format_tool_result("get_leave_balance", result)
@@ -730,6 +802,7 @@ def _intercept_draft_turn(
         )
 
     start, end = extract_dates(user_message, today)
+    is_half, period = extract_half_day_info(user_message)
 
     draft = state.draft
     if draft is None:
@@ -737,11 +810,14 @@ def _intercept_draft_turn(
             return None
         draft = DraftRequest()
 
+    if is_half:
+        draft.is_half_day = True
+        draft.half_day_period = period or "MORNING"
+        if start is not None:
+            draft.start_date = start
+            draft.end_date = start
+
     if actor.coarse_role == "HR_ADMIN":
-        # HR has no leave of their own: a date-bearing application (or a
-        # continuation of a leftover draft) from an administrator is a role
-        # mismatch, not something to draft — refuse deterministically, the
-        # model is never asked to explain a request the manager can't make.
         return _reply(
             state,
             "As an HR administrator you can review employees' leave requests "
@@ -751,22 +827,20 @@ def _intercept_draft_turn(
         )
 
     if start is None and end is None and state.draft is not None and state.draft.start_date is not None:
-        # An end-only follow-up ("for 3 days", "to friday") resolves against
-        # the draft's already-known start date, never against the model.
         end = resolve_end_date(user_message, state.draft.start_date, today)
+    elif start is not None and end is None and state.draft is not None and state.draft.start_date is not None:
+        if start >= state.draft.start_date:
+            end = start
+            start = None
 
     had_type = draft.leave_type_name is not None
     if draft.leave_type_name is None:
-        mentioned = mentioned_leave_type(service, user_message)
+        mentioned = await mentioned_leave_type(service, user_message)
         if mentioned is not None:
             draft.leave_type_name = mentioned
 
     progress = start is not None or end is not None
     if not had_type and draft.leave_type_name is not None:
-        # The employee just named the type for a draft that had none — that
-        # alone is progress, even without dates. (The pre-mutation value is
-        # what matters: `draft` IS `state.draft`, so comparing the two after
-        # mutation can never detect a change.)
         progress = True
     if not progress:
         return None
@@ -778,12 +852,11 @@ def _intercept_draft_turn(
 
     state.set_draft(draft, clock=clock)
     if state.pending_confirmation is not None:
-        # The employee changed their plans mid-confirmation; the old staged
-        # action is stale and must not be confirmable anymore.
         state.clear_pending(clock=clock)
 
     if draft.is_complete():
-        return _stage_draft(state, service, actor, draft, clock=clock)
+        return await _stage_draft(state, service, actor, draft, clock=clock)
+
 
     label = draft.leave_type_name or "leave"
     parts: list[str] = []
@@ -826,7 +899,7 @@ def _has_request_context(text: str) -> bool:
     return "leave" in text or "request" in text
 
 
-def _stage_reference_write(
+async def _stage_reference_write(
     state: LeaveAgentState,
     service: LeaveService,
     actor: UserContext,
@@ -839,18 +912,18 @@ def _stage_reference_write(
     extra_details: dict[str, Any] = {}
     try:
         if tool_name == "cancel_leave_request":
-            preflight_cancel(service, actor, args["request_number"])
+            await preflight_cancel(service, actor, args["request_number"])
         else:
-            req = preflight_hr_reference(service, actor, args["request_number"])
+            req = await preflight_hr_reference(service, actor, args["request_number"])
             if req:
                 emp_name = None
                 emp_code = None
                 try:
-                    from app.domain.people import Employee, Person
-                    emp = service._db.get(Employee, req.employee_id)
+                    from app.domain.identity import Employee, Person
+                    emp = await service._db.get(Employee, req.employee_id)
                     if emp:
                         emp_code = emp.employee_code
-                        p = service._db.get(Person, emp.person_id)
+                        p = await service._db.get(Person, emp.person_id)
                         if p:
                             emp_name = f"{p.first_name} {p.last_name}".strip()
                 except Exception:
@@ -875,7 +948,7 @@ def _stage_reference_write(
     )
 
 
-def _intercept_employee_cancel(
+async def _intercept_employee_cancel(
     state: LeaveAgentState,
     service: LeaveService,
     actor: UserContext,
@@ -901,13 +974,13 @@ def _intercept_employee_cancel(
 
     reference = _extract_reference(user_message)
     if reference is not None:
-        return _stage_reference_write(
+        return await _stage_reference_write(
             state, service, actor, "cancel_leave_request",
             {"request_number": reference}, clock=clock,
         )
 
     try:
-        lines = pending_request_lines(service, actor)
+        lines = await pending_request_lines(service, actor)
     except ToolError as err:
         return _reply(state, str(err), clock=clock)
     if not lines:
@@ -954,7 +1027,7 @@ def _is_hr_list_all_intent(user_message: str) -> bool:
     )
 
 
-def _intercept_hr_reference_write(
+async def _intercept_hr_reference_write(
     state: LeaveAgentState,
     service: LeaveService,
     actor: UserContext,
@@ -1015,7 +1088,7 @@ def _intercept_hr_reference_write(
             # the model never gets a chance to route it to a self-service
             # tool and the role gate never fires its misleading refusal.
             try:
-                result = list_leave_requests(service, actor)
+                result = await list_leave_requests(service, actor)
             except ToolError as err:
                 return _reply(state, str(err), clock=clock)
             text = format_tool_result("list_leave_requests", result)
@@ -1025,7 +1098,7 @@ def _intercept_hr_reference_write(
                 ui_widget=_leave_requests_widget(result, is_manager=True),
             )
         try:
-            lines = hr_pending_request_lines(service, actor)
+            lines = await hr_pending_request_lines(service, actor)
         except ToolError as err:
             return _reply(state, str(err), clock=clock)
         if not lines:
@@ -1034,7 +1107,7 @@ def _intercept_hr_reference_write(
             )
         pending_result = []
         try:
-            pending_result = [r for r in list_leave_requests(service, actor) if r.get("status") == "PENDING"]
+            pending_result = [r for r in await list_leave_requests(service, actor) if r.get("status") == "PENDING"]
         except Exception:
             pass
         return _reply(
@@ -1051,10 +1124,10 @@ def _intercept_hr_reference_write(
         "request_number": reference,
         "approve": approve,
     }
-    return _stage_reference_write(state, service, actor, tool_name, args, clock=clock)
+    return await _stage_reference_write(state, service, actor, tool_name, args, clock=clock)
 
 
-def _intercept_reference_writes(
+async def _intercept_reference_writes(
     state: LeaveAgentState,
     service: LeaveService,
     actor: UserContext,
@@ -1069,8 +1142,8 @@ def _intercept_reference_writes(
     tools can act on any request).
     """
     if actor.coarse_role == "HR_ADMIN":
-        return _intercept_hr_reference_write(state, service, actor, user_message, clock=clock)
-    return _intercept_employee_cancel(state, service, actor, user_message, clock=clock)
+        return await _intercept_hr_reference_write(state, service, actor, user_message, clock=clock)
+    return await _intercept_employee_cancel(state, service, actor, user_message, clock=clock)
 
 
 async def _handle_stage(
@@ -1107,24 +1180,35 @@ async def _handle_stage(
             # Preflight needs real date objects (not ISO strings) and does
             # not take `reason` (the draft always carries one).
             preflight_args = validate_args(tool_name, canonical)
-            preflight_submit(
+            working_days, holidays_in_range = await preflight_submit(
                 service,
                 actor,
                 leave_type_name=preflight_args["leave_type_name"],
                 start_date=preflight_args["start_date"],
                 end_date=preflight_args["end_date"],
+                is_half_day=preflight_args.get("is_half_day", False),
+                half_day_period=preflight_args.get("half_day_period"),
+            )
+            summary = prompts.summarize_for_confirmation(
+                tool_name,
+                canonical,
+                working_days=working_days,
+                holidays=holidays_in_range,
             )
         elif tool_name == "cancel_leave_request":
-            preflight_cancel(service, actor, canonical["request_number"])
+            await preflight_cancel(service, actor, canonical["request_number"])
+            summary = prompts.summarize_for_confirmation(tool_name, canonical)
         elif tool_name == "decide_leave_request":
-            preflight_hr_reference(service, actor, canonical["request_number"])
+            await preflight_hr_reference(service, actor, canonical["request_number"])
+            summary = prompts.summarize_for_confirmation(tool_name, canonical)
+        else:
+            summary = prompts.summarize_for_confirmation(tool_name, canonical)
     except ToolError as err:
         return _reply(state, str(err), clock=clock, raw_model_action=raw_model_action)
 
     # Deterministic summary, not the model's own phrasing for this turn —
     # what the employee is asked to confirm must never depend solely on
     # the model getting the wording right.
-    summary = prompts.summarize_for_confirmation(tool_name, canonical)
     state.stage(tool_name, canonical, summary, clock=clock)
     return _reply(
         state, summary, clock=clock, raw_model_action=raw_model_action,
@@ -1135,7 +1219,7 @@ async def _handle_stage(
 _HR_SELF_SERVICE_LIST_TOOLS = ("list_my_leave_requests", "list_leave_types")
 
 
-def _recover_hr_list_all(
+async def _recover_hr_list_all(
     state: LeaveAgentState,
     service: LeaveService,
     actor: UserContext,
@@ -1170,7 +1254,7 @@ def _recover_hr_list_all(
     if _extract_reference(lowered) is not None:
         return None
     try:
-        result = list_leave_requests(service, actor)
+        result = await list_leave_requests(service, actor)
     except ToolError as err:
         return _reply(state, str(err), clock=clock, tool_called=tool_name, raw_model_action=raw_model_action)
     text = format_tool_result("list_leave_requests", result)
@@ -1199,12 +1283,12 @@ async def _handle_read(
     spec = TOOLS[tool_name]
     try:
         args = validate_args(tool_name, raw_args)
-        result = spec.handler(service, actor, **args)
+        result = await spec.handler(service, actor, **args)
     except ToolError as err:
         # The model routed an administrator's "see all requests" ask to a
         # self-service list tool whose role gate refuses it — recover by
         # executing the manager tool instead of relaying the refusal.
-        recovered = _recover_hr_list_all(
+        recovered = await _recover_hr_list_all(
             state, service, actor, tool_name, user_message,
             clock=clock, raw_model_action=raw_model_action,
         )
@@ -1227,6 +1311,10 @@ async def _handle_read(
         ui_widget = {"type": "all_employee_balances", "employees": result, "year": args.get("year", clock.today().year)}
     elif tool_name == "get_leave_request":
         ui_widget = {"type": "single_leave_request", "request": result}
+    elif tool_name == "list_company_holidays":
+        ui_widget = {"type": "company_holidays", "holidays": result}
+    elif tool_name == "get_team_out_of_office":
+        ui_widget = {"type": "team_out_of_office", "entries": result}
 
     if tool_name == "list_leave_types":
         override = _list_types_reply_override(user_message)
@@ -1458,8 +1546,9 @@ async def _handle_confirmed_write(
     try:
         spec = TOOLS[tool_name]
         try:
-            result = spec.handler(service, actor, **validate_args(tool_name, raw_args))
+            result = await spec.handler(service, actor, **validate_args(tool_name, raw_args))
         except ToolError as err:
+
             # Business-rule rejection (insufficient balance, not found, ...)
             # — relay plainly, never report success from the model's text.
             state.clear_pending(clock=clock)

@@ -4,24 +4,32 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from openinference.semconv.trace import SpanAttributes
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
 from app.contracts.auth import UserContext
 from app.domain.recruitment import Application, Vacancy
+from app.observability import trace_tool_call
 
 
 class ToolError(Exception):
     """A tool-level failure meant to be relayed to the user in plain language."""
 
 
-def _call_service(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    try:
-        return fn(*args, **kwargs)
-    except (PermissionError_, ValueError) as err:
-        raise ToolError(str(err)) from err
+async def _call_service(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    tool_name = getattr(fn, "__name__", "recruitment_tool")
+    async with trace_tool_call(tool_name, parameters=kwargs) as span:
+        try:
+            res = await fn(*args, **kwargs)
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, str(res)[:1000])
+            return res
+        except (PermissionError_, ValueError) as err:
+            span.set_attribute("tool.error", str(err))
+            raise ToolError(str(err)) from err
 
 
 # ---- Schemas -------------------------------------------------------------
@@ -50,17 +58,23 @@ class ListManagerApplicationsArgs(BaseModel):
     vacancy_title: str | None = None
 
 
+class WithdrawApplicationArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vacancy_title: str | None = None
+    application_id: str | None = None
+
+
 # ---- Tool Implementations ------------------------------------------------
 
 
-def list_vacancies_tool(service: RecruitmentService, actor: UserContext | None) -> list[Vacancy]:
-    return _call_service(service.list_vacancies, actor)
+async def list_vacancies_tool(service: RecruitmentService, actor: UserContext | None) -> list[Vacancy]:
+    return await _call_service(service.list_vacancies, actor)
 
 
-def get_vacancy_detail_tool(
+async def get_vacancy_detail_tool(
     service: RecruitmentService, actor: UserContext | None, title: str
 ) -> Vacancy | None:
-    vacancies = list_vacancies_tool(service, actor)
+    vacancies = await list_vacancies_tool(service, actor)
     normalized = re.sub(r"[^a-z0-9 ]", "", title.lower())
     for v in vacancies:
         if v.title.lower() in normalized or normalized in v.title.lower():
@@ -68,26 +82,75 @@ def get_vacancy_detail_tool(
     return None
 
 
-def list_my_applications_tool(
+async def list_my_applications_tool(
     service: RecruitmentService, actor: UserContext | None
 ) -> list[Application]:
     if actor is None or actor.coarse_role != "CANDIDATE":
         raise ToolError("Only candidates can view their applications.")
-    return _call_service(service.list_my_applications, actor)
+    return await _call_service(service.list_my_applications, actor)
 
 
-def list_manager_applications_tool(
+async def withdraw_application_tool(
+    service: RecruitmentService,
+    actor: UserContext | None,
+    vacancy_title: str | None = None,
+    application_id: str | None = None,
+) -> Application:
+    if actor is None or actor.coarse_role != "CANDIDATE":
+        raise ToolError("Only candidates can withdraw their applications.")
+
+    if application_id:
+        try:
+            app_uuid = uuid.UUID(str(application_id))
+        except (ValueError, TypeError) as err:
+            raise ToolError(f"Invalid application id: {application_id}") from err
+        return await _call_service(service.withdraw_application, actor, app_uuid)
+
+    apps = await _call_service(service.list_my_applications, actor)
+    withdrawable = [a for a in apps if a.application_status in ("APPLIED", "SHORTLISTED")]
+
+    if vacancy_title:
+        normalized = re.sub(r"[^a-z0-9 ]", "", vacancy_title.lower())
+        matched = [
+            a
+            for a in withdrawable
+            if a.vacancy
+            and (
+                re.sub(r"[^a-z0-9 ]", "", a.vacancy.title.lower()) in normalized
+                or normalized in re.sub(r"[^a-z0-9 ]", "", a.vacancy.title.lower())
+            )
+        ]
+        if not matched:
+            raise ToolError(
+                f"I couldn't find an active application for {vacancy_title!r} to withdraw."
+            )
+        if len(matched) > 1:
+            raise ToolError(
+                f"Multiple active applications match {vacancy_title!r}. Please be more specific."
+            )
+        return await _call_service(service.withdraw_application, actor, matched[0].application_id)
+
+    if len(withdrawable) == 1:
+        return await _call_service(service.withdraw_application, actor, withdrawable[0].application_id)
+    if len(withdrawable) == 0:
+        raise ToolError("You don't have any active applications to withdraw.")
+    raise ToolError(
+        "You have multiple active applications. Please specify which position you want to withdraw from."
+    )
+
+
+async def list_manager_applications_tool(
     service: RecruitmentService, actor: UserContext | None, vacancy_title: str | None = None
 ) -> list[Application]:
     if actor is None or actor.coarse_role != "HR_ADMIN":
         raise ToolError("Only managers can review applications.")
     if vacancy_title:
-        vacancies = _call_service(service.list_vacancies, actor)
+        vacancies = await _call_service(service.list_vacancies, actor)
         matched = next((v for v in vacancies if v.title.lower() == vacancy_title.lower()), None)
         if matched is None:
             raise ToolError(f"I couldn't find a vacancy called {vacancy_title!r}.")
-        return _call_service(service.list_vacancy_applications, actor, matched.vacancy_id)
-    return _call_service(service.list_all_applications, actor)
+        return await _call_service(service.list_vacancy_applications, actor, matched.vacancy_id)
+    return await _call_service(service.list_all_applications, actor)
 
 
 # ---- UI Widgets ----------------------------------------------------------
@@ -255,6 +318,7 @@ def format_help_reply(vacancies: list[Vacancy]) -> str:
         "- **View Open Vacancies**: Ask *'What jobs are open?'* to explore available roles.",
         "- **Apply for Vacancies**: Ask *'How do I apply for [Job Title]?'* or click Apply to submit your resume directly.",
         "- **Check Application Status**: Ask *'What's the status of my application?'* to track your progress.",
+        "- **Withdraw Application**: Ask *'Withdraw my application for [Job Title]'* to withdraw an active application.",
     ]
     if vacancies:
         lines.extend(["", "Currently open roles:", vacancy_lines(vacancies)])
@@ -264,10 +328,10 @@ def format_help_reply(vacancies: list[Vacancy]) -> str:
 # ---- Matching Helpers ----------------------------------------------------
 
 
-def find_matched_vacancy(service: RecruitmentService, user_message: str) -> Vacancy | None:
+async def find_matched_vacancy(service: RecruitmentService, user_message: str) -> Vacancy | None:
     lowered = user_message.lower()
     normalized = re.sub(r"[^a-z0-9 ]", "", lowered)
-    vacancies = service.list_vacancies(None)
+    vacancies = await service.list_vacancies(None)
     matches = [v for v in vacancies if v.title.lower() in normalized]
     if len(matches) == 1:
         return matches[0]

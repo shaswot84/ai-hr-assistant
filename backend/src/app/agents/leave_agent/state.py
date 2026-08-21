@@ -92,9 +92,17 @@ class DraftRequest:
     leave_type_name: str | None = None
     start_date: date | None = None
     end_date: date | None = None
+    is_half_day: bool = False
+    half_day_period: str | None = None
     reason: str | None = None
 
     def is_complete(self) -> bool:
+        if self.is_half_day:
+            return (
+                self.leave_type_name is not None
+                and self.start_date is not None
+                and self.half_day_period in ("MORNING", "AFTERNOON")
+            )
         return (
             self.leave_type_name is not None
             and self.start_date is not None
@@ -195,6 +203,8 @@ class LeaveAgentState:
             "leave_type_name": self.draft.leave_type_name,
             "start_date": self.draft.start_date.isoformat() if self.draft.start_date else None,
             "end_date": self.draft.end_date.isoformat() if self.draft.end_date else None,
+            "is_half_day": self.draft.is_half_day,
+            "half_day_period": self.draft.half_day_period,
         }
 
     def pending_is_expired(self, *, clock: Clock) -> bool:
@@ -260,6 +270,8 @@ def draft_to_json(draft: DraftRequest | None) -> dict | None:
         "leave_type_name": draft.leave_type_name,
         "start_date": draft.start_date.isoformat() if draft.start_date else None,
         "end_date": draft.end_date.isoformat() if draft.end_date else None,
+        "is_half_day": draft.is_half_day,
+        "half_day_period": draft.half_day_period,
         "reason": draft.reason,
     }
 
@@ -272,6 +284,8 @@ def draft_from_json(data: dict | None) -> DraftRequest | None:
         leave_type_name=data.get("leave_type_name"),
         start_date=date.fromisoformat(data["start_date"]) if data.get("start_date") else None,
         end_date=date.fromisoformat(data["end_date"]) if data.get("end_date") else None,
+        is_half_day=bool(data.get("is_half_day", False)),
+        half_day_period=data.get("half_day_period"),
         reason=data.get("reason"),
     )
 

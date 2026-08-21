@@ -1,0 +1,27 @@
+{
+  "name": "mouse-trail-effect",
+  "version": "0.0.6",
+  "description": "A JavaScript package that creates a colorful mouse trail effect on a web page using random gradient colors.",
+  "main": "mouse-trail-effect.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/snekkenull/mouse-trail-effect.git"
+  },
+  "keywords": [
+    "color",
+    "trail",
+    "mouse-trail",
+    "mouse-effect"
+  ],
+  "dependencies": {
+    "make-random-color": "^0.0.3",
+    "d3-interpolate": "^3.0.0",
+    "d3-ease": "^3.0.0",
+    "mathjs": "^12.4.0"
+  },
+  "author": "snekkenull",
+  "license": "MIT"
+}

@@ -15,7 +15,7 @@ class AuthProvider(ABC):
     """
 
     @abstractmethod
-    def authenticate(self, request: Any) -> UserContext | None:
+    async def authenticate(self, request: Any) -> UserContext | None:
         """Resolve the current request to a UserContext, or None if unauthenticated."""
 
     @abstractmethod

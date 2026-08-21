@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.passwords import hash_password
 from app.contracts.auth import UserContext
@@ -19,6 +19,7 @@ from app.shared.clock import Clock, get_clock
 # for this week's flow (no re-review), so a decision can never be replayed
 # into a second candidate-facing email or leave a stale rejected_at behind.
 DECIDABLE_STATUSES = {"APPLIED"}
+WITHDRAWABLE_STATUSES = {"APPLIED", "SHORTLISTED"}
 
 
 class PermissionError_(Exception):
@@ -26,14 +27,10 @@ class PermissionError_(Exception):
 
 
 class RecruitmentService:
-    """Deterministic recruitment business logic (capability layer).
+    """Deterministic recruitment business logic (capability layer)."""
 
-    Authorization decisions (WHETHER) live here alongside validation and
-    business rules. The AI/agent never bypasses these.
-    """
-
-    def __init__(self, db: Session, clock: Clock | None = None) -> None:
-        """Bind the service to a DB session and build its repositories."""
+    def __init__(self, db: AsyncSession, clock: Clock | None = None) -> None:
+        """Bind the service to an async DB session and build its repositories."""
         self._db = db
         self._clock = clock or get_clock()
         self._vacancies = VacancyRepo(db)
@@ -44,7 +41,7 @@ class RecruitmentService:
 
     # ---- vacancies ---------------------------------------------------
 
-    def create_vacancy(
+    async def create_vacancy(
         self,
         actor: UserContext,
         *,
@@ -56,15 +53,11 @@ class RecruitmentService:
         closing_date,
         scoring_keywords: list[dict],
     ) -> Vacancy:
-        """Create an open vacancy (HR_ADMIN only), auto-creating the department if needed.
-
-        `scoring_keywords` is required (schema-enforced, non-empty) — every
-        vacancy gets a real, explainable scoring rubric from the start.
-        """
+        """Create an open vacancy (HR_ADMIN only), auto-creating the department if needed."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can create vacancies.")
-        employee = self._identity.get_employee(actor)
-        department = self._get_or_create_department(department_name)
+        employee = await self._identity.get_employee(actor)
+        department = await self._get_or_create_department(department_name)
         now = self._clock.now()
         vacancy = Vacancy(
             title=title.strip(),
@@ -80,36 +73,32 @@ class RecruitmentService:
             created_at=now,
             updated_at=now,
         )
-        self._vacancies.create(vacancy)
-        self._audit.record(
-            actor_user_id=self._actor_user_id(actor),
+        await self._vacancies.create(vacancy)
+        await self._audit.record(
+            actor_user_id=await self._actor_user_id(actor),
             action="VACANCY_CREATED",
             target_type="vacancy",
             target_id=vacancy.vacancy_id,
             new_state={"title": vacancy.title, "status": vacancy.status},
         )
-        self._db.commit()
+        await self._db.commit()
         return vacancy
 
-    def list_vacancies(self, actor: UserContext | None) -> list[Vacancy]:
+    async def list_vacancies(self, actor: UserContext | None) -> list[Vacancy]:
         """List vacancies; candidates and anonymous visitors see only open ones."""
         if actor is None or actor.coarse_role == "CANDIDATE":
-            return self._vacancies.list_open()
-        return self._vacancies.list_all()
+            return await self._vacancies.list_open()
+        return await self._vacancies.list_all()
 
-    def get_vacancy(self, vacancy_id: uuid.UUID) -> Vacancy | None:
+    async def get_vacancy(self, vacancy_id: uuid.UUID) -> Vacancy | None:
         """Fetch a single vacancy by id, or None if it does not exist."""
-        return self._vacancies.get(vacancy_id)
+        return await self._vacancies.get(vacancy_id)
 
-    def archive_vacancy(self, actor: UserContext, vacancy_id: uuid.UUID) -> Vacancy:
-        """Move a vacancy to CLOSED (archived), keeping all of its applications.
-
-        An archived vacancy no longer accepts applications but remains visible
-        to managers with its full application history.
-        """
+    async def archive_vacancy(self, actor: UserContext, vacancy_id: uuid.UUID) -> Vacancy:
+        """Move a vacancy to CLOSED (archived), keeping all of its applications."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can archive vacancies.")
-        vacancy = self._vacancies.get(vacancy_id)
+        vacancy = await self._vacancies.get(vacancy_id)
         if vacancy is None:
             raise ValueError("Vacancy not found.")
         if vacancy.status == "CLOSED":
@@ -117,23 +106,23 @@ class RecruitmentService:
         previous_status = vacancy.status
         vacancy.status = "CLOSED"
         vacancy.updated_at = self._clock.now()
-        self._vacancies.save(vacancy)
-        self._audit.record(
-            actor_user_id=self._actor_user_id(actor),
+        await self._vacancies.save(vacancy)
+        await self._audit.record(
+            actor_user_id=await self._actor_user_id(actor),
             action="VACANCY_CLOSED",
             target_type="vacancy",
             target_id=vacancy.vacancy_id,
             previous_state={"status": previous_status},
             new_state={"status": "CLOSED"},
         )
-        self._db.commit()
+        await self._db.commit()
         return vacancy
 
-    def reopen_vacancy(self, actor: UserContext, vacancy_id: uuid.UUID) -> Vacancy:
+    async def reopen_vacancy(self, actor: UserContext, vacancy_id: uuid.UUID) -> Vacancy:
         """Re-open an archived (CLOSED) vacancy so candidates can apply again."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can reopen vacancies.")
-        vacancy = self._vacancies.get(vacancy_id)
+        vacancy = await self._vacancies.get(vacancy_id)
         if vacancy is None:
             raise ValueError("Vacancy not found.")
         if vacancy.status == "OPEN":
@@ -141,38 +130,35 @@ class RecruitmentService:
         previous_status = vacancy.status
         vacancy.status = "OPEN"
         vacancy.updated_at = self._clock.now()
-        self._vacancies.save(vacancy)
-        self._audit.record(
-            actor_user_id=self._actor_user_id(actor),
+        await self._vacancies.save(vacancy)
+        await self._audit.record(
+            actor_user_id=await self._actor_user_id(actor),
             action="VACANCY_REOPENED",
             target_type="vacancy",
             target_id=vacancy.vacancy_id,
             previous_state={"status": previous_status},
             new_state={"status": "OPEN"},
         )
-        self._db.commit()
+        await self._db.commit()
         return vacancy
 
     # ---- applications ------------------------------------------------
 
-    def apply(
+    async def apply(
         self,
         actor: UserContext,
         *,
         vacancy_id: uuid.UUID,
         cv_object_key: str,
     ) -> Application:
-        """Create an application for a candidate on an open vacancy they have not already applied to.
-
-        Enqueues an AI-evaluation outbox job in the same transaction as the application row.
-        """
+        """Create an application for a candidate on an open vacancy they have not already applied to."""
         if actor.coarse_role != "CANDIDATE":
             raise PermissionError_("Only candidates can apply.")
-        candidate = self._identity.get_candidate(actor)
-        vacancy = self._vacancies.get(vacancy_id)
+        candidate = await self._identity.get_candidate(actor)
+        vacancy = await self._vacancies.get(vacancy_id)
         if vacancy is None or vacancy.status != "OPEN":
             raise ValueError("Vacancy is not open for applications.")
-        if self._applications.find_existing(candidate.candidate_id, vacancy_id) is not None:
+        if await self._applications.find_existing(candidate.candidate_id, vacancy_id) is not None:
             raise ValueError("You have already applied to this vacancy.")
 
         now = self._clock.now()
@@ -184,19 +170,19 @@ class RecruitmentService:
             applied_at=now,
             updated_at=now,
         )
-        self._applications.create(application)
-        # same-transaction outbox: AI evaluation + confirmation emails
-        self._outbox.enqueue(
+        await self._applications.create(application)
+        await self._outbox.enqueue(
             "EVALUATE_APPLICATION",
             {"application_id": str(application.application_id), "cv_object_key": cv_object_key},
             aggregate_type="application",
             aggregate_id=application.application_id,
         )
-        self._outbox.enqueue(
+        candidate_email = await self._candidate_email(application)
+        await self._outbox.enqueue(
             "SEND_APPLICATION_RECEIVED",
             {
                 "application_id": str(application.application_id),
-                "to_email": self._candidate_email(application),
+                "to_email": candidate_email,
                 "subject": f"Application received: {vacancy.title}",
                 "body": (
                     f"Thanks for applying to {vacancy.title}. We've received your resume and "
@@ -206,9 +192,9 @@ class RecruitmentService:
             aggregate_type="application",
             aggregate_id=application.application_id,
         )
-        manager_email = self._manager_email(vacancy)
+        manager_email = await self._manager_email(vacancy)
         if manager_email:
-            self._outbox.enqueue(
+            await self._outbox.enqueue(
                 "SEND_NEW_APPLICATION_ALERT",
                 {
                     "application_id": str(application.application_id),
@@ -222,17 +208,17 @@ class RecruitmentService:
                 aggregate_type="application",
                 aggregate_id=application.application_id,
             )
-        self._audit.record(
-            actor_user_id=self._actor_user_id(actor),
+        await self._audit.record(
+            actor_user_id=await self._actor_user_id(actor),
             action="APPLICATION_CREATED",
             target_type="application",
             target_id=application.application_id,
             new_state={"vacancy_id": str(vacancy_id), "status": "APPLIED"},
         )
-        self._db.commit()
+        await self._db.commit()
         return application
 
-    def apply_as_new_candidate(
+    async def apply_as_new_candidate(
         self,
         *,
         vacancy_id: uuid.UUID,
@@ -243,25 +229,14 @@ class RecruitmentService:
         phone: str | None,
         password: str,
     ) -> Application:
-        """Apply to a vacancy as a brand-new, self-registering candidate.
-
-        Provisions the Person + ApplicationUser (CANDIDATE role, password
-        chosen in the apply form) + Candidate rows in the same transaction as
-        the Application, so first-time candidates can apply without a prior
-        account — they browse anonymously and only identify themselves (and
-        create their login) when they apply.
-
-        Blocks when the email already exists: that person already has an
-        account and should sign in and apply from it instead. Enqueues the
-        same AI-evaluation + confirmation emails as the authenticated apply.
-        """
+        """Apply to a vacancy as a brand-new, self-registering candidate."""
         if len(password) < 8:
             raise ValueError("Password must be at least 8 characters.")
-        vacancy = self._vacancies.get(vacancy_id)
+        vacancy = await self._vacancies.get(vacancy_id)
         if vacancy is None or vacancy.status != "OPEN":
             raise ValueError("Vacancy is not open for applications.")
         normalized_email = email.strip().lower()
-        if self._person_by_email(normalized_email) is not None:
+        if await self._person_by_email(normalized_email) is not None:
             raise ValueError(
                 "An account already exists for this email — sign in and apply from there."
             )
@@ -276,7 +251,7 @@ class RecruitmentService:
             updated_at=now,
         )
         self._db.add(person)
-        self._db.flush()
+        await self._db.flush()
         app_user = ApplicationUser(
             external_subject=str(uuid.uuid4()),
             person_id=person.person_id,
@@ -286,7 +261,7 @@ class RecruitmentService:
             updated_at=now,
         )
         self._db.add(app_user)
-        self._db.flush()
+        await self._db.flush()
         candidate = Candidate(
             person_id=person.person_id,
             registration_date=self._clock.today(),
@@ -294,7 +269,7 @@ class RecruitmentService:
             updated_at=now,
         )
         self._db.add(candidate)
-        self._db.flush()
+        await self._db.flush()
 
         application = Application(
             candidate_id=candidate.candidate_id,
@@ -304,16 +279,14 @@ class RecruitmentService:
             applied_at=now,
             updated_at=now,
         )
-        self._applications.create(application)
-        # Same-transaction outbox jobs as the authenticated apply: AI evaluation
-        # + confirmation email to the new candidate + alert to the manager.
-        self._outbox.enqueue(
+        await self._applications.create(application)
+        await self._outbox.enqueue(
             "EVALUATE_APPLICATION",
             {"application_id": str(application.application_id), "cv_object_key": cv_object_key},
             aggregate_type="application",
             aggregate_id=application.application_id,
         )
-        self._outbox.enqueue(
+        await self._outbox.enqueue(
             "SEND_APPLICATION_RECEIVED",
             {
                 "application_id": str(application.application_id),
@@ -327,9 +300,9 @@ class RecruitmentService:
             aggregate_type="application",
             aggregate_id=application.application_id,
         )
-        manager_email = self._manager_email(vacancy)
+        manager_email = await self._manager_email(vacancy)
         if manager_email:
-            self._outbox.enqueue(
+            await self._outbox.enqueue(
                 "SEND_NEW_APPLICATION_ALERT",
                 {
                     "application_id": str(application.application_id),
@@ -343,8 +316,8 @@ class RecruitmentService:
                 aggregate_type="application",
                 aggregate_id=application.application_id,
             )
-        self._audit.record(
-            actor_user_id=None,  # self-service provisioning — no logged-in actor
+        await self._audit.record(
+            actor_user_id=None,
             action="CANDIDATE_SELF_REGISTERED",
             target_type="candidate",
             target_id=candidate.candidate_id,
@@ -354,68 +327,115 @@ class RecruitmentService:
                 "status": "APPLIED",
             },
         )
-        self._db.commit()
+        await self._db.commit()
         return application
 
-    def list_my_applications(self, actor: UserContext) -> list[Application]:
+    async def list_my_applications(self, actor: UserContext) -> list[Application]:
         """List the current candidate's own applications."""
         if actor.coarse_role != "CANDIDATE":
             raise PermissionError_("Only candidates can view their applications.")
-        candidate = self._identity.get_candidate(actor)
-        return self._applications.list_for_candidate(candidate.candidate_id)
+        candidate = await self._identity.get_candidate(actor)
+        return await self._applications.list_for_candidate(candidate.candidate_id)
 
-    def get_my_application(self, actor: UserContext, application_id: uuid.UUID) -> Application:
+    async def get_my_application(self, actor: UserContext, application_id: uuid.UUID) -> Application:
         """Fetch one of the current candidate's applications, or raise if not theirs/not found."""
         if actor.coarse_role != "CANDIDATE":
             raise PermissionError_("Only candidates can view their applications.")
-        candidate = self._identity.get_candidate(actor)
-        application = self._applications.get_for_candidate(application_id, candidate.candidate_id)
+        candidate = await self._identity.get_candidate(actor)
+        application = await self._applications.get_for_candidate(application_id, candidate.candidate_id)
         if application is None:
             raise ValueError("Application not found.")
         return application
 
-    def list_all_applications(self, actor: UserContext) -> list[Application]:
+    async def withdraw_application(
+        self, actor: UserContext, application_id: uuid.UUID
+    ) -> Application:
+        """Withdraw one of the current candidate's own active applications."""
+        if actor.coarse_role != "CANDIDATE":
+            raise PermissionError_("Only candidates can withdraw their applications.")
+        candidate = await self._identity.get_candidate(actor)
+        application = await self._applications.get_for_candidate(application_id, candidate.candidate_id)
+        if application is None:
+            raise ValueError("Application not found.")
+        if application.application_status == "WITHDRAWN":
+            raise ValueError("Application is already withdrawn.")
+        if application.application_status not in WITHDRAWABLE_STATUSES:
+            raise ValueError(
+                f"Cannot withdraw application with status {application.application_status}."
+            )
+
+        now = self._clock.now()
+        previous_status = application.application_status
+        application.application_status = "WITHDRAWN"
+        application.withdrawn_at = now
+        application.updated_at = now
+        await self._applications.save(application)
+
+        vacancy_title = application.vacancy.title if application.vacancy else "the position"
+        candidate_email = await self._candidate_email(application)
+        await self._outbox.enqueue(
+            "SEND_APPLICATION_WITHDRAWN",
+            {
+                "application_id": str(application.application_id),
+                "to_email": candidate_email,
+                "subject": f"Application withdrawn: {vacancy_title}",
+                "body": (
+                    f"Your application for {vacancy_title} has been withdrawn. "
+                    "Thank you for your interest and we wish you the best in your job search."
+                ),
+            },
+            aggregate_type="application",
+            aggregate_id=application.application_id,
+        )
+        await self._audit.record(
+            actor_user_id=await self._actor_user_id(actor),
+            action="APPLICATION_WITHDRAWN",
+            target_type="application",
+            target_id=application.application_id,
+            previous_state={"status": previous_status},
+            new_state={"status": application.application_status},
+        )
+
+        await self._db.commit()
+        return application
+
+    async def list_all_applications(self, actor: UserContext) -> list[Application]:
         """List every application across all vacancies (HR_ADMIN only)."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can review applications.")
-        return self._applications.list_all()
+        return await self._applications.list_all()
 
-    def list_vacancy_applications(self, actor: UserContext, vacancy_id: uuid.UUID) -> list[Application]:
+    async def list_vacancy_applications(self, actor: UserContext, vacancy_id: uuid.UUID) -> list[Application]:
         """List all applications for a vacancy (HR_ADMIN only)."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can review applications.")
-        vacancy = self._vacancies.get(vacancy_id)
+        vacancy = await self._vacancies.get(vacancy_id)
         if vacancy is None:
             raise ValueError("Vacancy not found.")
-        return self._applications.list_for_vacancy(vacancy_id)
+        return await self._applications.list_for_vacancy(vacancy_id)
 
-    def get_application_for_review(
+    async def get_application_for_review(
         self, actor: UserContext, application_id: uuid.UUID
     ) -> Application:
         """Fetch an application for manager review, or raise if not found."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can review applications.")
-        application = self._applications.get(application_id)
+        application = await self._applications.get(application_id)
         if application is None:
             raise ValueError("Application not found.")
         return application
 
-    def decide_application(
+    async def decide_application(
         self,
         actor: UserContext,
         application_id: uuid.UUID,
         *,
         approve: bool,
     ) -> Application:
-        """Approve (shortlist) or reject an application and enqueue the notification email.
-
-        Only valid from APPLIED — once decided, an application is terminal for
-        this week's flow, so re-submitting a decision can never re-send the
-        candidate email or silently overwrite a prior outcome.
-        """
+        """Approve (shortlist) or reject an application and enqueue the notification email."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can make hiring decisions.")
-        application = self._applications.get(application_id)
+        application = await self._applications.get(application_id)
         if application is None:
             raise ValueError("Application not found.")
         if application.application_status not in DECIDABLE_STATUSES:
@@ -429,22 +449,23 @@ class RecruitmentService:
         if not approve:
             application.rejected_at = now
         application.updated_at = now
-        self._applications.save(application)
+        await self._applications.save(application)
 
         job_type, subject, body = self._build_email_payload(application, approve=approve)
-        self._outbox.enqueue(
+        candidate_email = await self._candidate_email(application)
+        await self._outbox.enqueue(
             job_type,
             {
                 "application_id": str(application.application_id),
-                "to_email": self._candidate_email(application),
+                "to_email": candidate_email,
                 "subject": subject,
                 "body": body,
             },
             aggregate_type="application",
             aggregate_id=application.application_id,
         )
-        self._audit.record(
-            actor_user_id=self._actor_user_id(actor),
+        await self._audit.record(
+            actor_user_id=await self._actor_user_id(actor),
             action="APPLICATION_DECIDED",
             target_type="application",
             target_id=application.application_id,
@@ -452,71 +473,66 @@ class RecruitmentService:
             new_state={"status": application.application_status},
         )
 
-        self._db.commit()
+        await self._db.commit()
         return application
 
-    def latest_evaluation(self, application_id: uuid.UUID) -> ApplicationEvaluation | None:
+    async def latest_evaluation(self, application_id: uuid.UUID) -> ApplicationEvaluation | None:
         """Return the most recent evaluation for an application, or None if not yet evaluated."""
-        return self._applications.latest_evaluation(application_id)
+        return await self._applications.latest_evaluation(application_id)
 
-    def re_evaluate_application(self, actor: UserContext, application_id: uuid.UUID) -> Application:
-        """Re-enqueue the AI screening job for an application (manager-triggered retry).
-
-        `latest_evaluation` always picks the newest row per application, so
-        this doesn't need to touch or clear the previous (e.g. failed) row —
-        a fresh one lands once the worker picks the job back up.
-        """
+    async def re_evaluate_application(self, actor: UserContext, application_id: uuid.UUID) -> Application:
+        """Re-enqueue the AI screening job for an application (manager-triggered retry)."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can re-run a screening.")
-        application = self._applications.get(application_id)
+        application = await self._applications.get(application_id)
         if application is None:
             raise ValueError("Application not found.")
         if not application.cv_object_key:
             raise ValueError("Application has no resume on file to re-screen.")
 
-        self._outbox.enqueue(
+        await self._outbox.enqueue(
             "EVALUATE_APPLICATION",
             {"application_id": str(application.application_id), "cv_object_key": application.cv_object_key},
             aggregate_type="application",
             aggregate_id=application.application_id,
         )
-        self._audit.record(
-            actor_user_id=self._actor_user_id(actor),
+        await self._audit.record(
+            actor_user_id=await self._actor_user_id(actor),
             action="APPLICATION_RE_EVALUATION_REQUESTED",
             target_type="application",
             target_id=application.application_id,
         )
-        self._db.commit()
+        await self._db.commit()
         return application
 
     # ---- helpers -----------------------------------------------------
 
-    def _person_by_email(self, email: str) -> Person | None:
+    async def _person_by_email(self, email: str) -> Person | None:
         """Return the Person with the given (normalized) email, or None (duplicate guard)."""
         stmt = select(Person).where(Person.email == email.strip().lower())
-        return self._db.scalar(stmt)
+        return await self._db.scalar(stmt)
 
-    def _actor_user_id(self, actor: UserContext) -> uuid.UUID | None:
+    async def _actor_user_id(self, actor: UserContext) -> uuid.UUID | None:
         """Resolve the actor's application_user id for audit records (best-effort)."""
         try:
-            return self._identity._get_app_user(actor).user_id
-        except Exception:  # noqa: BLE001 - audit metadata must never block the business action
+            return (await self._identity._get_app_user(actor)).user_id
+        except Exception:  # noqa: BLE001
             return None
 
-    def _candidate_email(self, application: Application) -> str:
+    async def _candidate_email(self, application: Application) -> str:
         """Resolve the candidate's email address for an application."""
-        candidate = self._identity.get_candidate_for_application(application)
+        candidate = await self._identity.get_candidate_for_application(application)
         if candidate is None:
             return ""
-        person = self._db.get(Person, candidate.person_id)
+        person = await self._db.get(Person, candidate.person_id)
         return person.email if person else ""
 
-    def _manager_email(self, vacancy: Vacancy) -> str:
+    async def _manager_email(self, vacancy: Vacancy) -> str:
         """Resolve the email of the manager who posted a vacancy (its notification recipient)."""
-        employee = self._db.get(Employee, vacancy.created_by_employee_id)
+        employee = await self._db.get(Employee, vacancy.created_by_employee_id)
         if employee is None:
             return ""
-        person = self._db.get(Person, employee.person_id)
+        person = await self._db.get(Person, employee.person_id)
         return person.email if person else ""
 
     def _build_email_payload(
@@ -545,13 +561,14 @@ class RecruitmentService:
             ),
         )
 
-    def _get_or_create_department(self, name: str) -> Department:
+    async def _get_or_create_department(self, name: str) -> Department:
         """Return the department matching `name`, creating it if it does not yet exist."""
         stmt = select(Department).where(Department.name == name.strip())
-        dept = self._db.scalar(stmt)
+        dept = await self._db.scalar(stmt)
         if dept is not None:
             return dept
         dept = Department(name=name.strip())
         self._db.add(dept)
-        self._db.flush()
+        await self._db.flush()
         return dept
+

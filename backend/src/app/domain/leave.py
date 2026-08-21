@@ -56,6 +56,23 @@ class LeaveBalance(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class CompanyHoliday(Base):
+    """An official company holiday or office closure date.
+
+    Deducted from leave requests so employees are only charged for working days.
+    """
+
+    __tablename__ = "company_holiday"
+
+    holiday_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(100))
+    holiday_date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_recurring_yearly: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class LeaveRequest(Base):
     """An employee's request to take leave, tracked through a single-decision lifecycle.
 
@@ -75,6 +92,8 @@ class LeaveRequest(Base):
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date] = mapped_column(Date)
     total_days: Mapped[Decimal] = mapped_column(Numeric(5, 1))
+    is_half_day: Mapped[bool] = mapped_column(Boolean, default=False)
+    half_day_period: Mapped[str | None] = mapped_column(String(20), nullable=True)  # MORNING | AFTERNOON
     reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # PENDING | APPROVED | REJECTED | CANCELLED — terminal once decided or
     # cancelled, mirroring recruitment's DECIDABLE_STATUSES pattern.

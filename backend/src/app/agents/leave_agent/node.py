@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING
 
 from langchain_core.messages import AIMessage
 from langgraph.types import StreamWriter
+from openinference.semconv.trace import SpanAttributes
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.leave_agent.agent import handle_turn
 from app.agents.leave_agent.state import (
@@ -41,8 +43,9 @@ from app.agents.leave_agent.state import (
 )
 from app.capabilities.leave import LeaveService
 from app.contracts.auth import UserContext
-from app.db.sync_session import SessionLocal
+from app.db.session import async_session_factory
 from app.model_gateway.provider import ChatProvider
+from app.observability import trace_agent_turn
 from app.repositories.workflow_state import WorkflowStateRepo
 from app.services.identity import IdentityError, IdentityService
 from app.shared.clock import get_clock
@@ -58,11 +61,8 @@ def make_leave_node(
     chat_provider: ChatProvider,
     leave_service: LeaveService | None = None,
 ) -> Callable[[SupervisorState, StreamWriter], Awaitable[dict]]:
-    """Build the leave node for the supervisor graph.
+    """Build the leave node for the supervisor graph."""
 
-    ``leave_service`` may be injected for tests; otherwise a request-scoped
-    service is built on the sync session (the same pattern the CLI uses).
-    """
     async def leave_node(state: SupervisorState, writer: StreamWriter) -> dict:
         conversation_id = state.get("conversation_id", "default")
 
@@ -71,7 +71,7 @@ def make_leave_node(
         # created), and every workflow change is written back after the turn.
         leave_state = store.get(conversation_id, actor)
         if leave_state is None:
-            leave_state = _restore_or_create(actor, store, conversation_id)
+            leave_state = await _restore_or_create(actor, store, conversation_id)
 
         # Bind the store-backed execution claim for this turn: a confirmed
         # write is claimed atomically per session (in-memory set, or a Redis
@@ -84,7 +84,7 @@ def make_leave_node(
 
         result = await _run_turn(actor, chat_provider, leave_state, state, writer, leave_service)
 
-        _persist_workflow(actor, conversation_id, leave_state)
+        await _persist_workflow(actor, conversation_id, leave_state)
         # The working slice (history included) goes back to the store: for
         # Redis this is what lets a turn landing on another worker see the
         # same conversation memory; for the in-memory store it is a no-op
@@ -95,19 +95,12 @@ def make_leave_node(
     return leave_node
 
 
-def _restore_or_create(actor: UserContext, store: SessionStore, conversation_id: str) -> LeaveAgentState:
-    """Rebuild the session's leave state from the durable workflow row.
-
-    When the conversation has an ACTIVE workflow row the draft and staged
-    confirmation are restored into the cached state (an expired staged
-    action is dropped deterministically at restore time — the persisted
-    ``expires_at`` decides, never the model). Otherwise a fresh state is
-    created exactly as before this layer existed.
-    """
-    with SessionLocal() as db:
-        user_id = _actor_user_id(db, actor)
+async def _restore_or_create(actor: UserContext, store: SessionStore, conversation_id: str) -> LeaveAgentState:
+    """Rebuild the session's leave state from the durable workflow row."""
+    async with async_session_factory() as db:
+        user_id = await _actor_user_id(db, actor)
         if user_id is not None:
-            row = WorkflowStateRepo(db).get_active(uuid.UUID(conversation_id), user_id)
+            row = await WorkflowStateRepo(db).get_active(uuid.UUID(conversation_id), user_id)
             if row is not None and row.workflow_type == "LEAVE":
                 now = get_clock().now()
                 restored = LeaveAgentState(
@@ -132,49 +125,37 @@ def _restore_or_create(actor: UserContext, store: SessionStore, conversation_id:
     return store.get_or_create(conversation_id, actor)
 
 
-def _persist_workflow(actor: UserContext, conversation_id: str, leave_state: LeaveAgentState) -> None:
-    """Write the durable slice of leave state back to the workflow row.
-
-    The stored row is compared with the state's current snapshot; when
-    nothing about the draft or staged action changed, no write happens. A
-    snapshot with nothing to resume marks an existing ACTIVE row COMPLETED —
-    a finished workflow is never restored into a future session.
-    """
+async def _persist_workflow(actor: UserContext, conversation_id: str, leave_state: LeaveAgentState) -> None:
+    """Write the durable slice of leave state back to the workflow row."""
     snapshot = workflow_snapshot(leave_state)
-    with SessionLocal() as db:
-        user_id = _actor_user_id(db, actor)
+    async with async_session_factory() as db:
+        user_id = await _actor_user_id(db, actor)
         if user_id is None:
             return
         repo = WorkflowStateRepo(db)
-        row = repo.get_active(uuid.UUID(conversation_id), user_id)
+        row = await repo.get_active(uuid.UUID(conversation_id), user_id)
         if not _workflow_changed(row, snapshot):
             return
 
         if snapshot["draft"] is None and snapshot["pending"] is None:
             if row is not None:
-                repo.complete(row)
-                db.commit()
+                await repo.complete(row)
+                await db.commit()
             return
 
         if row is None:
-            row = repo.create(conversation_id=uuid.UUID(conversation_id), actor_user_id=user_id)
-        repo.update(
+            row = await repo.create(conversation_id=uuid.UUID(conversation_id), actor_user_id=user_id)
+        await repo.update(
             row,
             draft_request=snapshot["draft"],
             pending_confirmation=snapshot["pending"],
             expires_at=_iso_to_datetime(snapshot["expires_at"]),
         )
-        db.commit()
+        await db.commit()
 
 
 def _workflow_changed(row, snapshot: dict) -> bool:
-    """Whether the stored row differs from the state's current durable slice.
-
-    ``expires_at`` is compared by instant: SQLite's DATETIME column drops
-    tzinfo, so the stored value may be naive while the snapshot is
-    tz-aware — both are UTC instants, and only the instant matters for the
-    no-op check.
-    """
+    """Whether the stored row differs from the state's current durable slice."""
     if row is None:
         return snapshot["draft"] is not None or snapshot["pending"] is not None
     if row.draft_request != snapshot["draft"] or row.pending_confirmation != snapshot["pending"]:
@@ -193,12 +174,11 @@ def _iso_to_datetime(value: str | None):
     return datetime.fromisoformat(value)
 
 
-def _actor_user_id(db, actor: UserContext) -> uuid.UUID | None:
-    """The actor's application_user id, best-effort: an actor without an
-    application_user row (never the case for authenticated chat, possible in
-    tests) simply gets no durable workflow — state stays in-memory only."""
+async def _actor_user_id(db: AsyncSession, actor: UserContext) -> uuid.UUID | None:
+    """The actor's application_user id, best-effort."""
     try:
-        return IdentityService(db)._get_app_user(actor).user_id
+        user = await IdentityService(db)._get_app_user(actor)
+        return user.user_id
     except IdentityError:
         return None
 
@@ -215,7 +195,7 @@ async def _run_turn(
     if leave_service is not None:
         return await _handle(actor, chat_provider, leave_state, state, writer, leave_service)
 
-    with SessionLocal() as db:
+    async with async_session_factory() as db:
         return await _handle(actor, chat_provider, leave_state, state, writer, LeaveService(db))
 
 
@@ -227,23 +207,30 @@ async def _handle(
     writer: StreamWriter,
     service: LeaveService,
 ) -> dict:
-    result = await handle_turn(
-        actor=actor,
-        state=leave_state,
-        service=service,
-        chat_provider=chat_provider,
-        user_message=state["current_query"],
-    )
-    writer({"type": "message", "text": result.reply})
-    if result.ui_widget:
-        writer({"type": "ui_widget", "widget": result.ui_widget})
-    return {
-        "messages": [AIMessage(content=result.reply)],
-        "knowledge_result": None,
-        "answer": result.reply,
-        "citations": [],
-        "confidence": 0.0,
-        "agent": "leave",
-        "safety": "PASS",
-        "ui_widget": result.ui_widget,
-    }
+    async with trace_agent_turn(
+        "leave",
+        query=state["current_query"],
+        conversation_id=state.get("conversation_id"),
+        user_id=actor.subject if actor else None,
+    ) as span:
+        result = await handle_turn(
+            actor=actor,
+            state=leave_state,
+            service=service,
+            chat_provider=chat_provider,
+            user_message=state["current_query"],
+        )
+        writer({"type": "message", "text": result.reply})
+        if result.ui_widget:
+            writer({"type": "ui_widget", "widget": result.ui_widget})
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.reply)
+        return {
+            "messages": [AIMessage(content=result.reply)],
+            "knowledge_result": None,
+            "answer": result.reply,
+            "citations": [],
+            "confidence": 0.0,
+            "agent": "leave",
+            "safety": "PASS",
+            "ui_widget": result.ui_widget,
+        }

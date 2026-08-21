@@ -62,9 +62,8 @@ class Application(Base):
     candidate_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("candidate.candidate_id"))
     vacancy_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("vacancy.vacancy_id"))
     cv_object_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    # APPLIED | SHORTLISTED | REJECTED | WITHDRAWN — WITHDRAWN has no capability
-    # method yet (no withdraw endpoint this week); the column/state exists so
-    # the candidate-initiated withdraw flow can land later without a migration.
+    # APPLIED | SHORTLISTED | REJECTED | WITHDRAWN — candidates can withdraw
+    # active applications (APPLIED or SHORTLISTED) via the recruitment capability.
     application_status: Mapped[str] = mapped_column(String(30), default="APPLIED")
     withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

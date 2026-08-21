@@ -141,6 +141,7 @@ export interface ApplicationStatusView {
   vacancy_title: string | null;
   application_status: ApplicationStatus;
   applied_at: string;
+  withdrawn_at?: string | null;
 }
 
 /** Manager-facing view of an application, including its AI screening result. */
@@ -150,6 +151,7 @@ export interface Application {
   vacancy_title: string | null;
   application_status: ApplicationStatus;
   applied_at: string;
+  withdrawn_at?: string | null;
   evaluated: boolean;
   evaluation: Evaluation | null;
 }
@@ -466,6 +468,8 @@ export interface LeaveRequest {
   start_date: string;
   end_date: string;
   total_days: string;
+  is_half_day?: boolean;
+  half_day_period?: "MORNING" | "AFTERNOON" | null;
   reason: string | null;
   status: LeaveRequestStatus;
   submitted_at: string;
@@ -482,5 +486,83 @@ export interface LeaveRequestCreateBody {
   leave_type_id: string;
   start_date: string;
   end_date: string;
+  is_half_day?: boolean;
+  half_day_period?: "MORNING" | "AFTERNOON" | null;
   reason?: string | null;
 }
+
+export interface CompanyHoliday {
+  holiday_id: string;
+  name: string;
+  holiday_date: string;
+  description: string | null;
+  is_recurring_yearly: boolean;
+  created_at: string;
+}
+
+export interface CompanyHolidayCreateBody {
+  name: string;
+  holiday_date: string;
+  description?: string | null;
+  is_recurring_yearly?: boolean;
+}
+
+export interface WorkingDaysCalculation {
+  start_date: string;
+  end_date: string;
+  total_working_days: number | string;
+  calendar_days: number;
+  weekend_days: number;
+  holiday_days: number;
+  holidays_in_range: CompanyHoliday[];
+}
+
+export interface TeamMemberOutOfOffice {
+  leave_request_id: string;
+  employee_id: string;
+  employee_name: string;
+  department_id: string | null;
+  department_name: string | null;
+  leave_type_name: string;
+  start_date: string;
+  end_date: string;
+  total_days: string | number;
+  is_half_day: boolean;
+  half_day_period: string | null;
+  status: LeaveRequestStatus;
+}
+
+// ---- audit log viewer --------------------------------------------------
+
+export interface AuditLogEntry {
+  audit_id: string;
+  actor_user_id: string | null;
+  actor_name: string | null;
+  actor_email: string | null;
+  actor_role: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  authorization_result: string;
+  previous_state: Record<string, unknown> | null;
+  new_state: Record<string, unknown> | null;
+  request_id: string | null;
+  created_at: string;
+}
+
+export interface AuditLogsResponse {
+  items: AuditLogEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface AuditFilterOptions {
+  actions: string[];
+  target_types: string[];
+  total_count: number;
+  today_count: number;
+  unique_actors_count: number;
+}
+

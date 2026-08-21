@@ -24,6 +24,7 @@ from app.agents.recruitment_agent.tools import (
     list_vacancies_tool,
     vacancies_list_widget,
     vacancy_detail_widget,
+    withdraw_application_tool,
 )
 from app.capabilities.recruitment import RecruitmentService
 from app.contracts.auth import UserContext
@@ -36,6 +37,15 @@ _FALLBACK_UNAVAILABLE = "Sorry, I'm having trouble connecting right now — plea
 _DECISION_WORDS = ("approve", "reject", "shortlist", "decide", "interview")
 _APPLY_WORDS = ("apply", "submit resume", "submit cv", "upload resume", "upload cv", "interested in", "send resume")
 _STATUS_WORDS = ("status", "progress", "shortlisted", "update on my", "check my", "did i get", "have i been")
+_WITHDRAW_WORDS = (
+    "withdraw",
+    "withdrawing",
+    "retract",
+    "cancel my application",
+    "cancel application",
+    "drop my application",
+    "remove my application",
+)
 _VACANCY_WORDS = ("vacanc", "job", "jobs", "position", "positions", "open roles", "hiring", "careers", "recruit")
 
 
@@ -80,7 +90,7 @@ async def handle_turn(
     if actor is not None and actor.coarse_role == "HR_ADMIN":
         if any(word in lowered for word in _DECISION_WORDS):
             try:
-                apps = list_manager_applications_tool(service, actor)
+                apps = await list_manager_applications_tool(service, actor)
                 reply = (
                     "Hiring decisions are made in the manager portal. Here are the applications you can review:\n\n"
                     + format_my_applications_reply(apps)
@@ -94,10 +104,10 @@ async def handle_turn(
             return AgentTurnResult(reply=reply, ui_widget=widget)
 
         if "candidate" in lowered or "who applied" in lowered or "review application" in lowered:
-            matched_v = find_matched_vacancy(service, user_message)
+            matched_v = await find_matched_vacancy(service, user_message)
             v_title = matched_v.title if matched_v else None
             try:
-                apps = list_manager_applications_tool(service, actor, v_title)
+                apps = await list_manager_applications_tool(service, actor, v_title)
                 reply = (
                     f"Applications for **{v_title}**:\n\n" if v_title else "All applications for review:\n\n"
                 ) + (format_my_applications_reply(apps) if apps else "No applications found.")
@@ -109,10 +119,40 @@ async def handle_turn(
                 state.add_turn("agent", reply, clock=clock)
             return AgentTurnResult(reply=reply, ui_widget=widget)
 
-    # 2. Candidate / user application status check
+    # 2. Candidate withdraw application path
+    if any(word in lowered for word in _WITHDRAW_WORDS):
+        if actor is not None and actor.coarse_role != "CANDIDATE":
+            reply = "Only candidates can withdraw their applications."
+            if state is not None:
+                state.add_turn("agent", reply, clock=clock)
+            return AgentTurnResult(reply=reply)
+
+        matched_v = await find_matched_vacancy(service, user_message)
+        v_title = matched_v.title if matched_v else None
+        try:
+            app = await withdraw_application_tool(service, actor, vacancy_title=v_title)
+            role_name = app.vacancy.title if app.vacancy else "the position"
+            reply = (
+                f"Your application for **{role_name}** has been successfully withdrawn. "
+                "Thank you for your interest in Summit Technologies!"
+            )
+            apps = await list_my_applications_tool(service, actor)
+            widget = applications_list_widget(apps) if apps else None
+        except ToolError as err:
+            reply = str(err)
+            try:
+                apps = await list_my_applications_tool(service, actor)
+                widget = applications_list_widget(apps) if apps else None
+            except Exception:
+                widget = None
+        if state is not None:
+            state.add_turn("agent", reply, clock=clock)
+        return AgentTurnResult(reply=reply, ui_widget=widget)
+
+    # 3. Candidate / user application status check
     if _is_status_query(lowered, actor):
         try:
-            apps = list_my_applications_tool(service, actor)
+            apps = await list_my_applications_tool(service, actor)
             reply = format_my_applications_reply(apps)
             widget = applications_list_widget(apps) if apps else None
         except ToolError as err:
@@ -122,10 +162,10 @@ async def handle_turn(
             state.add_turn("agent", reply, clock=clock)
         return AgentTurnResult(reply=reply, ui_widget=widget)
 
-    # 3. Apply for vacancies path
+    # 4. Apply for vacancies path
     if any(word in lowered for word in _APPLY_WORDS):
-        matched_v = find_matched_vacancy(service, user_message)
-        all_open = list_vacancies_tool(service, actor)
+        matched_v = await find_matched_vacancy(service, user_message)
+        all_open = await list_vacancies_tool(service, actor)
         if matched_v is not None:
             reply = format_apply_reply(matched_v, all_open)
             widget = apply_vacancy_widget(matched_v)
@@ -136,8 +176,8 @@ async def handle_turn(
             state.add_turn("agent", reply, clock=clock)
         return AgentTurnResult(reply=reply, ui_widget=widget)
 
-    # 4. Specific Vacancy Detail
-    matched_v = find_matched_vacancy(service, user_message)
+    # 5. Specific Vacancy Detail
+    matched_v = await find_matched_vacancy(service, user_message)
     if matched_v is not None:
         reply = format_vacancy_detail_reply(matched_v)
         widget = apply_vacancy_widget(matched_v)
@@ -145,16 +185,16 @@ async def handle_turn(
             state.add_turn("agent", reply, clock=clock)
         return AgentTurnResult(reply=reply, ui_widget=widget)
 
-    # 5. List open vacancies
+    # 6. List open vacancies
     if any(word in lowered for word in _VACANCY_WORDS):
-        vacancies = list_vacancies_tool(service, actor)
+        vacancies = await list_vacancies_tool(service, actor)
         reply = format_vacancies_reply(vacancies)
         widget = vacancies_list_widget(vacancies) if vacancies else None
         if state is not None:
             state.add_turn("agent", reply, clock=clock)
         return AgentTurnResult(reply=reply, ui_widget=widget)
 
-    # 6. LLM dispatch fallback if chat_provider is configured
+    # 7. LLM dispatch fallback if chat_provider is configured
     if chat_provider is not None:
         try:
             system_prompt = prompts.build_system_prompt()
@@ -179,13 +219,13 @@ async def handle_turn(
                     tool = raw.get("tool")
                     args = raw.get("args", {})
                     if tool == "list_vacancies":
-                        vacancies = list_vacancies_tool(service, actor)
+                        vacancies = await list_vacancies_tool(service, actor)
                         reply = format_vacancies_reply(vacancies)
                         widget = vacancies_list_widget(vacancies) if vacancies else None
                         return AgentTurnResult(reply=reply, tool_called=tool, raw_model_action=raw, ui_widget=widget)
                     if tool == "get_vacancy_detail":
                         title = args.get("title", "")
-                        v = get_vacancy_detail_tool(service, actor, title)
+                        v = await get_vacancy_detail_tool(service, actor, title)
                         if v:
                             reply = format_vacancy_detail_reply(v)
                             widget = apply_vacancy_widget(v)
@@ -195,8 +235,26 @@ async def handle_turn(
                         return AgentTurnResult(reply=reply, tool_called=tool, raw_model_action=raw, ui_widget=widget)
                     if tool == "list_my_applications":
                         try:
-                            apps = list_my_applications_tool(service, actor)
+                            apps = await list_my_applications_tool(service, actor)
                             reply = format_my_applications_reply(apps)
+                            widget = applications_list_widget(apps) if apps else None
+                        except ToolError as err:
+                            reply = str(err)
+                            widget = None
+                        return AgentTurnResult(reply=reply, tool_called=tool, raw_model_action=raw, ui_widget=widget)
+                    if tool == "withdraw_application":
+                        v_title = args.get("vacancy_title")
+                        app_id = args.get("application_id")
+                        try:
+                            app = await withdraw_application_tool(
+                                service, actor, vacancy_title=v_title, application_id=app_id
+                            )
+                            role_name = app.vacancy.title if app.vacancy else "the position"
+                            reply = (
+                                f"Your application for **{role_name}** has been successfully withdrawn. "
+                                "Thank you for your interest in Summit Technologies!"
+                            )
+                            apps = await list_my_applications_tool(service, actor)
                             widget = applications_list_widget(apps) if apps else None
                         except ToolError as err:
                             reply = str(err)
@@ -205,8 +263,8 @@ async def handle_turn(
         except ChatProviderError:
             logger.exception("Recruitment Agent: chat provider call failed")
 
-    # 7. Default help reply
-    vacancies = list_vacancies_tool(service, actor)
+    # 8. Default help reply
+    vacancies = await list_vacancies_tool(service, actor)
     reply = format_help_reply(vacancies)
     widget = vacancies_list_widget(vacancies) if vacancies else None
     if state is not None:

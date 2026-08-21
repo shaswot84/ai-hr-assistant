@@ -6,7 +6,8 @@ from typing import Any
 import jwt
 from fastapi import Request
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.auth.passwords import verify_password
 from app.auth.provider import AuthProvider
@@ -16,18 +17,12 @@ from app.domain.identity import ApplicationUser, Person
 
 
 class JwtAuthProvider(AuthProvider):
-    """Self-issued JWT authentication — the single runtime identity source.
-
-    The backend signs short-lived HS256 access tokens after the user supplies
-    email + password (checked against `application_user.password_hash`). There
-    is no external IdP: every request's token is verified with the local secret,
-    and the coarse role is read **from the database** so it is always authoritative.
-    """
+    """Self-issued JWT authentication — the single runtime identity source."""
 
     name = "jwt"
 
-    def __init__(self, db: Session | None = None) -> None:
-        """Load settings and optionally bind a DB session."""
+    def __init__(self, db: AsyncSession | None = None) -> None:
+        """Load settings and optionally bind an async DB session."""
         self._settings = get_settings()
         self._db = db
         if not self._settings.jwt.secret_key:
@@ -36,12 +31,7 @@ class JwtAuthProvider(AuthProvider):
     # -- helpers ------------------------------------------------------
 
     def _encode(self, subject: str) -> str:
-        """Sign a short-lived access token for the given auth subject.
-
-        Uses real wall-clock time deliberately (not the injected Clock):
-        token expiry is a security boundary, not a business scheduling
-        concern, so it must never be affected by a future simulation clock.
-        """
+        """Sign a short-lived access token for the given auth subject."""
         now = datetime.now(UTC)
         payload = {
             "sub": subject,
@@ -72,51 +62,48 @@ class JwtAuthProvider(AuthProvider):
             coarse_role=app_user.coarse_role,
         )
 
-    def _find_by_subject(self, subject: str) -> ApplicationUser | None:
+    async def _find_by_subject(self, subject: str) -> ApplicationUser | None:
         """Look up an ApplicationUser by (identity_provider="local", external_subject)."""
         if self._db is None:
             return None
-        stmt = select(ApplicationUser).where(
-            ApplicationUser.identity_provider == "local",
-            ApplicationUser.external_subject == subject,
+        stmt = (
+            select(ApplicationUser)
+            .options(selectinload(ApplicationUser.person))
+            .where(
+                ApplicationUser.identity_provider == "local",
+                ApplicationUser.external_subject == subject,
+            )
         )
-        return self._db.scalar(stmt)
+        return await self._db.scalar(stmt)
 
     def create_access_token(self, subject: str) -> str:
         """Issue a signed access token for a subject (used by the login route)."""
         return self._encode(subject)
 
-    def login(self, email: str, password: str) -> tuple[str, UserContext, ApplicationUser] | None:
-        """Verify credentials and return (access_token, UserContext, ApplicationUser), or None.
-
-        Returns None for both unknown email and wrong password so the route can
-        answer with a single generic 401. The ApplicationUser row is returned
-        alongside the token so the caller (the login route) can write an audit
-        entry against ``user_id`` without an extra lookup.
-        """
-        app_user = self.verify_credentials(email, password)
+    async def login(self, email: str, password: str) -> tuple[str, UserContext, ApplicationUser] | None:
+        """Verify credentials and return (access_token, UserContext, ApplicationUser), or None."""
+        app_user = await self.verify_credentials(email, password)
         if app_user is None:
             return None
         return self.create_access_token(app_user.external_subject), self._to_context(app_user), app_user
 
-    def verify_credentials(self, email: str, password: str) -> ApplicationUser | None:
-        """Return the ApplicationUser whose email+password match, else None.
-
-        Always returns None on failure (never raises) so the route can return a
-        generic 401 without revealing whether the email or the password was wrong.
-        """
+    async def verify_credentials(self, email: str, password: str) -> ApplicationUser | None:
+        """Return the ApplicationUser whose email+password match, else None."""
         if self._db is None:
             return None
         normalized = email.strip().lower()
-        person = self._db.scalar(select(Person).where(Person.email == normalized))
+        person = await self._db.scalar(select(Person).where(Person.email == normalized))
         if person is None:
             return None
-        app_user = self._db.scalar(
-            select(ApplicationUser).where(
+        stmt = (
+            select(ApplicationUser)
+            .options(selectinload(ApplicationUser.person))
+            .where(
                 ApplicationUser.identity_provider == "local",
                 ApplicationUser.person_id == person.person_id,
             )
         )
+        app_user = await self._db.scalar(stmt)
         if app_user is None or not app_user.password_hash or app_user.status != "ACTIVE":
             return None
         if not verify_password(password, app_user.password_hash):
@@ -125,12 +112,8 @@ class JwtAuthProvider(AuthProvider):
 
     # -- AuthProvider interface ---------------------------------------
 
-    def authenticate(self, request: Any) -> UserContext | None:
-        """Validate the Bearer token and build a trusted UserContext from the DB row.
-
-        Role is read from `application_user` on every request (authoritative DB
-        state), so a user's coarse role cannot drift from what the app stores.
-        """
+    async def authenticate(self, request: Any) -> UserContext | None:
+        """Validate the Bearer token and build a trusted UserContext from the DB row."""
         req: Request = request
         auth = req.headers.get("authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else None
@@ -138,12 +121,12 @@ class JwtAuthProvider(AuthProvider):
             return None
         try:
             payload = self._decode(token)
-        except Exception:  # noqa: BLE001 - any validation/expiry failure means unauthenticated
+        except Exception:  # noqa: BLE001
             return None
         subject = payload.get("sub")
         if not subject:
             return None
-        app_user = self._find_by_subject(subject)
+        app_user = await self._find_by_subject(subject)
         if app_user is None or app_user.status != "ACTIVE":
             return None
         return self._to_context(app_user)
@@ -159,3 +142,4 @@ class JwtAuthProvider(AuthProvider):
     def build_logout_url(self, redirect_uri: str) -> str | None:
         """JWT is stateless; the client drops the token (no IdP logout)."""
         return None
+

@@ -32,8 +32,8 @@ def _state(actor) -> LeaveAgentState:
     )
 
 
-def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(20)):
-    return svc.create_leave_type(
+async def _create_leave_type(svc, actor, *, name="Annual Leave", default_days=Decimal(20)):
+    return await svc.create_leave_type(
         actor,
         leave_name=name,
         description="Planned time off.",
@@ -101,7 +101,7 @@ async def test_id_like_annual_leave_on_friday_is_deterministic(
     """'i'd like annual leave on friday' starts the deterministic draft flow
     (day resolved by code, model never called)."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
 
@@ -124,7 +124,7 @@ async def test_my_pto_is_deterministic_balance(db, manager_context, employee_con
     """'show my pto' answers the real balance without the model — a phrase
     that previously escaped the balance word list."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context, name="PTO", default_days=Decimal(10))
+    await _create_leave_type(svc, manager_context, name="PTO", default_days=Decimal(10))
     state = _state(employee_context)
     provider = FakeChatProvider({"reply": "ignored", "action": "reply", "tool": None, "args": {}})
 
@@ -147,7 +147,7 @@ async def test_my_pto_is_deterministic_balance(db, manager_context, employee_con
 async def test_on_second_thought_drops_draft(db, manager_context, employee_context):
     """Mid-draft 'on second thought' clears the draft deterministically."""
     svc = LeaveService(db)
-    _create_leave_type(svc, manager_context)
+    await _create_leave_type(svc, manager_context)
     state = _state(employee_context)
     state.draft = DraftRequest(
         leave_type_name="Annual Leave",

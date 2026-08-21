@@ -75,10 +75,8 @@ services:
     env_file:
       - .env
     environment:
-      # asyncpg driver: this is the single DATABASE_URL both the async
-      # Knowledge Service engine (db/session.py) and Alembic use directly;
-      # the sync recruitment/auth engine (db/sync_session.py) derives its
-      # own +psycopg2 URL from this one at import time.
+      # asyncpg driver: unified async SQLAlchemy database engine (db/session.py)
+      # used across all capabilities, repositories, services, agents, and Alembic.
       DATABASE_URL: postgresql+asyncpg://hr:${POSTGRES_PASSWORD:-hr}@postgres:5432/hr_assistant
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
@@ -106,8 +104,13 @@ services:
       RETRIEVAL_TOP_K: "15"
       RETRIEVAL_RERANK_TOP_N: "5"
       RETRIEVAL_CONFIDENCE_THRESHOLD: "0.4"
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_SERVICE_NAME: ai-hr-assistant-backend
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://phoenix:6006/v1/traces
+      OTEL_PROJECT_NAME: ${OTEL_PROJECT_NAME:-ai-hr-assistant}
     volumes:
       - ./backend/src:/app/src
+      - ./backend/alembic:/app/alembic
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface
       # Manager-editable settings (LLM route/model/key, resume-review prompt)
       # are read AND written directly from this file — read-write only here,
@@ -124,6 +127,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      phoenix:
+        condition: service_started
 
   # Ingestion pipeline worker (Knowledge Service): claims ingestion_job rows
   # and runs validate -> parse -> normalize -> chunk -> embed -> persist.
@@ -141,6 +146,10 @@ services:
       MINIO_SECURE: "false"
       OLLAMA_URL: http://host.docker.internal:11434
       INGESTION_POLL_INTERVAL_SECONDS: "5"
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_SERVICE_NAME: ai-hr-assistant-worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://phoenix:6006/v1/traces
+      OTEL_PROJECT_NAME: ${OTEL_PROJECT_NAME:-ai-hr-assistant}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -148,6 +157,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      phoenix:
+        condition: service_started
 
   # Recruitment/auth outbox worker (AI resume scoring + notification emails).
   # Separate service/name from `worker` above since they run different loops
@@ -167,6 +178,10 @@ services:
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       AUTH_PROVIDER: jwt
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_SERVICE_NAME: ai-hr-assistant-recruitment-worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://phoenix:6006/v1/traces
+      OTEL_PROJECT_NAME: ${OTEL_PROJECT_NAME:-ai-hr-assistant}
     volumes:
       - ./backend/src:/app/src
       # Read-only: this worker reads the manager-editable LLM/prompt
@@ -177,6 +192,23 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      phoenix:
+        condition: service_started
+
+  # Arize Phoenix: AI observability for multi-agent workflows, RAG pipelines, and LLM evaluations.
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "${PHOENIX_HOST_PORT:-6006}:6006"   # Phoenix UI & OTLP HTTP collector (/v1/traces)
+      - "${PHOENIX_GRPC_PORT:-4317}:4317"   # OTLP gRPC collector
+    environment:
+      PHOENIX_PORT: 6006
+      PHOENIX_HOST: 0.0.0.0
+      PHOENIX_GRPC_PORT: 4317
+      PHOENIX_WORKING_DIR: /data
+    volumes:
+      - phoenixdata:/data
+    restart: unless-stopped
 
   frontend:
     build: ./frontend
@@ -205,3 +237,4 @@ volumes:
   miniodata:
   frontend_node_modules:
   ollamadata:
+  phoenixdata:

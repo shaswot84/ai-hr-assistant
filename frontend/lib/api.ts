@@ -2,6 +2,11 @@ import type {
   Application,
   ApplicationDetail,
   ApplicationStatusView,
+  AuditFilterOptions,
+  AuditLogEntry,
+  AuditLogsResponse,
+  CompanyHoliday,
+  CompanyHolidayCreateBody,
   Department,
   Designation,
   Employee,
@@ -25,8 +30,10 @@ import type {
   LeaveTypeCreateBody,
   LlmConfig,
   ScoringKeyword,
+  TeamMemberOutOfOffice,
   UserContext,
   Vacancy,
+  WorkingDaysCalculation,
   ChatCitation,
   ChatConversation,
   ChatMessage,
@@ -164,6 +171,11 @@ export const api = {
 
   myApplication: (applicationId: string) =>
     request<ApplicationStatusView>(`/api/applications/mine/${applicationId}`),
+
+  withdrawApplication: (applicationId: string) =>
+    request<ApplicationStatusView>(`/api/applications/mine/${applicationId}/withdraw`, {
+      method: "POST",
+    }),
 
   apply: (vacancyId: string, file: File) => {
     const formData = new FormData();
@@ -344,6 +356,44 @@ export const api = {
       body: JSON.stringify({ action }),
     }),
 
+  listCompanyHolidays: (year?: number) =>
+    request<CompanyHoliday[]>(`/api/leave/holidays${year ? `?year=${year}` : ""}`),
+
+  createCompanyHoliday: (body: CompanyHolidayCreateBody) =>
+    request<CompanyHoliday>("/api/leave/holidays", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  deleteCompanyHoliday: (holidayId: string) =>
+    request<{ success: boolean }>(`/api/leave/holidays/${holidayId}`, {
+      method: "DELETE",
+    }),
+
+  calculateWorkingDays: (body: {
+    start_date: string;
+    end_date: string;
+    is_half_day?: boolean;
+    half_day_period?: string | null;
+  }) =>
+    request<WorkingDaysCalculation>("/api/leave/calculate-days", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  teamOutOfOffice: (params?: {
+    department_id?: string;
+    start_date?: string;
+    end_date?: string;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.department_id) q.set("department_id", params.department_id);
+    if (params?.start_date) q.set("start_date", params.start_date);
+    if (params?.end_date) q.set("end_date", params.end_date);
+    const qs = q.toString();
+    return request<TeamMemberOutOfOffice[]>(`/api/leave/team-out-of-office${qs ? `?${qs}` : ""}`);
+  },
+
   // ---- chat (assistant) ----------------------------------------------
 
   chat: (message: string, conversationId?: string) =>
@@ -376,6 +426,39 @@ export const api = {
     request<void>(`/api/chat/conversations/${conversationId}`, {
       method: "DELETE",
     }),
+
+  // ---- audit log viewer ----------------------------------------------
+
+  listAuditLogs: (params?: {
+    page?: number;
+    page_size?: number;
+    action?: string;
+    target_type?: string;
+    actor_user_id?: string;
+    target_id?: string;
+    authorization_result?: string;
+    search?: string;
+    start_date?: string;
+    end_date?: string;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.page) q.set("page", String(params.page));
+    if (params?.page_size) q.set("page_size", String(params.page_size));
+    if (params?.action) q.set("action", params.action);
+    if (params?.target_type) q.set("target_type", params.target_type);
+    if (params?.actor_user_id) q.set("actor_user_id", params.actor_user_id);
+    if (params?.target_id) q.set("target_id", params.target_id);
+    if (params?.authorization_result) q.set("authorization_result", params.authorization_result);
+    if (params?.search) q.set("search", params.search);
+    if (params?.start_date) q.set("start_date", params.start_date);
+    if (params?.end_date) q.set("end_date", params.end_date);
+    const qs = q.toString();
+    return request<AuditLogsResponse>(`/api/audit/logs${qs ? `?${qs}` : ""}`);
+  },
+
+  getAuditLog: (auditId: string) => request<AuditLogEntry>(`/api/audit/logs/${auditId}`),
+
+  getAuditFilterOptions: () => request<AuditFilterOptions>("/api/audit/filters"),
 };
 
 /** One SSE event emitted by `GET /api/knowledge/search/stream`. */

@@ -16,12 +16,10 @@ ENV VIRTUAL_ENV=/app/.venv \
     PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH=/app/src
 
-# Optional cross-encoder reranker extra (sentence-transformers + torch,
-# ~2.5GB) — installed separately from the locked base deps so uv.lock
-# doesn't need to pin the full torch dependency tree. Install into the
-# uv-managed venv explicitly: that venv has no pip of its own, and a bare
-# `pip install` would target the system interpreter instead.
-RUN uv pip install --python /app/.venv/bin/python --no-cache '.[reranker]'
+# Optional cross-encoder reranker extra (sentence-transformers + torch, ~2.5GB).
+# Disabled/skipped by default to keep image size small and builds fast.
+# To enable: uncomment the line below and set RERANKER_ENABLED=true in compose/env.
+# RUN uv pip install --python /app/.venv/bin/python --no-cache '.[reranker]'
 
 EXPOSE 8000
 

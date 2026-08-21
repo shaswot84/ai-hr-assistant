@@ -344,26 +344,26 @@ class _FakeLeaveType:
 class _FakeRecruitmentService:
     """An empty RecruitmentService stub — enough for the apply deferral path."""
 
-    def list_vacancies(self, actor=None):
+    async def list_vacancies(self, actor=None):
         return []
 
-    def list_all_applications(self, actor):
+    async def list_all_applications(self, actor):
         return []
 
-    def list_vacancy_applications(self, actor, vacancy_id):
+    async def list_vacancy_applications(self, actor, vacancy_id):
         return []
 
-    def list_my_applications(self, actor):
+    async def list_my_applications(self, actor):
         return []
 
 
 class _FakeLeaveService:
     """A LeaveService stub for the knowledge node's balance enrichment."""
 
-    def list_leave_types(self):
+    async def list_leave_types(self):
         return [_FakeLeaveType("Sick Leave")]
 
-    def list_my_balance(self, actor, year=None):
+    async def list_my_balance(self, actor, year=None):
         return [
             {
                 "leave_type": _FakeLeaveType("Sick Leave"),
@@ -373,6 +373,7 @@ class _FakeLeaveService:
                 "remaining_days": "4.5",
             }
         ]
+
 
 
 @pytest.mark.asyncio
@@ -449,3 +450,41 @@ async def test_unwired_leave_node_stays_stub():
     assert "Leave" in state["answer"]
     assert "chat" in state["answer"]
     assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_subagent_unhandled_fallback_routes_to_clarify():
+    """When a subagent sets can_handle=False and a clarification_hint, supervisor routes to clarify."""
+    from langgraph.graph import StateGraph, START, END
+    from app.agents.supervisor.graph import _select_route, _subagent_fallback_router, ROUTE_TO_NODE, make_route_node
+    from app.agents.supervisor.clarify import make_clarify_node
+    from app.agents.supervisor.state import SupervisorState
+
+    async def failing_knowledge_node(state, writer):
+        return {
+            "can_handle": False,
+            "clarification_hint": "I searched policy docs but could not find information about your query.",
+        }
+
+    async def dummy_node(state, writer):
+        return {}
+
+    builder = StateGraph(SupervisorState)
+    builder.add_node("route", make_route_node(FakeLLM("knowledge")))
+    builder.add_node("knowledge", failing_knowledge_node)
+    builder.add_node("leave", dummy_node)
+    builder.add_node("recruitment", dummy_node)
+    builder.add_node("clarify", make_clarify_node())
+    builder.add_node("recap", dummy_node)
+    builder.add_edge(START, "route")
+    builder.add_conditional_edges("route", _select_route, ROUTE_TO_NODE)
+    builder.add_conditional_edges("knowledge", _subagent_fallback_router, {"clarify": "clarify", END: END})
+    for node in ("leave", "recruitment", "clarify", "recap"):
+        builder.add_edge(node, END)
+    graph = builder.compile()
+
+    state = await graph.ainvoke({"messages": [], "current_query": "unhandled question"})
+
+    assert state["agent"] == "clarify"
+    assert "I searched policy docs but could not find information about your query." in state["answer"]
+    assert "Could you please clarify" in state["answer"]
