@@ -33,16 +33,19 @@ from __future__ import annotations
 
 import inspect
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 
+from openinference.semconv.trace import SpanAttributes
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.capabilities.leave import LeaveService, PermissionError_
 from app.contracts.auth import UserContext
 from app.domain.leave import LeaveRequest, LeaveType
+from app.observability import trace_tool_call
 from app.services.identity import IdentityError
 
 
@@ -95,14 +98,18 @@ def _require_hr_access(actor: UserContext) -> None:
 
 
 async def _call_service(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Call a LeaveService method with uniform exception translation."""
-    try:
-        res = fn(*args, **kwargs)
-        if inspect.isawaitable(res):
-            return await res
-        return res
-    except (IdentityError, PermissionError_, ValueError) as err:
-        raise ToolError(str(err)) from err
+    """Call a LeaveService method with uniform exception translation and tracing."""
+    tool_name = getattr(fn, "__name__", "leave_tool")
+    async with trace_tool_call(tool_name, parameters=kwargs) as span:
+        try:
+            res = fn(*args, **kwargs)
+            if inspect.isawaitable(res):
+                res = await res
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, str(res)[:1000])
+            return res
+        except (IdentityError, PermissionError_, ValueError) as err:
+            span.set_attribute("tool.error", str(err))
+            raise ToolError(str(err)) from err
 
 
 # ---- per-tool argument schemas ---------------------------------------------
@@ -282,7 +289,7 @@ async def _serialize_request(
                 if person is not None:
                     data["employee_name"] = f"{person.first_name} {person.last_name}".strip()
                     data["employee_email"] = person.email
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
     return data
 
@@ -334,7 +341,7 @@ async def preflight_submit(
     except ValueError as err:
         raise ToolError(str(err)) from err
 
-    if total_days <= Decimal("0"):
+    if total_days <= Decimal(0):
         if holidays_in_range:
             h_details = [
                 f"'{h.name}' ({'annual recurring holiday' if h.is_recurring_yearly else 'custom company holiday created by the company'})"

@@ -104,6 +104,10 @@ services:
       RETRIEVAL_TOP_K: "15"
       RETRIEVAL_RERANK_TOP_N: "5"
       RETRIEVAL_CONFIDENCE_THRESHOLD: "0.4"
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-ai-hr-assistant-backend}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:6006/v1/traces}
+      OTEL_PROJECT_NAME: ${OTEL_PROJECT_NAME:-ai-hr-assistant}
     volumes:
       - ./backend/src:/app/src
       - ./backend/alembic:/app/alembic
@@ -140,6 +144,10 @@ services:
       MINIO_SECURE: "false"
       OLLAMA_URL: http://host.docker.internal:11434
       INGESTION_POLL_INTERVAL_SECONDS: "5"
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-ai-hr-assistant-worker}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:6006/v1/traces}
+      OTEL_PROJECT_NAME: ${OTEL_PROJECT_NAME:-ai-hr-assistant}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -166,6 +174,10 @@ services:
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       AUTH_PROVIDER: jwt
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-ai-hr-assistant-recruitment-worker}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:6006/v1/traces}
+      OTEL_PROJECT_NAME: ${OTEL_PROJECT_NAME:-ai-hr-assistant}
     volumes:
       - ./backend/src:/app/src
       # Read-only: this worker reads the manager-editable LLM/prompt
@@ -176,6 +188,21 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+
+  # Arize Phoenix: AI observability for multi-agent workflows, RAG pipelines, and LLM evaluations.
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "${PHOENIX_HOST_PORT:-6006}:6006"   # Phoenix UI & OTLP HTTP collector (/v1/traces)
+      - "${PHOENIX_GRPC_PORT:-4317}:4317"   # OTLP gRPC collector
+    environment:
+      PHOENIX_PORT: 6006
+      PHOENIX_HOST: 0.0.0.0
+      PHOENIX_GRPC_PORT: 4317
+      PHOENIX_WORKING_DIR: /data
+    volumes:
+      - phoenixdata:/data
+    restart: unless-stopped
 
   frontend:
     build: ./frontend
@@ -204,3 +231,4 @@ volumes:
   miniodata:
   frontend_node_modules:
   ollamadata:
+  phoenixdata:

@@ -211,6 +211,20 @@ class RedisSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="REDIS_", extra="ignore")
 
 
+class ObservabilitySettings(BaseSettings):
+    """OpenTelemetry, OpenInference, and Arize Phoenix tracing configuration."""
+
+    enabled: bool = True
+    service_name: str = "ai-hr-assistant"
+    exporter_otlp_endpoint: str = "http://localhost:6006/v1/traces"
+    project_name: str = "ai-hr-assistant"
+    instrument_fastapi: bool = True
+    instrument_langchain: bool = True
+    capture_input_output: bool = True
+
+    model_config = SettingsConfigDict(env_prefix="OTEL_", extra="ignore")
+
+
 class AppSettings(BaseSettings):
     """Top-level settings: aggregates all groups and global flags."""
 
@@ -232,6 +246,7 @@ class AppSettings(BaseSettings):
     ingestion: IngestionSettings = IngestionSettings()
     output_safety: OutputSafetySettings = OutputSafetySettings()
     cors: CorsSettings = CorsSettings()
+    observability: ObservabilitySettings = ObservabilitySettings()
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

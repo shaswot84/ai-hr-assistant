@@ -14,10 +14,12 @@ from __future__ import annotations
 import re
 
 from langchain_core.messages import BaseMessage
+from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 
 from app.agents.context import history_text
 from app.agents.supervisor.prompts import ROUTING_SYSTEM
 from app.model_gateway.interfaces import LLM
+from app.observability import async_trace_span
 
 ROUTES = ("knowledge", "leave", "recruitment", "clarify")
 
@@ -252,35 +254,51 @@ async def route_intent(llm: LLM | None, query: str, history: list[BaseMessage]) 
     Falls back to :func:`heuristic_route` when the LLM is unavailable or its
     reply cannot be parsed — routing must never raise.
     """
-    if llm is None:
-        return heuristic_route(query)
-    user = (
-        f"CONVERSATION HISTORY:\n{history_text(history)}\n\n"
-        f"CURRENT USER MESSAGE: {query}\nROUTE:"
-    )
-    try:
-        raw = await llm.complete(ROUTING_SYSTEM, user)
-    except Exception:  # noqa: BLE001 - routing never fails because of the LLM
-        return heuristic_route(query)
-    route = _parse_route(raw) or heuristic_route(query)
-    lowered = query.lower()
-    # Forward deterministic override: a clearly knowledge-framed leave question
-    # (policy / definition wording) reaches the knowledge agent even when the
-    # model misclassifies it as leave, so the LLM path and the heuristic
-    # fallback agree on the boundary.
-    if route == "leave" and (
-        _is_knowledge_policy_question(lowered)
-        or _is_knowledge_definition_question(lowered)
-    ):
-        return "knowledge"
-    # Reverse deterministic override: a clearly TRANSACTIONAL leave ask ("show
-    # my leave requests", "which leave types can i request") reaches the leave
-    # agent even when the model misclassifies it as knowledge — policy wording
-    # keeps such questions on the knowledge agent.
-    if (
-        route == "knowledge"
-        and not _is_knowledge_policy_question(lowered)
-        and _is_transactional_leave_ask(lowered)
-    ):
-        return "leave"
-    return route
+    async with async_trace_span(
+        "supervisor.route_intent",
+        span_kind=OpenInferenceSpanKindValues.CHAIN,
+        attributes={
+            SpanAttributes.INPUT_VALUE: query,
+            "agent.llm_enabled": llm is not None,
+        },
+    ) as span:
+        if llm is None:
+            route = heuristic_route(query)
+            span.set_attribute("agent.route", route)
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, route)
+            return route
+        user = (
+            f"CONVERSATION HISTORY:\n{history_text(history)}\n\n"
+            f"CURRENT USER MESSAGE: {query}\nROUTE:"
+        )
+        try:
+            raw = await llm.complete(ROUTING_SYSTEM, user)
+        except Exception:  # noqa: BLE001 - routing never fails because of the LLM
+            route = heuristic_route(query)
+            span.set_attribute("agent.route", route)
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, route)
+            return route
+        route = _parse_route(raw) or heuristic_route(query)
+        lowered = query.lower()
+        # Forward deterministic override: a clearly knowledge-framed leave question
+        # (policy / definition wording) reaches the knowledge agent even when the
+        # model misclassifies it as leave, so the LLM path and the heuristic
+        # fallback agree on the boundary.
+        if route == "leave" and (
+            _is_knowledge_policy_question(lowered)
+            or _is_knowledge_definition_question(lowered)
+        ):
+            route = "knowledge"
+        # Reverse deterministic override: a clearly TRANSACTIONAL leave ask ("show
+        # my leave requests", "which leave types can i request") reaches the leave
+        # agent even when the model misclassifies it as knowledge — policy wording
+        # keeps such questions on the knowledge agent.
+        elif (
+            route == "knowledge"
+            and not _is_knowledge_policy_question(lowered)
+            and _is_transactional_leave_ask(lowered)
+        ):
+            route = "leave"
+        span.set_attribute("agent.route", route)
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, route)
+        return route

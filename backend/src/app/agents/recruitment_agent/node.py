@@ -12,12 +12,14 @@ from typing import TYPE_CHECKING
 
 from langchain_core.messages import AIMessage
 from langgraph.types import StreamWriter
+from openinference.semconv.trace import SpanAttributes
 
 from app.agents.recruitment_agent.agent import handle_turn
 from app.capabilities.recruitment import RecruitmentService
 from app.contracts.auth import UserContext
 from app.db.session import async_session_factory
 from app.model_gateway.provider import ChatProvider
+from app.observability import trace_agent_turn
 
 if TYPE_CHECKING:
     from app.agents.supervisor.state import SupervisorState
@@ -33,38 +35,45 @@ def make_recruitment_node(
 
     async def recruitment_node(state: SupervisorState, writer: StreamWriter) -> dict:
         query = state.get("current_query", "")
-        if service is not None:
-            result = await handle_turn(
-                actor=actor,
-                state=None,
-                service=service,
-                chat_provider=chat_provider,
-                user_message=query,
-            )
-        else:
-            async with async_session_factory() as db:
+        async with trace_agent_turn(
+            "recruitment",
+            query=query,
+            conversation_id=state.get("conversation_id"),
+            user_id=actor.subject if actor else None,
+        ) as span:
+            if service is not None:
                 result = await handle_turn(
                     actor=actor,
                     state=None,
-                    service=RecruitmentService(db),
+                    service=service,
                     chat_provider=chat_provider,
                     user_message=query,
                 )
+            else:
+                async with async_session_factory() as db:
+                    result = await handle_turn(
+                        actor=actor,
+                        state=None,
+                        service=RecruitmentService(db),
+                        chat_provider=chat_provider,
+                        user_message=query,
+                    )
 
-        writer({"type": "message", "text": result.reply})
-        if result.ui_widget:
-            writer({"type": "ui_widget", "widget": result.ui_widget})
+            writer({"type": "message", "text": result.reply})
+            if result.ui_widget:
+                writer({"type": "ui_widget", "widget": result.ui_widget})
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.reply)
 
-        return {
-            "messages": [AIMessage(content=result.reply)],
-            "knowledge_result": None,
-            "answer": result.reply,
-            "citations": [],
-            "confidence": 0.0,
-            "agent": "recruitment",
-            "safety": "PASS",
-            "ui_widget": result.ui_widget,
-        }
+            return {
+                "messages": [AIMessage(content=result.reply)],
+                "knowledge_result": None,
+                "answer": result.reply,
+                "citations": [],
+                "confidence": 0.0,
+                "agent": "recruitment",
+                "safety": "PASS",
+                "ui_widget": result.ui_widget,
+            }
 
     return recruitment_node
 

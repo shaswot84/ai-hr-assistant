@@ -5,9 +5,11 @@ import re
 from typing import Any
 
 import httpx
+from openinference.semconv.trace import SpanAttributes
 
 from app.config.settings import get_settings
 from app.model_gateway.provider import ChatProvider, ChatProviderError
+from app.observability import trace_llm_call
 
 
 class OllamaChatProvider(ChatProvider):
@@ -68,38 +70,46 @@ class OllamaChatProvider(ChatProvider):
         """
         if not self.is_configured():
             raise ChatProviderError("Ollama API key is not configured.")
-        url = f"{self._base}/v1/chat/completions"
-        payload = {
-            "model": self._model,
-            "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_format": {"type": "json_object"},
-        }
-        headers = {"Authorization": f"Bearer {self._api_key}"}
-        try:
-            async with self._client or httpx.AsyncClient(timeout=self._timeout) as client:
-                res = await client.post(url, json=payload, headers=headers)
-        except httpx.TimeoutException as err:
-            raise ChatProviderError("The AI scoring request timed out.") from err
-        except httpx.HTTPError as err:
-            raise ChatProviderError(f"Could not reach Ollama API: {err}") from err
 
-        if res.status_code >= 400:
-            raise ChatProviderError(
-                f"Ollama API error ({res.status_code}): {res.text[:300]}"
-            )
-        content = (res.json().get("choices") or [{}])[0].get("message", {}).get("content")
-        if not content:
-            raise ChatProviderError("Ollama API returned an empty response.")
+        async with trace_llm_call(
+            self._model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            invocation_parameters={"temperature": temperature, "response_format": "json_object"},
+        ) as span:
+            url = f"{self._base}/v1/chat/completions"
+            payload = {
+                "model": self._model,
+                "temperature": temperature,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "response_format": {"type": "json_object"},
+            }
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            try:
+                async with self._client or httpx.AsyncClient(timeout=self._timeout) as client:
+                    res = await client.post(url, json=payload, headers=headers)
+            except httpx.TimeoutException as err:
+                raise ChatProviderError("The AI scoring request timed out.") from err
+            except httpx.HTTPError as err:
+                raise ChatProviderError(f"Could not reach Ollama API: {err}") from err
 
-        json_text = _extract_json(content)
-        try:
-            return json.loads(json_text)
-        except json.JSONDecodeError as err:
-            raise ChatProviderError("The model did not return valid JSON.") from err
+            if res.status_code >= 400:
+                raise ChatProviderError(
+                    f"Ollama API error ({res.status_code}): {res.text[:300]}"
+                )
+            content = (res.json().get("choices") or [{}])[0].get("message", {}).get("content")
+            if not content:
+                raise ChatProviderError("Ollama API returned an empty response.")
+
+            json_text = _extract_json(content)
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, json_text)
+            try:
+                return json.loads(json_text)
+            except json.JSONDecodeError as err:
+                raise ChatProviderError("The model did not return valid JSON.") from err
 
 
 def _extract_json(text: str) -> str:

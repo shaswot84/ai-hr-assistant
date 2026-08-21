@@ -33,6 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from langchain_core.messages import AIMessage, BaseMessage
+from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 
 from app.agents.context import history_text
 from app.agents.knowledge_agent.prompts import REPAIR_SYSTEM, REWRITE_SYSTEM
@@ -49,6 +50,7 @@ from app.knowledge.contracts import Citation, KnowledgeResult
 from app.knowledge.markers import parse_marker_set, renumber_markers
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.interfaces import LLM
+from app.observability import async_trace_span, trace_agent_turn
 from app.safety.contracts import GuardVerdict, OutputContext
 from app.safety.interfaces import ResponseGuard
 
@@ -216,14 +218,23 @@ async def rewrite_query(llm: LLM | None, query: str, history: list[BaseMessage])
     Falls back to the raw query when no LLM is configured or rewriting
     fails — retrieval must never fail because of the rewrite step.
     """
-    if llm is None:
-        return query
-    user = f"CONVERSATION HISTORY:\n{history_text(history)}\n\nQUESTION: {query}\n\nREWRITTEN QUERY:"
-    try:
-        rewritten = (await llm.complete(REWRITE_SYSTEM, user)).strip()
-        return rewritten or query
-    except Exception:  # noqa: BLE001 - retrieval never fails because of rewriting
-        return query
+    async with async_trace_span(
+        "knowledge_agent.rewrite_query",
+        span_kind=OpenInferenceSpanKindValues.CHAIN,
+        attributes={SpanAttributes.INPUT_VALUE: query},
+    ) as span:
+        if llm is None:
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, query)
+            return query
+        user = f"CONVERSATION HISTORY:\n{history_text(history)}\n\nQUESTION: {query}\n\nREWRITTEN QUERY:"
+        try:
+            rewritten = (await llm.complete(REWRITE_SYSTEM, user)).strip()
+            res = rewritten or query
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, res)
+            return res
+        except Exception:  # noqa: BLE001 - retrieval never fails because of rewriting
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, query)
+            return query
 
 
 async def _repair_answer(
@@ -342,89 +353,101 @@ async def stream_knowledge_turn(
     policy answer deterministically (and injected into the generation
     context) — see ``_employee_balance_block``.
     """
-    rewritten = await rewrite_query(llm, query, history)
-    result = await service.retrieve(rewritten, access_roles=access_roles_for(actor))
-    writer({"type": "retrieval", "rewritten_query": rewritten, "result": result})
+    async with trace_agent_turn(
+        "knowledge",
+        query=query,
+        user_id=actor.subject if actor else None,
+    ) as agent_span:
+        rewritten = await rewrite_query(llm, query, history)
+        result = await service.retrieve(rewritten, access_roles=access_roles_for(actor))
+        writer({"type": "retrieval", "rewritten_query": rewritten, "result": result})
 
-    if result.empty_knowledge_base:
-        # No documents indexed at all: deterministic "empty knowledge base"
-        # reply, never a connection-looking failure.
-        message = EMPTY_KB_MESSAGE
-        writer({"type": "message", "text": message})
-        return {
-            "messages": [AIMessage(content=message)],
-            "knowledge_result": result,
-            "answer": message,
-            "citations": [],
-            "confidence": result.confidence,
-            "agent": "knowledge",
-            "safety": GuardVerdict.PASS.value,
-        }
+        if result.empty_knowledge_base:
+            # No documents indexed at all: deterministic "empty knowledge base"
+            # reply, never a connection-looking failure.
+            message = EMPTY_KB_MESSAGE
+            writer({"type": "message", "text": message})
+            agent_span.set_attribute(SpanAttributes.OUTPUT_VALUE, message)
+            return {
+                "messages": [AIMessage(content=message)],
+                "knowledge_result": result,
+                "answer": message,
+                "citations": [],
+                "confidence": result.confidence,
+                "agent": "knowledge",
+                "safety": GuardVerdict.PASS.value,
+            }
 
-    if result.restricted:
-        # The query matched only documents the requester cannot access:
-        # reply with a deterministic denial naming the allowed roles.
-        message = denied_message(result)
-        writer({"type": "message", "text": message})
-        return {
-            "messages": [AIMessage(content=message)],
-            "knowledge_result": result,
-            "answer": message,
-            "citations": [],
-            "confidence": result.confidence,
-            "agent": "knowledge",
-            "safety": GuardVerdict.PASS.value,
-        }
+        if result.restricted:
+            # The query matched only documents the requester cannot access:
+            # reply with a deterministic denial naming the allowed roles.
+            message = denied_message(result)
+            writer({"type": "message", "text": message})
+            agent_span.set_attribute(SpanAttributes.OUTPUT_VALUE, message)
+            return {
+                "messages": [AIMessage(content=message)],
+                "knowledge_result": result,
+                "answer": message,
+                "citations": [],
+                "confidence": result.confidence,
+                "agent": "knowledge",
+                "safety": GuardVerdict.PASS.value,
+            }
 
-    history_block = history_text(history, max_tokens=history_max_tokens)
-    balance_block = await _employee_balance_block(actor, leave_service, query)
-    if balance_block:
-
-        history_block = f"{history_block}\n\n{_BALANCE_PROMPT_LABEL}\n{balance_block}"
-
-    if result.low_confidence or not result.citations:
-        message = fallback_message(KnowledgeTurn(query, rewritten, result, None))
+        history_block = history_text(history, max_tokens=history_max_tokens)
+        balance_block = await _employee_balance_block(actor, leave_service, query)
         if balance_block:
-            # No policy evidence, but the real balance is still a true answer
-            # to the balance half of the question — append it to the refusal.
+            history_block = f"{history_block}\n\n{_BALANCE_PROMPT_LABEL}\n{balance_block}"
+
+        if result.low_confidence or not result.citations:
+            message = fallback_message(KnowledgeTurn(query, rewritten, result, None))
+            if balance_block:
+                # No policy evidence, but the real balance is still a true answer
+                # to the balance half of the question — append it to the refusal.
+                message = f"{message}\n\n{balance_block}"
+            writer({"type": "message", "text": message})
+            agent_span.set_attribute(SpanAttributes.OUTPUT_VALUE, message)
+            return {
+                "messages": [AIMessage(content=message)],
+                "knowledge_result": result,
+                "answer": message,
+                "citations": [],
+                "confidence": result.confidence,
+                "agent": "knowledge",
+                "safety": GuardVerdict.PASS.value,
+            }
+
+        draft = ""
+        async for token in service.stream_answer(rewritten, result, history=history_block):
+            draft += token
+            writer({"type": "token", "text": token})
+        if not draft:
+            # No generation LLM configured: serve the grounded context.
+            draft = result.grounded_context or "(no grounded context)"
+            writer({"type": "message", "text": draft})
+
+        message, citations, safety = await _track_and_guard(
+            llm, rewritten, result, history_block, draft, guard
+        )
+        if balance_block:
+            # Deterministic reconciliation: the policy answer above, the real
+            # balance below — formatted exactly like the leave agent's reply.
             message = f"{message}\n\n{balance_block}"
-        writer({"type": "message", "text": message})
+
+        agent_span.set_attribute(SpanAttributes.OUTPUT_VALUE, message)
+        agent_span.set_attribute("agent.citations_count", len(citations))
+        agent_span.set_attribute("agent.confidence", float(result.confidence))
+        agent_span.set_attribute("agent.safety", safety)
+
         return {
             "messages": [AIMessage(content=message)],
             "knowledge_result": result,
             "answer": message,
-            "citations": [],
+            "citations": citations,
             "confidence": result.confidence,
             "agent": "knowledge",
-            "safety": GuardVerdict.PASS.value,
+            "safety": safety,
         }
-
-    draft = ""
-    async for token in service.stream_answer(rewritten, result, history=history_block):
-        draft += token
-        writer({"type": "token", "text": token})
-    if not draft:
-        # No generation LLM configured: serve the grounded context.
-        draft = result.grounded_context or "(no grounded context)"
-        writer({"type": "message", "text": draft})
-
-    message, citations, safety = await _track_and_guard(
-        llm, rewritten, result, history_block, draft, guard
-    )
-    if balance_block:
-        # Deterministic reconciliation: the policy answer above, the real
-        # balance below — formatted exactly like the leave agent's reply.
-        message = f"{message}\n\n{balance_block}"
-
-    return {
-        "messages": [AIMessage(content=message)],
-        "knowledge_result": result,
-        "answer": message,
-        "citations": citations,
-        "confidence": result.confidence,
-        "agent": "knowledge",
-        "safety": safety,
-    }
 
 
 def fallback_message(turn: KnowledgeTurn) -> str:

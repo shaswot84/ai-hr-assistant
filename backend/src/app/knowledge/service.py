@@ -10,6 +10,8 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from uuid import UUID
 
+from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
+
 from app.config.settings import RetrievalSettings
 from app.knowledge.confidence import ConfidenceEstimator, LowConfidenceDetector
 from app.knowledge.contracts import KnowledgeResult, RestrictedDocument, RetrievedChunk
@@ -20,6 +22,7 @@ from app.knowledge.ranking import reciprocal_rank_fusion
 from app.knowledge.repository import HybridRetrievalRepository, RetrievalHit
 from app.knowledge.reranker import PassThroughReranker
 from app.model_gateway.interfaces import LLM, Embedder, Reranker
+from app.observability import async_trace_span, set_retrieval_documents, trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -83,130 +86,124 @@ class KnowledgeService:
         top_k: int | None = None,
         access_roles: list[str] | None = None,
     ) -> KnowledgeResult:
-        """Run the full retrieval pipeline for a query and return evidence.
-
-        Steps:
-        1. Embed the query (Model Gateway).
-        2. Run BM25 and vector legs in parallel.
-        3. Fuse both ranked lists with RRF.
-        4. Rerank the fused candidates.
-        5. Expand matched leaves with their enclosing section context
-           (small-to-big).
-        6. Estimate confidence and apply the low-confidence gate.
-        7. Build grounded context + citations.
-
-        ``access_roles`` gates every leg to documents whose ``role_access``
-        allowlist contains the requester's role(s); ``None`` disables access
-        control (HR admin / unrestricted callers). When access control is on
-        and NO accessible evidence is found, a cheap BM25 probe runs to
-        surface ``restricted`` matches — documents the query hit but the
-        requester cannot see (identity only, never content) — so the agent
-        can reply "you cannot access this" instead of pretending the
-        document does not exist.
-
-        An empty knowledge base (no INDEXED documents) short-circuits before
-        embedding: the result carries ``empty_knowledge_base=True`` so the
-        agent can say "no documents yet" without a wasted (or, when the
-        embedder is unreachable, failing) model call. A failed embedding
-        call is also degraded to an empty result instead of raising — search
-        must never hard-fail because the embedder is down.
-        """
+        """Run the full retrieval pipeline for a query and return evidence."""
         top_k = top_k or self._settings.top_k
 
-        if not await self._repository.has_indexed_documents():
-            return KnowledgeResult(grounded_context="", empty_knowledge_base=True)
+        async with async_trace_span(
+            "rag.retrieve",
+            span_kind=OpenInferenceSpanKindValues.RETRIEVER,
+            attributes={
+                SpanAttributes.INPUT_VALUE: query,
+                "rag.category": str(category) if category else None,
+                "rag.top_k": top_k,
+                "rag.access_roles": access_roles,
+            },
+        ) as span:
+            if not await self._repository.has_indexed_documents():
+                span.set_attribute("rag.empty_knowledge_base", True)
+                return KnowledgeResult(grounded_context="", empty_knowledge_base=True)
 
-        # nomic-embed-text is trained with task prefixes; matching the query
-        # prefix against the document prefix used at ingestion improves
-        # semantic retrieval substantially.
-        try:
-            query_embedding = (await self._embedder.embed([query], prefix="search_query: "))[0]
-        except Exception:
-            logger.warning("query embedding failed; serving an empty result", exc_info=True)
-            return KnowledgeResult(grounded_context="", low_confidence=True)
+            try:
+                with trace_span(
+                    "rag.embedding",
+                    span_kind=OpenInferenceSpanKindValues.EMBEDDING,
+                    attributes={"rag.query": query},
+                ):
+                    query_embedding = (await self._embedder.embed([query], prefix="search_query: "))[0]
+            except Exception:
+                logger.warning("query embedding failed; serving an empty result", exc_info=True)
+                return KnowledgeResult(grounded_context="", low_confidence=True)
 
-        # Run the legs sequentially: the repository is bound to a single
-        # AsyncSession, which SQLAlchemy forbids using concurrently
-        # ("concurrent operations are not permitted"). Both legs share the
-        # already-computed query embedding, so there is nothing left to
-        # parallelize at this layer.
-        bm25_hits = await self._repository.bm25_search(
-            query,
-            top_k,
-            current_only=current_only,
-            category=category,
-            access_roles=access_roles,
-        )
-        vector_hits = await self._repository.vector_search(
-            query_embedding,
-            top_k,
-            current_only=current_only,
-            category=category,
-            access_roles=access_roles,
-        )
+            with trace_span("rag.search.bm25", attributes={"rag.top_k": top_k}):
+                bm25_hits = await self._repository.bm25_search(
+                    query,
+                    top_k,
+                    current_only=current_only,
+                    category=category,
+                    access_roles=access_roles,
+                )
 
-        # De-duplicate by chunk id so a chunk present in both legs is one row.
-        hits_by_id = {hit.chunk_id: hit for hit in (*bm25_hits, *vector_hits)}
+            with trace_span("rag.search.vector", attributes={"rag.top_k": top_k}):
+                vector_hits = await self._repository.vector_search(
+                    query_embedding,
+                    top_k,
+                    current_only=current_only,
+                    category=category,
+                    access_roles=access_roles,
+                )
 
-        fused = reciprocal_rank_fusion(
-            [h.key for h in bm25_hits],
-            [h.key for h in vector_hits],
-            settings=self._settings,
-            weights=[
-                self._settings.bm25_weight,
-                self._settings.vector_weight,
-            ],
-        )
+            # De-duplicate by chunk id so a chunk present in both legs is one row.
+            hits_by_id = {hit.chunk_id: hit for hit in (*bm25_hits, *vector_hits)}
 
-        fused_chunks = self._to_retrieved_chunks(fused, hits_by_id)
+            with trace_span(
+                "rag.ranking.rrf",
+                attributes={"rag.bm25_hits": len(bm25_hits), "rag.vector_hits": len(vector_hits)},
+            ):
+                fused = reciprocal_rank_fusion(
+                    [h.key for h in bm25_hits],
+                    [h.key for h in vector_hits],
+                    settings=self._settings,
+                    weights=[
+                        self._settings.bm25_weight,
+                        self._settings.vector_weight,
+                    ],
+                )
+                fused_chunks = self._to_retrieved_chunks(fused, hits_by_id)
 
-        # True semantic signal from the vector leg (cosine similarity), used
-        # as the quality signal when no reranker model is available.
-        vector_scores = {hit.chunk_id: hit.score for hit in vector_hits}
+            # True semantic signal from the vector leg (cosine similarity)
+            vector_scores = {hit.chunk_id: hit.score for hit in vector_hits}
 
-        reranked = await self._rerank(query, fused_chunks, vector_scores)
+            with trace_span(
+                "rag.reranker",
+                span_kind=OpenInferenceSpanKindValues.RERANKER,
+                attributes={
+                    "rag.reranker_model": getattr(self._reranker, "model", "unknown"),
+                    "rag.candidates_in": len(fused_chunks),
+                },
+            ):
+                reranked = await self._rerank(query, fused_chunks, vector_scores)
+                final = reranked[: self._settings.rerank_top_n]
 
-        final = reranked[: self._settings.rerank_top_n]
+            # Small-to-big parent context expansion
+            with trace_span(
+                "rag.parent_expansion",
+                attributes={"rag.candidates_in": len(final)},
+            ):
+                final = await self._expand(final)
 
-        # Small-to-big: attach each matched leaf's enclosing section text so
-        # grounding shows the section context the leaf lives in. Reranking and
-        # confidence stay on the precise leaf; expansion only enriches what
-        # the LLM actually sees.
-        final = await self._expand(final)
+            with trace_span("rag.confidence"):
+                confidence = self._confidence.estimate(final)
+                low_confidence = self._low_confidence.is_low(confidence, len(final))
 
-        confidence = self._confidence.estimate(final)
-        low_confidence = self._low_confidence.is_low(confidence, len(final))
+            with trace_span("rag.grounding"):
+                grounded_context, citations = self._grounding.build(final)
 
-        grounded_context, citations = self._grounding.build(final)
+            restricted: list[RestrictedDocument] = []
+            if access_roles is not None and not citations:
+                restricted = await self._repository.restricted_matches(
+                    query, access_roles, current_only=current_only
+                )
 
-        restricted: list[RestrictedDocument] = []
-        if access_roles is not None and not citations:
-            restricted = await self._repository.restricted_matches(
-                query, access_roles, current_only=current_only
+            # Set OpenInference RETRIEVAL_DOCUMENTS on the retriever span
+            set_retrieval_documents(span, final)
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, grounded_context)
+            span.set_attribute("rag.confidence", float(confidence))
+            span.set_attribute("rag.low_confidence", bool(low_confidence))
+            span.set_attribute("rag.citation_count", len(citations))
+
+            return KnowledgeResult(
+                grounded_context=grounded_context,
+                citations=citations,
+                confidence=confidence,
+                chunks=final,
+                low_confidence=low_confidence,
+                restricted=restricted,
             )
-
-        return KnowledgeResult(
-            grounded_context=grounded_context,
-            citations=citations,
-            confidence=confidence,
-            chunks=final,
-            low_confidence=low_confidence,
-            restricted=restricted,
-        )
 
     async def generate_answer(
         self, query: str, result: KnowledgeResult, *, history: str | None = None
     ) -> str | None:
-        """Produce a polished, grounded answer from a retrieval result.
-
-        Returns ``None`` when no LLM is configured, retrieval is
-        low-confidence (not enough evidence to answer safely), or generation
-        fails. The caller then serves the grounded context as-is.
-
-        ``history`` is an optional pre-formatted transcript block (see
-        ``agents.context.history_text``) that makes the answer
-        conversation-aware; when given it is placed above the question.
-        """
+        """Produce a polished, grounded answer from a retrieval result."""
         if self._llm is None:
             return None
         if result.low_confidence or not result.citations:
@@ -217,24 +214,27 @@ class KnowledgeService:
         user = f"QUESTION:\n{query}\n\nSOURCES: {sources}\n\nGROUNDED CONTEXT:\n{result.grounded_context}"
         if history:
             user = f"CONVERSATION HISTORY:\n{history}\n\n{user}"
-        try:
-            answer = await self._llm.complete(_GENERATION_SYSTEM, user)
-        except Exception:  # noqa: BLE001 - never fail search because of the LLM
-            return None
-        # The search UI serves every citation as a source chip; keep markers
-        # aligned with that set (identity renumber) and drop out-of-range ones.
-        return renumber_markers(answer, list(range(1, len(result.citations) + 1)))
+
+        async with async_trace_span(
+            "rag.generate_answer",
+            span_kind=OpenInferenceSpanKindValues.CHAIN,
+            attributes={
+                "rag.query": query,
+                "rag.citation_count": len(result.citations),
+            },
+        ) as gen_span:
+            try:
+                answer = await self._llm.complete(_GENERATION_SYSTEM, user)
+            except Exception:  # noqa: BLE001 - never fail search because of the LLM
+                return None
+            final_answer = renumber_markers(answer, list(range(1, len(result.citations) + 1)))
+            gen_span.set_attribute(SpanAttributes.OUTPUT_VALUE, final_answer)
+            return final_answer
 
     async def stream_answer(
         self, query: str, result: KnowledgeResult, *, history: str | None = None
     ) -> AsyncIterator[str]:
-        """Stream a grounded answer token by token.
-
-        Same gating and prompt as :meth:`generate_answer` — yields nothing
-        when no LLM is configured, retrieval is low-confidence, or generation
-        fails mid-stream. The caller (SSE endpoint) terminates the stream the
-        moment this generator is exhausted.
-        """
+        """Stream a grounded answer token by token."""
         if self._llm is None:
             return
         if result.low_confidence or not result.citations:

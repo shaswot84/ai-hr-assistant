@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 
 from langchain_core.messages import AIMessage
 from langgraph.types import StreamWriter
+from openinference.semconv.trace import SpanAttributes
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.leave_agent.agent import handle_turn
@@ -44,6 +45,7 @@ from app.capabilities.leave import LeaveService
 from app.contracts.auth import UserContext
 from app.db.session import async_session_factory
 from app.model_gateway.provider import ChatProvider
+from app.observability import trace_agent_turn
 from app.repositories.workflow_state import WorkflowStateRepo
 from app.services.identity import IdentityError, IdentityService
 from app.shared.clock import get_clock
@@ -205,23 +207,30 @@ async def _handle(
     writer: StreamWriter,
     service: LeaveService,
 ) -> dict:
-    result = await handle_turn(
-        actor=actor,
-        state=leave_state,
-        service=service,
-        chat_provider=chat_provider,
-        user_message=state["current_query"],
-    )
-    writer({"type": "message", "text": result.reply})
-    if result.ui_widget:
-        writer({"type": "ui_widget", "widget": result.ui_widget})
-    return {
-        "messages": [AIMessage(content=result.reply)],
-        "knowledge_result": None,
-        "answer": result.reply,
-        "citations": [],
-        "confidence": 0.0,
-        "agent": "leave",
-        "safety": "PASS",
-        "ui_widget": result.ui_widget,
-    }
+    async with trace_agent_turn(
+        "leave",
+        query=state["current_query"],
+        conversation_id=state.get("conversation_id"),
+        user_id=actor.subject if actor else None,
+    ) as span:
+        result = await handle_turn(
+            actor=actor,
+            state=leave_state,
+            service=service,
+            chat_provider=chat_provider,
+            user_message=state["current_query"],
+        )
+        writer({"type": "message", "text": result.reply})
+        if result.ui_widget:
+            writer({"type": "ui_widget", "widget": result.ui_widget})
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.reply)
+        return {
+            "messages": [AIMessage(content=result.reply)],
+            "knowledge_result": None,
+            "answer": result.reply,
+            "citations": [],
+            "confidence": 0.0,
+            "agent": "leave",
+            "safety": "PASS",
+            "ui_widget": result.ui_widget,
+        }

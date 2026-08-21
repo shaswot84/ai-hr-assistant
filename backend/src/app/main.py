@@ -17,17 +17,15 @@ from app.api.routes import settings as settings_router
 from app.config.settings import get_settings
 from app.db.session import init_db
 from app.integrations.object_store import SyncS3ObjectStore
+from app.observability import init_observability, shutdown_observability
 
 log = logging.getLogger("app")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application startup/shutdown hook: dev-fallback table creation + ensure the MinIO bucket exists.
-
-    Real schema management is Alembic (`make migrate`), not `init_db()` —
-    see `db.session.init_db` for why it's still called here.
-    """
+    """Application startup/shutdown hook: observability + dev-fallback table creation + MinIO bucket setup."""
+    init_observability(app)
     await init_db()
     settings = get_settings()
     if settings.minio.auto_init:
@@ -37,6 +35,7 @@ async def lifespan(app: FastAPI):
         except Exception as err:  # noqa: BLE001 - don't crash API if MinIO is briefly unavailable
             log.warning("MinIO bucket setup skipped: %s", err)
     yield
+    shutdown_observability()
 
 
 app = FastAPI(title="AI HR Assistant", lifespan=lifespan)

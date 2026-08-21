@@ -4,8 +4,10 @@ import json
 from collections.abc import AsyncIterator
 
 import httpx
+from openinference.semconv.trace import SpanAttributes
 
 from app.model_gateway.interfaces import LLM
+from app.observability import trace_llm_call
 
 
 class OllamaCloudLLM(LLM):
@@ -32,21 +34,24 @@ class OllamaCloudLLM(LLM):
         )
 
     async def complete(self, system: str, user: str) -> str:
-        response = await self._client.post(
-            "/api/chat",
-            json={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "stream": False,
-            },
-            headers={"Authorization": f"Bearer {self._api_key}"},
-        )
-        response.raise_for_status()
-        payload = response.json()
-        return payload["message"]["content"]
+        async with trace_llm_call(self.model, system_prompt=system, user_prompt=user) as span:
+            response = await self._client.post(
+                "/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "stream": False,
+                },
+                headers={"Authorization": f"Bearer {self._api_key}"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            content = payload["message"]["content"]
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, content)
+            return content
 
     async def stream(self, system: str, user: str) -> AsyncIterator[str]:
         """Yield completion chunks as the model generates them.
@@ -55,29 +60,33 @@ class OllamaCloudLLM(LLM):
         line per token; each line carries ``message.content`` (and a trailing
         ``done=true`` line). A non-2xx response still raises.
         """
-        async with self._client.stream(
-            "POST",
-            "/api/chat",
-            json={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "stream": True,
-            },
-            headers={"Authorization": f"Bearer {self._api_key}"},
-        ) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.strip():
-                    continue
-                payload = json.loads(line)
-                if payload.get("done"):
-                    break
-                token = payload.get("message", {}).get("content", "")
-                if token:
-                    yield token
+        async with trace_llm_call(self.model, system_prompt=system, user_prompt=user) as span:
+            accumulated: list[str] = []
+            async with self._client.stream(
+                "POST",
+                "/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "stream": True,
+                },
+                headers={"Authorization": f"Bearer {self._api_key}"},
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    payload = json.loads(line)
+                    if payload.get("done"):
+                        break
+                    token = payload.get("message", {}).get("content", "")
+                    if token:
+                        accumulated.append(token)
+                        yield token
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, "".join(accumulated))
 
     async def aclose(self) -> None:
         await self._client.aclose()

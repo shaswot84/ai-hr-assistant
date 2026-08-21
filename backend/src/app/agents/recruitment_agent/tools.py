@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from openinference.semconv.trace import SpanAttributes
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.capabilities.recruitment import PermissionError_, RecruitmentService
 from app.contracts.auth import UserContext
 from app.domain.recruitment import Application, Vacancy
+from app.observability import trace_tool_call
 
 
 class ToolError(Exception):
@@ -18,10 +21,15 @@ class ToolError(Exception):
 
 
 async def _call_service(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    try:
-        return await fn(*args, **kwargs)
-    except (PermissionError_, ValueError) as err:
-        raise ToolError(str(err)) from err
+    tool_name = getattr(fn, "__name__", "recruitment_tool")
+    async with trace_tool_call(tool_name, parameters=kwargs) as span:
+        try:
+            res = await fn(*args, **kwargs)
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, str(res)[:1000])
+            return res
+        except (PermissionError_, ValueError) as err:
+            span.set_attribute("tool.error", str(err))
+            raise ToolError(str(err)) from err
 
 
 # ---- Schemas -------------------------------------------------------------
