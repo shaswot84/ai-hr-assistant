@@ -2,7 +2,7 @@
 
 Synthesizes rich, interactive, sandboxed Generative UI artifacts (embedded in
 iframes via the AG-UI protocol) for HR policies, guidelines, calculators,
-procedure checklists, and comparison matrices.
+procedure checklists, and comparison matrices with proper HTML rendering.
 """
 
 from __future__ import annotations
@@ -71,6 +71,37 @@ _GENUI_TRIGGER_KEYWORDS = (
     "matrix",
     "iframe",
 )
+
+
+def format_inline_markdown(text: str) -> str:
+    """Converts inline markdown (bold, italic, code, citations) to clean HTML."""
+    if not text:
+        return ""
+    # Strip citation markers like [1], [2, 3] from widget display
+    cleaned = re.sub(r"\[\d+(?:,\s*\d+)*\]", "", text)
+    # Remove leading markdown header marks, bullets with whitespace, numbering with dot
+    cleaned = re.sub(r"^#{1,6}\s+", "", cleaned)
+    cleaned = re.sub(r"^(\*|-|•|\d+\.|\d+\))\s+", "", cleaned)
+    cleaned = cleaned.strip()
+
+    # Escape HTML special characters
+    escaped = html.escape(cleaned)
+
+    # Convert bold: **text** or __text__ -> <strong>text</strong>
+    escaped = re.sub(r"\*\*(.+?)\*\*", r'<strong class="font-semibold text-zinc-900">\1</strong>', escaped)
+    escaped = re.sub(r"__(.+?)__", r'<strong class="font-semibold text-zinc-900">\1</strong>', escaped)
+
+    # Convert italic: *text* or _text_ -> <em>text</em>
+    escaped = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r'<em class="text-zinc-800">\1</em>', escaped)
+
+    # Convert inline code: `text` -> <code>text</code>
+    escaped = re.sub(
+        r"`(.+?)`",
+        r'<code class="rounded bg-zinc-100 px-1 py-0.5 font-mono text-[11px] text-zinc-800">\1</code>',
+        escaped,
+    )
+    return escaped
+
 
 _AG_UI_BRIDGE_SCRIPT = """
 <script>
@@ -184,30 +215,39 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
     """Synthesizes an interactive Policy Comparison Matrix GenUI artifact."""
     escaped_query = html.escape(query)
 
-    bullets = [
-        line.strip("- *").strip()
-        for line in answer.splitlines()
-        if line.strip().startswith(("-", "*", "1.", "2.", "3."))
-    ]
+    raw_lines = [l.strip() for l in answer.splitlines() if l.strip()]
+    candidate_items: list[str] = []
+
+    for line in raw_lines:
+        if line.startswith("#") and len(candidate_items) > 0:
+            continue
+        cleaned = re.sub(r"^(\*|-|•|\d+\.|\d+\))\s+", "", line).strip()
+        if cleaned and len(cleaned) > 5:
+            candidate_items.append(cleaned)
+        if len(candidate_items) >= 6:
+            break
+
     items_html = ""
-    for i, b in enumerate(bullets[:6]):
-        safe_b = html.escape(b)
+    for i, item in enumerate(candidate_items[:6]):
+        formatted = format_inline_markdown(item)
         items_html += f"""
         <div class="p-2.5 bg-white rounded-lg border border-zinc-200/80 shadow-2xs hover:border-blue-300 transition-colors">
           <div class="flex items-start gap-2">
             <span class="flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[10px] font-bold text-blue-600 border border-blue-200">
               {i + 1}
             </span>
-            <p class="text-xs text-zinc-700 leading-relaxed">{safe_b}</p>
+            <div class="text-xs text-zinc-700 leading-relaxed space-y-0.5">
+              {formatted}
+            </div>
           </div>
         </div>
         """
 
     if not items_html:
-        safe_ans = html.escape(answer[:300])
+        formatted_ans = format_inline_markdown(answer[:300])
         items_html = f"""
         <div class="p-2.5 bg-white rounded-lg border border-zinc-200/80">
-          <p class="text-xs text-zinc-700 leading-relaxed">{safe_ans}...</p>
+          <div class="text-xs text-zinc-700 leading-relaxed">{formatted_ans}...</div>
         </div>
         """
 
@@ -234,7 +274,7 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
         <input
           id="filterInput"
           type="text"
-          placeholder="Filter terms or keywords..."
+          placeholder="Filter policy terms..."
           oninput="filterItems(this.value)"
           class="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1 text-xs text-zinc-800 placeholder-zinc-400 focus:border-blue-500 focus:outline-none"
         />
@@ -245,7 +285,7 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
       </div>
 
       <div class="flex items-center justify-between pt-2 border-t border-zinc-100 text-[11px] text-zinc-500">
-        <span>Click below for more details</span>
+        <span>Click below to ask follow-up questions</span>
         <button
           type="button"
           onclick="window.triggerChatAction('Can you provide more specific examples of these policies?')"
@@ -271,8 +311,12 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
 
 
 def build_calculator_genui(query: str, answer: str, context: str) -> str:
-    """Synthesizes an interactive HR Calculator GenUI artifact."""
+    """Synthesizes an interactive HR Calculator GenUI artifact with dynamic policy numbers."""
     escaped_query = html.escape(query)
+
+    found_days = re.findall(r"(\d+)\s*(?:days|day)", answer.lower() + " " + context.lower())
+    default_entitlement = int(found_days[0]) if found_days else 20
+    default_carryover = int(found_days[1]) if len(found_days) > 1 else 5
 
     content = f"""
     <div id="genui-root" class="max-w-full rounded-xl bg-gradient-to-br from-blue-50/50 via-white to-indigo-50/40 p-3.5 border border-blue-200/80 shadow-2xs">
@@ -296,7 +340,7 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-3">
         <div class="bg-white rounded-lg p-2.5 border border-zinc-200">
           <label class="block text-[11px] font-medium text-zinc-700 mb-1">
-            Current Entitlement / Balance (Days)
+            Current Leave Balance (Days)
           </label>
           <div class="flex items-center gap-2">
             <input
@@ -304,11 +348,11 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
               type="range"
               min="0"
               max="30"
-              value="15"
+              value="{default_entitlement}"
               oninput="updateCalc()"
               class="w-full accent-blue-600 cursor-pointer"
             />
-            <span id="daysVal" class="text-xs font-bold text-zinc-900 w-7 text-right">15</span>
+            <span id="daysVal" class="text-xs font-bold text-zinc-900 w-7 text-right">{default_entitlement}</span>
           </div>
         </div>
 
@@ -334,11 +378,11 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
       <!-- Result Card -->
       <div class="rounded-lg bg-white p-2.5 border border-indigo-100 shadow-2xs mb-2.5">
         <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-zinc-600">Estimated Carryover / Available Value:</span>
-          <span id="calcTotal" class="text-xs font-bold text-indigo-600">10 Days Max Carryover</span>
+          <span class="text-xs font-medium text-zinc-600">Allowable Carryover / Value:</span>
+          <span id="calcTotal" class="text-xs font-bold text-indigo-600">{default_carryover} Days Max Carryover</span>
         </div>
         <div class="w-full bg-zinc-100 rounded-full h-1.5 mt-2 overflow-hidden">
-          <div id="calcProgress" class="bg-indigo-600 h-1.5 rounded-full transition-all duration-300" style="width: 66%"></div>
+          <div id="calcProgress" class="bg-indigo-600 h-1.5 rounded-full transition-all duration-300" style="width: 50%"></div>
         </div>
       </div>
 
@@ -346,7 +390,7 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
         <p class="text-[10px] text-zinc-400">Based on standard company policy guidelines</p>
         <button
           type="button"
-          onclick="window.triggerChatAction('How do I apply to carry over my remaining leave days?')"
+          onclick="window.triggerChatAction('How do I submit a leave carryover request?')"
           class="rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white shadow-2xs hover:bg-indigo-700 transition-colors"
         >
           Submit Request &rarr;
@@ -355,18 +399,20 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
     </div>
 
     <script>
+      const MAX_CARRYOVER = {default_carryover};
       function updateCalc() {{
         const days = parseInt(document.getElementById('daysInput').value, 10);
         const months = parseInt(document.getElementById('monthsInput').value, 10);
         document.getElementById('daysVal').innerText = days;
         document.getElementById('monthsVal').innerText = months;
 
-        const carryover = Math.min(days, 10);
-        const pct = Math.min(100, Math.round((carryover / 15) * 100));
+        const carryover = Math.min(days, MAX_CARRYOVER);
+        const pct = Math.min(100, Math.round((carryover / Math.max(1, MAX_CARRYOVER)) * 100));
 
-        document.getElementById('calcTotal').innerText = carryover + ' Days Carryover (from ' + days + ' total)';
+        document.getElementById('calcTotal').innerText = carryover + ' Days Carryover (from ' + days + ' available)';
         document.getElementById('calcProgress').style.width = pct + '%';
       }}
+      updateCalc();
     </script>
     """
     return f"{_HTML_SHELL_HEAD}{content}{_HTML_SHELL_TAIL}"
@@ -377,10 +423,12 @@ def build_procedure_genui(query: str, answer: str, context: str) -> str:
     escaped_query = html.escape(query)
 
     raw_lines = [l.strip() for l in answer.splitlines() if l.strip()]
-    step_items = []
+    step_items: list[str] = []
     for line in raw_lines:
-        cleaned = line.lstrip("0123456789.-*# \t")
-        if cleaned and len(cleaned) > 10 and not cleaned.startswith("["):
+        if line.startswith("#") and len(step_items) > 0:
+            continue
+        cleaned = re.sub(r"^(\*|-|•|\d+\.|\d+\))\s+", "", line).strip()
+        if cleaned and len(cleaned) > 5:
             step_items.append(cleaned)
         if len(step_items) >= 5:
             break
@@ -395,7 +443,7 @@ def build_procedure_genui(query: str, answer: str, context: str) -> str:
 
     steps_html = ""
     for i, st in enumerate(step_items):
-        safe_st = html.escape(st)
+        formatted = format_inline_markdown(st)
         steps_html += f"""
         <label class="flex items-start gap-2.5 p-2 rounded-lg border border-zinc-200 bg-white hover:border-emerald-300 cursor-pointer transition-colors">
           <input
@@ -405,7 +453,7 @@ def build_procedure_genui(query: str, answer: str, context: str) -> str:
           />
           <div class="space-y-0.5">
             <span class="text-[11px] font-semibold text-zinc-900">Step {i + 1}</span>
-            <p class="text-xs text-zinc-600 leading-relaxed">{safe_st}</p>
+            <div class="text-xs text-zinc-600 leading-relaxed">{formatted}</div>
           </div>
         </label>
         """
@@ -469,11 +517,12 @@ _OPEN_GENUI_SYSTEM = """You are a Generative UI designer creating a modern, self
 Given a user query, grounded HR policy context, and text answer, generate ONLY the HTML body content (no markdown code fences, no ```html, no <html>/<body> tags).
 Follow these guidelines:
 1. Wrap everything inside a top-level `<div id="genui-root" class="max-w-full rounded-xl bg-white p-3 border border-zinc-200">...</div>`.
-2. Use modern Tailwind CSS classes for styling (cards, gradients, badges, buttons, sliders, tabs, or checklists).
-3. Use a cohesive palette matching standard zinc/blue/emerald/indigo.
-4. Make it interactive (e.g. tabs, filter inputs, calculate buttons, or interactive toggles with vanilla JavaScript).
-5. If there are action buttons, wire them to `window.triggerChatAction('your chat prompt here')`.
-6. Keep it compact, responsive, and elegant without extra outer margins.
+2. Do NOT output raw markdown symbols like `**`, `*`, `###`, or `[1]` citations inside the HTML; convert all formatting into proper HTML tags like `<strong>`, `<em>`, `<span>`, `<div>`, `<p>`, `<button>`.
+3. Use modern Tailwind CSS classes for styling (cards, gradients, badges, buttons, sliders, tabs, or checklists).
+4. Use a cohesive palette matching standard zinc/blue/emerald/indigo.
+5. Make it interactive (e.g. tabs, filter inputs, calculate buttons, or interactive toggles with vanilla JavaScript).
+6. If there are action buttons, wire them to `window.triggerChatAction('your chat prompt here')`.
+7. Keep it compact, responsive, and elegant without extra outer margins.
 Output ONLY the raw HTML/JS block.
 """
 
@@ -537,6 +586,8 @@ async def generate_knowledge_genui(
                 cleaned_html = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned_html)
                 cleaned_html = re.sub(r"\n?```$", "", cleaned_html)
             if cleaned_html:
+                cleaned_html = re.sub(r"\[\d+(?:,\s*\d+)*\]", "", cleaned_html)
+                cleaned_html = re.sub(r"\*\*(.+?)\*\*", r'<strong class="font-semibold text-zinc-900">\1</strong>', cleaned_html)
                 if 'id="genui-root"' not in cleaned_html:
                     cleaned_html = f'<div id="genui-root" class="max-w-full rounded-xl bg-white p-3 border border-zinc-200">{cleaned_html}</div>'
                 full_doc = f"{_HTML_SHELL_HEAD}\n{cleaned_html}\n{_HTML_SHELL_TAIL}"

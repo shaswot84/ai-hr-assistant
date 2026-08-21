@@ -8,6 +8,7 @@ from app.agents.knowledge_agent.genui import (
     build_calculator_genui,
     build_comparison_genui,
     build_procedure_genui,
+    format_inline_markdown,
     generate_knowledge_genui,
     should_generate_genui,
 )
@@ -22,6 +23,22 @@ class FakeLLM(LLM):
         return self.reply
 
 
+def test_format_inline_markdown():
+    # Bold conversion
+    res = format_inline_markdown("**Annual Leave:** 20 days per year [1].")
+    assert "<strong" in res
+    assert "Annual Leave:" in res
+    assert "[1]" not in res
+    assert "**" not in res
+
+    # Italic and code
+    res = format_inline_markdown("Submit *two weeks* in advance with `Form A` [2, 3].")
+    assert "<em" in res
+    assert "<code" in res
+    assert "[2, 3]" not in res
+    assert "*" not in res
+
+
 def test_should_generate_genui_keywords():
     assert should_generate_genui("compare sick leave and casual leave")
     assert should_generate_genui("calculate my overtime pay")
@@ -34,11 +51,13 @@ def test_should_generate_genui_keywords():
 def test_build_comparison_genui():
     html_doc = build_comparison_genui(
         "compare sick and casual leave",
-        "- Sick leave is 10 days\n- Casual leave is 5 days",
+        "- **Sick Leave:** 10 days [1]\n- **Casual Leave:** 5 days [2]",
         "Context evidence",
     )
     assert "<!DOCTYPE html>" in html_doc
     assert "Policy Comparison Matrix" in html_doc
+    assert "<strong" in html_doc
+    assert "**" not in html_doc
     assert "ag_ui:resize" in html_doc
     assert "triggerChatAction" in html_doc
 
@@ -57,11 +76,13 @@ def test_build_calculator_genui():
 def test_build_procedure_genui():
     html_doc = build_procedure_genui(
         "steps to claim medical expenses",
-        "1. Fill out claim form.\n2. Attach medical receipts.\n3. Submit to HR.",
+        "1. **Fill out** claim form [1].\n2. **Attach** medical receipts.\n3. Submit to HR.",
         "Context evidence",
     )
     assert "<!DOCTYPE html>" in html_doc
     assert "Procedure Checklist & Guide" in html_doc
+    assert "<strong" in html_doc
+    assert "**" not in html_doc
     assert "updateChecklist" in html_doc
 
 
