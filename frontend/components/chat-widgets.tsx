@@ -4,6 +4,7 @@ import React, { useState, useMemo } from "react";
 import Link from "next/link";
 import { api, ApiError } from "@/lib/api";
 import { getAuthToken, setAuthToken } from "@/lib/auth";
+import { GenUIIframeWidget } from "@/components/genui-iframe-widget";
 
 // Inline SVG Icons
 function CalendarIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
@@ -238,6 +239,10 @@ export function ChatWidgetRenderer({ widget, onAction, disabled = false }: ChatW
       return <CompanyHolidaysWidget widget={widget} onAction={onAction} disabled={disabled} />;
     case "team_out_of_office":
       return <TeamOutOfOfficeWidget widget={widget} onAction={onAction} disabled={disabled} />;
+    case "genui_iframe":
+    case "knowledge_genui":
+    case "ag_ui_widget":
+      return <GenUIIframeWidget widget={widget as any} onAction={onAction} disabled={disabled} />;
     default:
       return null;
   }

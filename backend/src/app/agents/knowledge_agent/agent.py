@@ -36,6 +36,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 
 from app.agents.context import history_text
+from app.agents.knowledge_agent.genui import generate_knowledge_genui
 from app.agents.knowledge_agent.prompts import REPAIR_SYSTEM, REWRITE_SYSTEM
 from app.agents.leave_agent.tools import (
     ToolError,
@@ -439,6 +440,18 @@ async def stream_knowledge_turn(
         agent_span.set_attribute("agent.confidence", float(result.confidence))
         agent_span.set_attribute("agent.safety", safety)
 
+        ui_widget = None
+        if llm is not None and not _is_refusal(message) and safety != GuardVerdict.BLOCKED.value:
+            ui_widget = await generate_knowledge_genui(
+                llm=llm,
+                query=query,
+                answer=message,
+                grounded_context=result.grounded_context,
+                actor=actor,
+            )
+            if ui_widget:
+                writer({"type": "ui_widget", "widget": ui_widget})
+
         return {
             "messages": [AIMessage(content=message)],
             "knowledge_result": result,
@@ -447,6 +460,7 @@ async def stream_knowledge_turn(
             "confidence": result.confidence,
             "agent": "knowledge",
             "safety": safety,
+            "ui_widget": ui_widget,
         }
 
 
