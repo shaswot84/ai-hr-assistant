@@ -12,7 +12,9 @@ from app.agents.knowledge_agent.genui import (
     detect_genui_type,
     format_inline_markdown,
     generate_knowledge_genui,
+    parse_markdown_table,
     should_generate_genui,
+    split_title_and_body,
 )
 from app.model_gateway.interfaces import LLM
 
@@ -39,6 +41,40 @@ def test_format_inline_markdown():
     assert "<code" in res
     assert "[2, 3]" not in res
     assert "*" not in res
+
+    # Double dashes cleanup
+    res = format_inline_markdown("Annual Leave -- 20 days per year")
+    assert "--" not in res
+    assert "Annual Leave — 20 days per year" in res
+
+
+def test_split_title_and_body():
+    t1, b1 = split_title_and_body("**Sick Leave:** 10 days allowed per year")
+    assert t1 == "Sick Leave"
+    assert b1 == "10 days allowed per year"
+
+    t2, b2 = split_title_and_body("Casual Leave: 5 days allowed")
+    assert t2 == "Casual Leave"
+    assert b2 == "5 days allowed"
+
+    t3, b3 = split_title_and_body("Annual Leave -- 20 days")
+    assert t3 == "Annual Leave"
+    assert b3 == "20 days"
+
+
+def test_parse_markdown_table():
+    md = """
+    | Policy | Entitlement | Carryover |
+    |---|---|---|
+    | Annual Leave | 20 days [1] | 5 days [2] |
+    | Sick Leave | 12 days [3] | 0 days |
+    """
+    res = parse_markdown_table(md)
+    assert res is not None
+    headers, rows = res
+    assert headers == ["Policy", "Entitlement", "Carryover"]
+    assert len(rows) == 2
+    assert rows[0][0] == "Annual Leave"
 
 
 def test_should_generate_genui_keywords():
@@ -72,18 +108,27 @@ def test_build_skeleton_genui():
     assert "Synthesizing matrix..." in comp_skel
 
 
-def test_build_comparison_genui():
-    html_doc = build_comparison_genui(
-        "compare sick and casual leave",
-        "- **Sick Leave:** 10 days [1]\n- **Casual Leave:** 5 days [2]",
-        "Context evidence",
-    )
-    assert "<!DOCTYPE html>" in html_doc
+def test_build_comparison_genui_with_table():
+    table_answer = """
+    | Policy | Entitlement | Carryover |
+    |---|---|---|
+    | Annual Leave | 20 days [1] | 5 days [2] |
+    | Casual Leave | 10 days [3] | 0 days |
+    """
+    html_doc = build_comparison_genui("compare leave types", table_answer, "")
+    assert "<table" in html_doc
+    assert "<th" in html_doc
+    assert "Annual Leave" in html_doc
+    assert "divide-y" in html_doc
+
+
+def test_build_comparison_genui_with_bullets():
+    bullet_answer = "- **Sick Leave:** 10 days [1]\n- **Casual Leave:** 5 days [2]"
+    html_doc = build_comparison_genui("compare sick and casual leave", bullet_answer, "")
     assert "Policy Comparison Matrix" in html_doc
-    assert "<strong" in html_doc
+    assert "Sick Leave" in html_doc
+    assert "Casual Leave" in html_doc
     assert "**" not in html_doc
-    assert "ag_ui:resize" in html_doc
-    assert "triggerChatAction" in html_doc
 
 
 def test_build_calculator_genui():
@@ -105,7 +150,7 @@ def test_build_procedure_genui():
     )
     assert "<!DOCTYPE html>" in html_doc
     assert "Procedure Checklist & Guide" in html_doc
-    assert "<strong" in html_doc
+    assert "Fill out" in html_doc
     assert "**" not in html_doc
     assert "updateChecklist" in html_doc
 

@@ -2,7 +2,7 @@
 
 Synthesizes rich, interactive, sandboxed Generative UI artifacts (embedded in
 iframes via the AG-UI protocol) for HR policies, guidelines, calculators,
-procedure checklists, and comparison matrices with progressive streaming and skeleton states.
+procedure checklists, and comparison matrices with clean formatting and progressive streaming.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ _GENUI_TRIGGER_KEYWORDS = (
 
 
 def format_inline_markdown(text: str) -> str:
-    """Converts inline markdown (bold, italic, code, citations) to clean HTML."""
+    """Converts inline markdown (bold, italic, code, citations) to clean, professional HTML."""
     if not text:
         return ""
     # Strip citation markers like [1], [2, 3] from widget display
@@ -82,7 +82,16 @@ def format_inline_markdown(text: str) -> str:
     # Remove leading markdown header marks, bullets with whitespace, numbering with dot
     cleaned = re.sub(r"^#{1,6}\s+", "", cleaned)
     cleaned = re.sub(r"^(\*|-|•|\d+\.|\d+\))\s+", "", cleaned)
+    # Strip leading and trailing pipe characters from table row fragments
+    cleaned = re.sub(r"^\|\s*", "", cleaned)
+    cleaned = re.sub(r"\s*\|$", "", cleaned)
+    # Replace double dashes '--' or ' - ' used as separators with a clean em dash
+    cleaned = re.sub(r"\s*--\s*", " — ", cleaned)
     cleaned = cleaned.strip()
+
+    # Discard pure separator / rule lines (e.g. ---, ===, ___, |---|---|)
+    if re.match(r"^[\s\-=_|*~#:]+$", cleaned):
+        return ""
 
     # Escape HTML special characters
     escaped = html.escape(cleaned)
@@ -101,6 +110,63 @@ def format_inline_markdown(text: str) -> str:
         escaped,
     )
     return escaped
+
+
+def split_title_and_body(text: str) -> tuple[str, str]:
+    """Splits a line into (title, description) if it contains a clear title delimiter."""
+    if not text:
+        return "", ""
+
+    # Check for **Title**: Description or **Title:** Description
+    bold_match = re.match(r"^\*\*(.+?)\*\*[:\s—–-]*(.*)$", text.strip())
+    if bold_match:
+        title = bold_match.group(1).strip(" :\t—–-*•")
+        body = bold_match.group(2).strip()
+        return title, body
+
+    # Check for Title: Description or Title — Description
+    for sep in (": ", " — ", " – ", " -- "):
+        if sep in text:
+            parts = text.split(sep, 1)
+            title = parts[0].strip(" *-#•")
+            body = parts[1].strip()
+            if 2 <= len(title) <= 40 and body:
+                return title, body
+
+    return "", text.strip(" *-#•")
+
+
+def parse_markdown_table(text: str) -> tuple[list[str], list[list[str]]] | None:
+    """Parses a markdown table into (headers, rows) if present in the text."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    table_lines = [l for l in lines if l.startswith("|") and l.endswith("|")]
+    if len(table_lines) < 2:
+        return None
+
+    sep_idx = -1
+    for idx, l in enumerate(table_lines):
+        if re.match(r"^\|[\s\-:|]+\|$", l) and "-" in l:
+            sep_idx = idx
+            break
+
+    if sep_idx <= 0 or sep_idx >= len(table_lines):
+        return None
+
+    header_line = table_lines[sep_idx - 1]
+    raw_headers = [c.strip() for c in header_line.strip("|").split("|")]
+    headers = [h for h in raw_headers if h]
+
+    data_rows: list[list[str]] = []
+    for l in table_lines[sep_idx + 1 :]:
+        if not (l.startswith("|") and l.endswith("|")):
+            continue
+        raw_cells = [c.strip() for c in l.strip("|").split("|")]
+        if any(c for c in raw_cells):
+            data_rows.append(raw_cells[: len(headers)])
+
+    if headers and data_rows:
+        return headers, data_rows
+    return None
 
 
 _AG_UI_BRIDGE_SCRIPT = """
@@ -381,45 +447,99 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
     """Synthesizes a horizontally-oriented Policy Comparison Matrix GenUI artifact."""
     escaped_query = html.escape(query)
 
-    raw_lines = [l.strip() for l in answer.splitlines() if l.strip()]
-    candidate_items: list[str] = []
+    # 1. Check if the answer or context contains a markdown table
+    parsed_table = parse_markdown_table(answer) or parse_markdown_table(context)
+    if parsed_table:
+        headers, rows = parsed_table
+        th_html = "".join(
+            f'<th class="px-3.5 py-2.5 font-bold text-zinc-900 border-b border-zinc-200 text-left">{html.escape(h)}</th>'
+            for h in headers
+        )
+        tr_html = ""
+        for r in rows:
+            tds = "".join(
+                f'<td class="px-3.5 py-2.5 text-zinc-700 border-b border-zinc-100">{format_inline_markdown(c)}</td>'
+                for c in r
+            )
+            tr_html += f'<tr class="hover:bg-blue-50/40 transition-colors">{tds}</tr>'
 
-    for line in raw_lines:
-        if line.startswith("#") and len(candidate_items) > 0:
-            continue
-        cleaned = re.sub(r"^(\*|-|•|\d+\.|\d+\))\s+", "", line).strip()
-        if cleaned and len(cleaned) > 5:
-            candidate_items.append(cleaned)
-        if len(candidate_items) >= 6:
-            break
-
-    items_html = ""
-    for i, item in enumerate(candidate_items[:6]):
-        formatted = format_inline_markdown(item)
-        items_html += f"""
-        <div class="flex flex-col justify-between p-3 bg-white rounded-xl border border-zinc-200 shadow-2xs hover:border-blue-300 hover:shadow-xs transition-all">
-          <div class="flex items-start gap-2.5">
-            <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[10px] font-bold text-blue-600 border border-blue-200">
-              {i + 1}
-            </span>
-            <div class="text-xs text-zinc-700 leading-relaxed space-y-0.5">
-              {formatted}
-            </div>
-          </div>
+        body_content = f"""
+        <div class="overflow-x-auto rounded-xl border border-zinc-200 bg-white mb-3 shadow-2xs">
+          <table class="w-full text-xs text-left border-collapse">
+            <thead class="bg-zinc-50/90 text-zinc-800">
+              <tr>{th_html}</tr>
+            </thead>
+            <tbody id="itemsGrid" class="divide-y divide-zinc-100">
+              {tr_html}
+            </tbody>
+          </table>
         </div>
         """
+    else:
+        # 2. Extract clean card items from bullets and paragraphs
+        raw_lines = [l.strip() for l in answer.splitlines() if l.strip()]
+        candidate_items: list[str] = []
 
-    if not items_html:
-        formatted_ans = format_inline_markdown(answer[:300])
-        items_html = f"""
-        <div class="p-3 bg-white rounded-xl border border-zinc-200 col-span-full">
-          <div class="text-xs text-zinc-700 leading-relaxed">{formatted_ans}...</div>
+        for line in raw_lines:
+            if line.startswith("#"):
+                continue
+            if re.match(r"^[\s\-=_|*~#:]+$", line):
+                continue
+            cleaned = re.sub(r"^(\*|-|•|\d+\.|\d+\))\s+", "", line).strip()
+            if not cleaned or re.match(r"^[\s\-=_|*~#:]+$", cleaned):
+                continue
+            if len(cleaned) > 5:
+                candidate_items.append(cleaned)
+            if len(candidate_items) >= 6:
+                break
+
+        cards_html = ""
+        for i, item in enumerate(candidate_items[:6]):
+            title, body = split_title_and_body(item)
+            if title and body:
+                formatted_title = format_inline_markdown(title)
+                formatted_body = format_inline_markdown(body)
+                content_block = f"""
+                <div class="space-y-1">
+                  <h4 class="text-xs font-bold text-zinc-900">{formatted_title}</h4>
+                  <p class="text-xs text-zinc-600 leading-relaxed">{formatted_body}</p>
+                </div>
+                """
+            else:
+                formatted = format_inline_markdown(item)
+                content_block = f"""
+                <div class="text-xs text-zinc-700 leading-relaxed">
+                  {formatted}
+                </div>
+                """
+
+            cards_html += f"""
+            <div class="flex flex-col justify-between p-3.5 bg-white rounded-xl border border-zinc-200 shadow-2xs hover:border-blue-300 hover:shadow-xs transition-all">
+              <div class="flex items-start gap-2.5">
+                <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[10px] font-bold text-blue-600 border border-blue-200">
+                  {i + 1}
+                </span>
+                {content_block}
+              </div>
+            </div>
+            """
+
+        if not cards_html:
+            formatted_ans = format_inline_markdown(answer[:300])
+            cards_html = f"""
+            <div class="p-3.5 bg-white rounded-xl border border-zinc-200 col-span-full">
+              <div class="text-xs text-zinc-700 leading-relaxed">{formatted_ans}...</div>
+            </div>
+            """
+
+        body_content = f"""
+        <div id="itemsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 mb-3">
+          {cards_html}
         </div>
         """
 
     content = f"""
     <div id="genui-root" class="w-full rounded-xl bg-gradient-to-b from-zinc-50 to-white p-4 border border-zinc-200 shadow-2xs">
-      <!-- Horizontal Top Header -->
       <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-zinc-200/70 mb-3">
         <div class="flex items-center gap-2.5">
           <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-600 text-white shadow-2xs">
@@ -447,12 +567,8 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
         </div>
       </div>
 
-      <!-- Horizontal Multi-Column Cards -->
-      <div id="itemsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 mb-3">
-        {items_html}
-      </div>
+      {body_content}
 
-      <!-- Horizontal Footer -->
       <div class="flex items-center justify-between pt-2.5 border-t border-zinc-100 text-[11px] text-zinc-500">
         <span>Click below for more details or clarifications</span>
         <button
@@ -468,10 +584,10 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
     <script>
       function filterItems(term) {{
         const lower = (term || '').toLowerCase();
-        const cards = document.querySelectorAll('#itemsGrid > div');
-        cards.forEach(function(card) {{
-          const text = card.textContent.toLowerCase();
-          card.style.display = text.includes(lower) ? '' : 'none';
+        const items = document.querySelectorAll('#itemsGrid > *');
+        items.forEach(function(item) {{
+          const text = item.textContent.toLowerCase();
+          item.style.display = text.includes(lower) ? '' : 'none';
         }});
       }}
     </script>
@@ -601,17 +717,21 @@ def build_procedure_genui(query: str, answer: str, context: str) -> str:
     raw_lines = [l.strip() for l in answer.splitlines() if l.strip()]
     step_items: list[str] = []
     for line in raw_lines:
-        if line.startswith("#") and len(step_items) > 0:
+        if line.startswith("#"):
+            continue
+        if re.match(r"^[\s\-=_|*~#:]+$", line):
             continue
         cleaned = re.sub(r"^(\*|-|•|\d+\.|\d+\))\s+", "", line).strip()
-        if cleaned and len(cleaned) > 5:
+        if not cleaned or re.match(r"^[\s\-=_|*~#:]+$", cleaned):
+            continue
+        if len(cleaned) > 5:
             step_items.append(cleaned)
         if len(step_items) >= 6:
             break
 
     if not step_items:
         step_items = [
-            "Review company policy requirements and eligibility",
+            "Review company policy requirements and eligibility criteria",
             "Prepare necessary supporting documentation and forms",
             "Submit request to your direct reporting manager",
             "Receive formal HR approval and acknowledgement",
@@ -619,26 +739,42 @@ def build_procedure_genui(query: str, answer: str, context: str) -> str:
 
     steps_html = ""
     for i, st in enumerate(step_items):
-        formatted = format_inline_markdown(st)
+        title, body = split_title_and_body(st)
+        if title and body:
+            formatted_title = format_inline_markdown(title)
+            formatted_body = format_inline_markdown(body)
+            step_body = f"""
+            <div class="space-y-0.5">
+              <span class="inline-block rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 border border-emerald-200 mb-0.5">
+                Step {i + 1}: {formatted_title}
+              </span>
+              <div class="text-xs text-zinc-600 leading-relaxed">{formatted_body}</div>
+            </div>
+            """
+        else:
+            formatted = format_inline_markdown(st)
+            step_body = f"""
+            <div class="space-y-0.5">
+              <span class="inline-block rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 border border-emerald-200 mb-0.5">
+                Step {i + 1}
+              </span>
+              <div class="text-xs text-zinc-700 leading-relaxed">{formatted}</div>
+            </div>
+            """
+
         steps_html += f"""
-        <label class="flex items-start gap-2.5 p-3 rounded-xl border border-zinc-200 bg-white hover:border-emerald-300 hover:shadow-2xs cursor-pointer transition-all">
+        <label class="flex items-start gap-2.5 p-3.5 rounded-xl border border-zinc-200 bg-white hover:border-emerald-300 hover:shadow-2xs cursor-pointer transition-all">
           <input
             type="checkbox"
             onchange="updateChecklist()"
             class="step-check mt-0.5 h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer shrink-0"
           />
-          <div class="space-y-0.5">
-            <span class="inline-block rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 border border-emerald-200 mb-0.5">
-              Step {i + 1}
-            </span>
-            <div class="text-xs text-zinc-700 leading-relaxed">{formatted}</div>
-          </div>
+          {step_body}
         </label>
         """
 
     content = f"""
     <div id="genui-root" class="w-full rounded-xl bg-gradient-to-br from-emerald-50/40 via-white to-zinc-50 p-4 border border-emerald-200/80 shadow-2xs">
-      <!-- Horizontal Top Header -->
       <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-emerald-100 mb-3">
         <div class="flex items-center gap-2.5">
           <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-2xs">
@@ -662,12 +798,10 @@ def build_procedure_genui(query: str, answer: str, context: str) -> str:
         </div>
       </div>
 
-      <!-- Horizontal Multi-Column Step Cards -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 mb-3">
         {steps_html}
       </div>
 
-      <!-- Horizontal Footer -->
       <div class="flex items-center justify-between pt-2.5 border-t border-zinc-100 text-[11px] text-zinc-500">
         <span>Track your progress step-by-step</span>
         <button
@@ -701,7 +835,7 @@ Given a user query, grounded HR policy context, and text answer, generate ONLY t
 Follow these guidelines:
 1. Wrap everything inside a top-level `<div id="genui-root" class="w-full rounded-xl bg-white p-4 border border-zinc-200">...</div>`.
 2. Use horizontal, responsive multi-column layouts (`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3`).
-3. Do NOT output raw markdown symbols like `**`, `*`, `###`, or `[1]` citations inside the HTML; convert all formatting into proper HTML tags like `<strong>`, `<em>`, `<span>`, `<div>`, `<p>`, `<button>`.
+3. Do NOT output raw markdown symbols like `**`, `*`, `###`, `---`, `--`, or `[1]` citations inside the HTML; convert all formatting into proper HTML tags like `<strong>`, `<em>`, `<span>`, `<div>`, `<p>`, `<button>`.
 4. Use modern Tailwind CSS classes for styling (cards, gradients, badges, buttons, sliders, tabs, or checklists).
 5. Use a cohesive palette matching standard zinc/blue/emerald/indigo.
 6. Make it interactive (e.g. tabs, filter inputs, calculate buttons, or interactive toggles with vanilla JavaScript).
@@ -775,6 +909,7 @@ async def generate_knowledge_genui(
             if cleaned_html:
                 cleaned_html = re.sub(r"\[\d+(?:,\s*\d+)*\]", "", cleaned_html)
                 cleaned_html = re.sub(r"\*\*(.+?)\*\*", r'<strong class="font-semibold text-zinc-900">\1</strong>', cleaned_html)
+                cleaned_html = re.sub(r"\s*--\s*", " — ", cleaned_html)
                 if 'id="genui-root"' not in cleaned_html:
                     cleaned_html = f'<div id="genui-root" class="w-full rounded-xl bg-white p-4 border border-zinc-200">{cleaned_html}</div>'
                 full_doc = f"{_HTML_SHELL_HEAD}\n{cleaned_html}\n{_HTML_SHELL_TAIL}"
