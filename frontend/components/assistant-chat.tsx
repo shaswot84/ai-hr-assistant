@@ -219,8 +219,12 @@ const MessageBubble = memo(function MessageBubble({
     message.meta?.safety === "FLAGGED_FOR_REVIEW" ||
     agentLabel !== undefined;
   return (
-    <div className="group relative flex justify-start">
-      <div className="max-w-[85%] rounded-2xl rounded-bl-sm border border-zinc-200 bg-white px-4 py-3 shadow-sm">
+    <div className={`group relative flex justify-start ${isGenUIWidget ? "w-full" : ""}`}>
+      <div
+        className={`${
+          isGenUIWidget ? "w-full max-w-4xl" : "max-w-[85%]"
+        } rounded-2xl rounded-bl-sm border border-zinc-200 bg-white px-4 py-3 shadow-sm`}
+      >
         {message.content && !message.streaming && (
           <div className="absolute right-2 top-2 flex items-center gap-1">
             {ttsSupported && (

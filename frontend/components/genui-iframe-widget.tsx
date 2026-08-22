@@ -99,7 +99,7 @@ export function GenUIIframeWidget({ widget, onAction, disabled = false }: GenUII
   const pill = getPillLabel();
 
   return (
-    <div className="mt-2.5 w-full max-w-2xl">
+    <div className="mt-2.5 w-full max-w-full">
       {/* Outer Card Container */}
       <div className="overflow-hidden rounded-xl border border-zinc-200/90 bg-white shadow-2xs transition-all hover:border-zinc-300">
         {/* Header / Toolbar */}

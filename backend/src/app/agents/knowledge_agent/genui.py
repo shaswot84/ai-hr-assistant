@@ -2,7 +2,7 @@
 
 Synthesizes rich, interactive, sandboxed Generative UI artifacts (embedded in
 iframes via the AG-UI protocol) for HR policies, guidelines, calculators,
-procedure checklists, and comparison matrices with proper HTML rendering.
+procedure checklists, and comparison matrices with horizontal, responsive layouts.
 """
 
 from __future__ import annotations
@@ -171,6 +171,7 @@ _HTML_SHELL_HEAD = """<!DOCTYPE html>
       color: #18181b;
       -webkit-font-smoothing: antialiased;
       box-sizing: border-box;
+      width: 100%;
     }
     *, *:before, *:after {
       box-sizing: inherit;
@@ -212,7 +213,7 @@ def should_generate_genui(query: str, grounded_context: str | None = None) -> bo
 
 
 def build_comparison_genui(query: str, answer: str, context: str) -> str:
-    """Synthesizes an interactive Policy Comparison Matrix GenUI artifact."""
+    """Synthesizes a horizontally-oriented Policy Comparison Matrix GenUI artifact."""
     escaped_query = html.escape(query)
 
     raw_lines = [l.strip() for l in answer.splitlines() if l.strip()]
@@ -231,9 +232,9 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
     for i, item in enumerate(candidate_items[:6]):
         formatted = format_inline_markdown(item)
         items_html += f"""
-        <div class="p-2.5 bg-white rounded-lg border border-zinc-200/80 shadow-2xs hover:border-blue-300 transition-colors">
-          <div class="flex items-start gap-2">
-            <span class="flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[10px] font-bold text-blue-600 border border-blue-200">
+        <div class="flex flex-col justify-between p-3 bg-white rounded-xl border border-zinc-200 shadow-2xs hover:border-blue-300 hover:shadow-xs transition-all">
+          <div class="flex items-start gap-2.5">
+            <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[10px] font-bold text-blue-600 border border-blue-200">
               {i + 1}
             </span>
             <div class="text-xs text-zinc-700 leading-relaxed space-y-0.5">
@@ -246,50 +247,53 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
     if not items_html:
         formatted_ans = format_inline_markdown(answer[:300])
         items_html = f"""
-        <div class="p-2.5 bg-white rounded-lg border border-zinc-200/80">
+        <div class="p-3 bg-white rounded-xl border border-zinc-200 col-span-full">
           <div class="text-xs text-zinc-700 leading-relaxed">{formatted_ans}...</div>
         </div>
         """
 
     content = f"""
-    <div id="genui-root" class="max-w-full rounded-xl bg-gradient-to-b from-zinc-50 to-white p-3.5 border border-zinc-200 shadow-2xs">
-      <div class="flex items-center justify-between pb-2.5 border-b border-zinc-200/70 mb-2.5">
-        <div class="flex items-center gap-2">
-          <span class="flex h-6 w-6 items-center justify-center rounded-lg bg-blue-600 text-white shadow-2xs">
-            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <div id="genui-root" class="w-full rounded-xl bg-gradient-to-b from-zinc-50 to-white p-4 border border-zinc-200 shadow-2xs">
+      <!-- Horizontal Top Header -->
+      <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-zinc-200/70 mb-3">
+        <div class="flex items-center gap-2.5">
+          <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-600 text-white shadow-2xs">
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
             </svg>
           </span>
           <div>
             <h3 class="text-xs font-bold text-zinc-900">Policy Comparison Matrix</h3>
-            <p class="text-[10px] text-zinc-500">{escaped_query}</p>
+            <p class="text-[11px] text-zinc-500 max-w-md truncate">{escaped_query}</p>
           </div>
         </div>
-        <span class="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700 border border-blue-200">
-          Interactive AG-UI
-        </span>
+
+        <div class="flex items-center gap-2">
+          <input
+            id="filterInput"
+            type="text"
+            placeholder="Filter policy terms..."
+            oninput="filterItems(this.value)"
+            class="w-48 sm:w-60 rounded-lg border border-zinc-300 bg-white px-2.5 py-1 text-xs text-zinc-800 placeholder-zinc-400 focus:border-blue-500 focus:outline-none"
+          />
+          <span class="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700 border border-blue-200 shrink-0">
+            Interactive AG-UI
+          </span>
+        </div>
       </div>
 
-      <div class="mb-2.5">
-        <input
-          id="filterInput"
-          type="text"
-          placeholder="Filter policy terms..."
-          oninput="filterItems(this.value)"
-          class="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-1 text-xs text-zinc-800 placeholder-zinc-400 focus:border-blue-500 focus:outline-none"
-        />
-      </div>
-
-      <div id="itemsGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2.5">
+      <!-- Horizontal Multi-Column Cards -->
+      <div id="itemsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 mb-3">
         {items_html}
       </div>
 
-      <div class="flex items-center justify-between pt-2 border-t border-zinc-100 text-[11px] text-zinc-500">
-        <span>Click below to ask follow-up questions</span>
+      <!-- Horizontal Footer -->
+      <div class="flex items-center justify-between pt-2.5 border-t border-zinc-100 text-[11px] text-zinc-500">
+        <span>Click below for more details or clarifications</span>
         <button
           type="button"
           onclick="window.triggerChatAction('Can you provide more specific examples of these policies?')"
-          class="rounded-md bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-zinc-800 transition-colors"
+          class="rounded-lg bg-zinc-900 px-3 py-1 text-xs font-medium text-white hover:bg-zinc-800 transition-colors shadow-2xs"
         >
           Ask follow-up &rarr;
         </button>
@@ -311,7 +315,7 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
 
 
 def build_calculator_genui(query: str, answer: str, context: str) -> str:
-    """Synthesizes an interactive HR Calculator GenUI artifact with dynamic policy numbers."""
+    """Synthesizes a horizontally-oriented interactive HR Calculator GenUI artifact."""
     escaped_query = html.escape(query)
 
     found_days = re.findall(r"(\d+)\s*(?:days|day)", answer.lower() + " " + context.lower())
@@ -319,30 +323,36 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
     default_carryover = int(found_days[1]) if len(found_days) > 1 else 5
 
     content = f"""
-    <div id="genui-root" class="max-w-full rounded-xl bg-gradient-to-br from-blue-50/50 via-white to-indigo-50/40 p-3.5 border border-blue-200/80 shadow-2xs">
-      <div class="flex items-center justify-between pb-2.5 border-b border-blue-100 mb-3">
-        <div class="flex items-center gap-2">
-          <span class="flex h-6 w-6 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-2xs">
-            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <div id="genui-root" class="w-full rounded-xl bg-gradient-to-br from-blue-50/50 via-white to-indigo-50/40 p-4 border border-blue-200/80 shadow-2xs">
+      <!-- Top Bar -->
+      <div class="flex items-center justify-between pb-3 border-b border-blue-100 mb-3.5">
+        <div class="flex items-center gap-2.5">
+          <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-2xs">
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
             </svg>
           </span>
           <div>
             <h3 class="text-xs font-bold text-zinc-900">Interactive HR Policy Calculator</h3>
-            <p class="text-[10px] text-zinc-500">{escaped_query}</p>
+            <p class="text-[11px] text-zinc-500 truncate max-w-sm">{escaped_query}</p>
           </div>
         </div>
-        <span class="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 border border-indigo-200">
+        <span class="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[10px] font-semibold text-indigo-700 border border-indigo-200">
           Live Estimator
         </span>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-3">
-        <div class="bg-white rounded-lg p-2.5 border border-zinc-200">
-          <label class="block text-[11px] font-medium text-zinc-700 mb-1">
-            Current Leave Balance (Days)
-          </label>
-          <div class="flex items-center gap-2">
+      <!-- Horizontal 2-Column Dashboard (Left: Inputs, Right: Live Result Card) -->
+      <div class="grid grid-cols-1 md:grid-cols-12 gap-3.5 mb-3">
+        <!-- Left Column: Controls (Span 7) -->
+        <div class="md:col-span-7 space-y-2.5">
+          <div class="bg-white rounded-xl p-3 border border-zinc-200/90 shadow-2xs">
+            <div class="flex items-center justify-between mb-1.5">
+              <label class="text-[11px] font-semibold text-zinc-700">
+                Current Leave Balance
+              </label>
+              <span id="daysVal" class="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">{default_entitlement} Days</span>
+            </div>
             <input
               id="daysInput"
               type="range"
@@ -352,15 +362,15 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
               oninput="updateCalc()"
               class="w-full accent-blue-600 cursor-pointer"
             />
-            <span id="daysVal" class="text-xs font-bold text-zinc-900 w-7 text-right">{default_entitlement}</span>
           </div>
-        </div>
 
-        <div class="bg-white rounded-lg p-2.5 border border-zinc-200">
-          <label class="block text-[11px] font-medium text-zinc-700 mb-1">
-            Months in Service / Accrual Period
-          </label>
-          <div class="flex items-center gap-2">
+          <div class="bg-white rounded-xl p-3 border border-zinc-200/90 shadow-2xs">
+            <div class="flex items-center justify-between mb-1.5">
+              <label class="text-[11px] font-semibold text-zinc-700">
+                Months in Service / Accrual Period
+              </label>
+              <span id="monthsVal" class="text-xs font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200">{12} Months</span>
+            </div>
             <input
               id="monthsInput"
               type="range"
@@ -370,31 +380,32 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
               oninput="updateCalc()"
               class="w-full accent-indigo-600 cursor-pointer"
             />
-            <span id="monthsVal" class="text-xs font-bold text-zinc-900 w-7 text-right">12</span>
           </div>
         </div>
-      </div>
 
-      <!-- Result Card -->
-      <div class="rounded-lg bg-white p-2.5 border border-indigo-100 shadow-2xs mb-2.5">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-zinc-600">Allowable Carryover / Value:</span>
-          <span id="calcTotal" class="text-xs font-bold text-indigo-600">{default_carryover} Days Max Carryover</span>
-        </div>
-        <div class="w-full bg-zinc-100 rounded-full h-1.5 mt-2 overflow-hidden">
-          <div id="calcProgress" class="bg-indigo-600 h-1.5 rounded-full transition-all duration-300" style="width: 50%"></div>
-        </div>
-      </div>
+        <!-- Right Column: Live Result & Actions (Span 5) -->
+        <div class="md:col-span-5 flex flex-col justify-between rounded-xl bg-white p-3.5 border border-indigo-200 shadow-2xs">
+          <div>
+            <span class="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">Estimated Carryover</span>
+            <div id="calcTotal" class="text-base font-bold text-indigo-700 mt-1">
+              {default_carryover} Days Max Carryover
+            </div>
+            <div class="w-full bg-zinc-100 rounded-full h-2 mt-2.5 overflow-hidden">
+              <div id="calcProgress" class="bg-indigo-600 h-2 rounded-full transition-all duration-300" style="width: 50%"></div>
+            </div>
+            <p class="text-[10px] text-zinc-400 mt-2">Maximum allowable carryover under policy rules</p>
+          </div>
 
-      <div class="flex items-center justify-between pt-1">
-        <p class="text-[10px] text-zinc-400">Based on standard company policy guidelines</p>
-        <button
-          type="button"
-          onclick="window.triggerChatAction('How do I submit a leave carryover request?')"
-          class="rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white shadow-2xs hover:bg-indigo-700 transition-colors"
-        >
-          Submit Request &rarr;
-        </button>
+          <div class="pt-2 mt-2 border-t border-zinc-100">
+            <button
+              type="button"
+              onclick="window.triggerChatAction('How do I submit a leave carryover request?')"
+              class="w-full rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-2xs hover:bg-indigo-700 transition-colors text-center"
+            >
+              Submit Carryover Request &rarr;
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -403,13 +414,13 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
       function updateCalc() {{
         const days = parseInt(document.getElementById('daysInput').value, 10);
         const months = parseInt(document.getElementById('monthsInput').value, 10);
-        document.getElementById('daysVal').innerText = days;
-        document.getElementById('monthsVal').innerText = months;
+        document.getElementById('daysVal').innerText = days + ' Days';
+        document.getElementById('monthsVal').innerText = months + ' Months';
 
         const carryover = Math.min(days, MAX_CARRYOVER);
         const pct = Math.min(100, Math.round((carryover / Math.max(1, MAX_CARRYOVER)) * 100));
 
-        document.getElementById('calcTotal').innerText = carryover + ' Days Carryover (from ' + days + ' available)';
+        document.getElementById('calcTotal').innerText = carryover + ' Days (from ' + days + ' available)';
         document.getElementById('calcProgress').style.width = pct + '%';
       }}
       updateCalc();
@@ -419,7 +430,7 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
 
 
 def build_procedure_genui(query: str, answer: str, context: str) -> str:
-    """Synthesizes an interactive Procedure Checklist & Flowchart GenUI artifact."""
+    """Synthesizes a horizontally-oriented Procedure Checklist & Guide GenUI artifact."""
     escaped_query = html.escape(query)
 
     raw_lines = [l.strip() for l in answer.splitlines() if l.strip()]
@@ -430,7 +441,7 @@ def build_procedure_genui(query: str, answer: str, context: str) -> str:
         cleaned = re.sub(r"^(\*|-|•|\d+\.|\d+\))\s+", "", line).strip()
         if cleaned and len(cleaned) > 5:
             step_items.append(cleaned)
-        if len(step_items) >= 5:
+        if len(step_items) >= 6:
             break
 
     if not step_items:
@@ -445,52 +456,59 @@ def build_procedure_genui(query: str, answer: str, context: str) -> str:
     for i, st in enumerate(step_items):
         formatted = format_inline_markdown(st)
         steps_html += f"""
-        <label class="flex items-start gap-2.5 p-2 rounded-lg border border-zinc-200 bg-white hover:border-emerald-300 cursor-pointer transition-colors">
+        <label class="flex items-start gap-2.5 p-3 rounded-xl border border-zinc-200 bg-white hover:border-emerald-300 hover:shadow-2xs cursor-pointer transition-all">
           <input
             type="checkbox"
             onchange="updateChecklist()"
-            class="step-check mt-0.5 h-3.5 w-3.5 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+            class="step-check mt-0.5 h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer shrink-0"
           />
           <div class="space-y-0.5">
-            <span class="text-[11px] font-semibold text-zinc-900">Step {i + 1}</span>
-            <div class="text-xs text-zinc-600 leading-relaxed">{formatted}</div>
+            <span class="inline-block rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 border border-emerald-200 mb-0.5">
+              Step {i + 1}
+            </span>
+            <div class="text-xs text-zinc-700 leading-relaxed">{formatted}</div>
           </div>
         </label>
         """
 
     content = f"""
-    <div id="genui-root" class="max-w-full rounded-xl bg-gradient-to-br from-emerald-50/40 via-white to-zinc-50 p-3.5 border border-emerald-200/80 shadow-2xs">
-      <div class="flex items-center justify-between pb-2.5 border-b border-emerald-100 mb-2.5">
-        <div class="flex items-center gap-2">
-          <span class="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-2xs">
-            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <div id="genui-root" class="w-full rounded-xl bg-gradient-to-br from-emerald-50/40 via-white to-zinc-50 p-4 border border-emerald-200/80 shadow-2xs">
+      <!-- Horizontal Top Header -->
+      <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-emerald-100 mb-3">
+        <div class="flex items-center gap-2.5">
+          <span class="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-2xs">
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </span>
           <div>
             <h3 class="text-xs font-bold text-zinc-900">Procedure Checklist & Guide</h3>
-            <p class="text-[10px] text-zinc-500">{escaped_query}</p>
+            <p class="text-[11px] text-zinc-500 truncate max-w-sm">{escaped_query}</p>
           </div>
         </div>
-        <span id="progressPill" class="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 border border-emerald-200">
-          0 / {len(step_items)} Completed
-        </span>
+
+        <div class="flex items-center gap-3">
+          <div class="w-32 bg-zinc-100 rounded-full h-2 overflow-hidden border border-zinc-200">
+            <div id="checklistProgressBar" class="bg-emerald-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+          </div>
+          <span id="progressPill" class="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-700 border border-emerald-200 shrink-0">
+            0 / {len(step_items)} Done
+          </span>
+        </div>
       </div>
 
-      <div class="w-full bg-zinc-100 rounded-full h-1.5 mb-2.5 overflow-hidden">
-        <div id="checklistProgressBar" class="bg-emerald-600 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
-      </div>
-
-      <div class="space-y-1.5 mb-2.5">
+      <!-- Horizontal Multi-Column Step Cards -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 mb-3">
         {steps_html}
       </div>
 
-      <div class="flex items-center justify-between pt-2 border-t border-zinc-100">
-        <span class="text-[10px] text-zinc-400">Track your progress step-by-step</span>
+      <!-- Horizontal Footer -->
+      <div class="flex items-center justify-between pt-2.5 border-t border-zinc-100 text-[11px] text-zinc-500">
+        <span>Track your progress step-by-step</span>
         <button
           type="button"
           onclick="window.triggerChatAction('What forms do I need to attach for this procedure?')"
-          class="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 transition-colors"
+          class="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700 transition-colors shadow-2xs"
         >
           Get required forms &rarr;
         </button>
@@ -506,7 +524,7 @@ def build_procedure_genui(query: str, answer: str, context: str) -> str:
         const pct = total > 0 ? Math.round((checked / total) * 100) : 0;
 
         document.getElementById('checklistProgressBar').style.width = pct + '%';
-        document.getElementById('progressPill').innerText = checked + ' / ' + total + ' Completed';
+        document.getElementById('progressPill').innerText = checked + ' / ' + total + ' Done';
       }}
     </script>
     """
@@ -516,13 +534,14 @@ def build_procedure_genui(query: str, answer: str, context: str) -> str:
 _OPEN_GENUI_SYSTEM = """You are a Generative UI designer creating a modern, self-contained HTML component for an AI HR Assistant.
 Given a user query, grounded HR policy context, and text answer, generate ONLY the HTML body content (no markdown code fences, no ```html, no <html>/<body> tags).
 Follow these guidelines:
-1. Wrap everything inside a top-level `<div id="genui-root" class="max-w-full rounded-xl bg-white p-3 border border-zinc-200">...</div>`.
-2. Do NOT output raw markdown symbols like `**`, `*`, `###`, or `[1]` citations inside the HTML; convert all formatting into proper HTML tags like `<strong>`, `<em>`, `<span>`, `<div>`, `<p>`, `<button>`.
-3. Use modern Tailwind CSS classes for styling (cards, gradients, badges, buttons, sliders, tabs, or checklists).
-4. Use a cohesive palette matching standard zinc/blue/emerald/indigo.
-5. Make it interactive (e.g. tabs, filter inputs, calculate buttons, or interactive toggles with vanilla JavaScript).
-6. If there are action buttons, wire them to `window.triggerChatAction('your chat prompt here')`.
-7. Keep it compact, responsive, and elegant without extra outer margins.
+1. Wrap everything inside a top-level `<div id="genui-root" class="w-full rounded-xl bg-white p-4 border border-zinc-200">...</div>`.
+2. Use horizontal, responsive multi-column layouts (`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3`).
+3. Do NOT output raw markdown symbols like `**`, `*`, `###`, or `[1]` citations inside the HTML; convert all formatting into proper HTML tags like `<strong>`, `<em>`, `<span>`, `<div>`, `<p>`, `<button>`.
+4. Use modern Tailwind CSS classes for styling (cards, gradients, badges, buttons, sliders, tabs, or checklists).
+5. Use a cohesive palette matching standard zinc/blue/emerald/indigo.
+6. Make it interactive (e.g. tabs, filter inputs, calculate buttons, or interactive toggles with vanilla JavaScript).
+7. If there are action buttons, wire them to `window.triggerChatAction('your chat prompt here')`.
+8. Keep it expansive horizontally to fit the full width of the chat container.
 Output ONLY the raw HTML/JS block.
 """
 
@@ -589,7 +608,7 @@ async def generate_knowledge_genui(
                 cleaned_html = re.sub(r"\[\d+(?:,\s*\d+)*\]", "", cleaned_html)
                 cleaned_html = re.sub(r"\*\*(.+?)\*\*", r'<strong class="font-semibold text-zinc-900">\1</strong>', cleaned_html)
                 if 'id="genui-root"' not in cleaned_html:
-                    cleaned_html = f'<div id="genui-root" class="max-w-full rounded-xl bg-white p-3 border border-zinc-200">{cleaned_html}</div>'
+                    cleaned_html = f'<div id="genui-root" class="w-full rounded-xl bg-white p-4 border border-zinc-200">{cleaned_html}</div>'
                 full_doc = f"{_HTML_SHELL_HEAD}\n{cleaned_html}\n{_HTML_SHELL_TAIL}"
                 return {
                     "type": "genui_iframe",
