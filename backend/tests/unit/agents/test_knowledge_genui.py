@@ -61,6 +61,29 @@ def test_split_title_and_body():
     assert t3 == "Annual Leave"
     assert b3 == "20 days"
 
+    # Parenthetical title parsing
+    t4, b4 = split_title_and_body(
+        "Data breach / harassment (first offense = final warning / suspension; second = disciplinary action; third = termination) [2]"
+    )
+    assert t4 == "Data breach / harassment"
+    assert "first offense = final warning" in b4
+
+
+def test_build_comparison_genui_with_br_and_bullets():
+    raw_text = (
+        "Data breach / harassment (first offense = final warning / suspension; second = disciplinary action; third = termination) [2] "
+        "<br>• Gross misconduct (immediate termination on first offense) [2] "
+        "<br>• Unauthorized absence (final warning + deduction on second; disciplinary action on third) [2] "
+        "<br>• Minor lateness / policy lapses (progressive counselling, no termination unless escalated) [2]"
+    )
+    html_doc = build_comparison_genui("what are the disciplinary policies", raw_text, "")
+    assert "<br>" not in html_doc
+    assert "&lt;br&gt;" not in html_doc
+    assert "Data breach / harassment" in html_doc
+    assert "Gross misconduct" in html_doc
+    assert "Unauthorized absence" in html_doc
+    assert "[2]" not in html_doc
+
 
 def test_parse_markdown_table():
     md = """

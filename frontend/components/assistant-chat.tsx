@@ -66,8 +66,18 @@ function cleanTextForSpeech(markdown: string): string {
     .trim();
 }
 
+/** Normalizes raw HTML linebreaks, inline bullets, and non-breaking spaces. */
+function normalizeMarkdownText(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/[\u00a0\u202f\u200b\ufeff]/g, " ")
+    .replace(/(?<=\S)\s*•\s+/g, "\n• ");
+}
+
 /** Markdown renderer shared by assistant bubbles (same styles as knowledge-chat). */
 function Markdown({ children }: { children: string }) {
+  const normalized = normalizeMarkdownText(children);
   return (
     <div className="text-sm leading-relaxed text-zinc-700">
       <ReactMarkdown
@@ -111,7 +121,7 @@ function Markdown({ children }: { children: string }) {
           ),
         }}
       >
-        {children}
+        {normalized}
       </ReactMarkdown>
     </div>
   );
@@ -317,7 +327,7 @@ const MessageBubble = memo(function MessageBubble({
                 {showTextDetails && (
                   <div className="mt-2 rounded-xl bg-zinc-50/50 p-3 border border-zinc-100 text-sm leading-relaxed text-zinc-700 animate-fadeIn">
                     {message.streaming ? (
-                      <div className="whitespace-pre-wrap">{message.content}</div>
+                      <div className="whitespace-pre-wrap">{normalizeMarkdownText(message.content)}</div>
                     ) : (
                       <Markdown>{message.content}</Markdown>
                     )}
@@ -332,7 +342,7 @@ const MessageBubble = memo(function MessageBubble({
             {message.content ? (
               message.streaming ? (
                 <div className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-700">
-                  {message.content}
+                  {normalizeMarkdownText(message.content)}
                 </div>
               ) : (
                 <Markdown>{message.content}</Markdown>

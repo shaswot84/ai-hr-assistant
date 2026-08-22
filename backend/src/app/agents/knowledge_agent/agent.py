@@ -321,6 +321,12 @@ async def _track_and_guard(
                 )
                 verdict = rechecked.verdict
 
+    # Clean up raw <br> tags, inline bullets, and unicode narrow spaces in draft
+    import re
+    draft = re.sub(r"<br\s*/?>", "\n", draft, flags=re.IGNORECASE)
+    draft = re.sub(r"[\u00a0\u202f\u200b\ufeff]", " ", draft)
+    draft = re.sub(r"(?<=\S)\s*•\s+", "\n• ", draft)
+
     # Persist markers ONLY for citations the answer actually cited, and
     # renumber them densely (1..k) so marker N always indexes the k-th served
     # citation — never a chunk that was retrieved but not cited.

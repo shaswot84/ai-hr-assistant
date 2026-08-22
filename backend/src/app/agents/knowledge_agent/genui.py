@@ -27,6 +27,12 @@ _COMPARISON_KEYWORDS = (
     "between",
     "options",
     "types of",
+    "disciplinary",
+    "offense",
+    "misconduct",
+    "harassment",
+    "breach",
+    "violation",
 )
 _CALCULATOR_KEYWORDS = (
     "calculate",
@@ -73,12 +79,27 @@ _GENUI_TRIGGER_KEYWORDS = (
 )
 
 
+def normalize_text_content(text: str) -> str:
+    """Normalizes HTML line breaks, unicode whitespace, and inline bullet markers."""
+    if not text:
+        return ""
+    # Replace raw <br>, <br/>, <br /> with standard newlines
+    res = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    # Normalize non-breaking and zero-width spaces
+    res = re.sub(r"[\u00a0\u202f\u200b\ufeff]", " ", res)
+    # Ensure inline bullet points get split onto separate lines (e.g. Item 1 • Item 2)
+    res = re.sub(r"(?<=\S)\s*•\s+", "\n• ", res)
+    return res
+
+
 def format_inline_markdown(text: str) -> str:
     """Converts inline markdown (bold, italic, code, citations) to clean, professional HTML."""
     if not text:
         return ""
+    # Normalize line breaks and unicode spaces first
+    cleaned = normalize_text_content(text)
     # Strip citation markers like [1], [2, 3] from widget display
-    cleaned = re.sub(r"\[\d+(?:,\s*\d+)*\]", "", text)
+    cleaned = re.sub(r"\[\d+(?:,\s*\d+)*\]", "", cleaned)
     # Remove leading markdown header marks, bullets with whitespace, numbering with dot
     cleaned = re.sub(r"^#{1,6}\s+", "", cleaned)
     cleaned = re.sub(r"^(\*|-|•|\d+\.|\d+\))\s+", "", cleaned)
@@ -117,28 +138,43 @@ def split_title_and_body(text: str) -> tuple[str, str]:
     if not text:
         return "", ""
 
+    cleaned = normalize_text_content(text).strip()
+    # Strip citation markers like [1], [2, 3] first
+    cleaned = re.sub(r"\[\d+(?:,\s*\d+)*\]", "", cleaned).strip()
+    # Strip leading bullet/numbering
+    cleaned = re.sub(r"^(\*|-|•|\d+\.|\d+\))\s+", "", cleaned).strip()
+
     # Check for **Title**: Description or **Title:** Description
-    bold_match = re.match(r"^\*\*(.+?)\*\*[:\s—–-]*(.*)$", text.strip())
+    bold_match = re.match(r"^\*\*(.+?)\*\*[:\s—–-]*(.*)$", cleaned)
     if bold_match:
         title = bold_match.group(1).strip(" :\t—–-*•")
         body = bold_match.group(2).strip()
         return title, body
 
+    # Check for Title (Parenthetical Description)
+    paren_match = re.match(r"^([^(]+?)\s*\((.+)\)\s*$", cleaned)
+    if paren_match:
+        title = paren_match.group(1).strip(" :\t—–-*•")
+        body = paren_match.group(2).strip()
+        if 2 <= len(title) <= 50 and body:
+            return title, body
+
     # Check for Title: Description or Title — Description
     for sep in (": ", " — ", " – ", " -- "):
-        if sep in text:
-            parts = text.split(sep, 1)
+        if sep in cleaned:
+            parts = cleaned.split(sep, 1)
             title = parts[0].strip(" *-#•")
             body = parts[1].strip()
-            if 2 <= len(title) <= 40 and body:
+            if 2 <= len(title) <= 45 and body:
                 return title, body
 
-    return "", text.strip(" *-#•")
+    return "", cleaned.strip(" *-#•")
 
 
 def parse_markdown_table(text: str) -> tuple[list[str], list[list[str]]] | None:
     """Parses a markdown table into (headers, rows) if present in the text."""
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    normalized = normalize_text_content(text)
+    lines = [l.strip() for l in normalized.splitlines() if l.strip()]
     table_lines = [l for l in lines if l.startswith("|") and l.endswith("|")]
     if len(table_lines) < 2:
         return None
@@ -446,9 +482,11 @@ def build_skeleton_genui(ui_type: str, query: str) -> str:
 def build_comparison_genui(query: str, answer: str, context: str) -> str:
     """Synthesizes a horizontally-oriented Policy Comparison Matrix GenUI artifact."""
     escaped_query = html.escape(query)
+    normalized_ans = normalize_text_content(answer)
+    normalized_ctx = normalize_text_content(context)
 
     # 1. Check if the answer or context contains a markdown table
-    parsed_table = parse_markdown_table(answer) or parse_markdown_table(context)
+    parsed_table = parse_markdown_table(normalized_ans) or parse_markdown_table(normalized_ctx)
     if parsed_table:
         headers, rows = parsed_table
         th_html = "".join(
@@ -476,8 +514,8 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
         </div>
         """
     else:
-        # 2. Extract clean card items from bullets and paragraphs
-        raw_lines = [l.strip() for l in answer.splitlines() if l.strip()]
+        # 2. Extract clean card items from bullets and lines
+        raw_lines = [l.strip() for l in normalized_ans.splitlines() if l.strip()]
         candidate_items: list[str] = []
 
         for line in raw_lines:
@@ -525,7 +563,7 @@ def build_comparison_genui(query: str, answer: str, context: str) -> str:
             """
 
         if not cards_html:
-            formatted_ans = format_inline_markdown(answer[:300])
+            formatted_ans = format_inline_markdown(normalized_ans[:300])
             cards_html = f"""
             <div class="p-3.5 bg-white rounded-xl border border-zinc-200 col-span-full">
               <div class="text-xs text-zinc-700 leading-relaxed">{formatted_ans}...</div>
@@ -713,8 +751,9 @@ def build_calculator_genui(query: str, answer: str, context: str) -> str:
 def build_procedure_genui(query: str, answer: str, context: str) -> str:
     """Synthesizes a horizontally-oriented Procedure Checklist & Guide GenUI artifact."""
     escaped_query = html.escape(query)
+    normalized_ans = normalize_text_content(answer)
 
-    raw_lines = [l.strip() for l in answer.splitlines() if l.strip()]
+    raw_lines = [l.strip() for l in normalized_ans.splitlines() if l.strip()]
     step_items: list[str] = []
     for line in raw_lines:
         if line.startswith("#"):
