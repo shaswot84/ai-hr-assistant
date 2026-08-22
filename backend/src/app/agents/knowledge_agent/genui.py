@@ -2,7 +2,7 @@
 
 Synthesizes rich, interactive, sandboxed Generative UI artifacts (embedded in
 iframes via the AG-UI protocol) for HR policies, guidelines, calculators,
-procedure checklists, and comparison matrices with horizontal, responsive layouts.
+procedure checklists, and comparison matrices with progressive streaming and skeleton states.
 """
 
 from __future__ import annotations
@@ -210,6 +210,171 @@ def should_generate_genui(query: str, grounded_context: str | None = None) -> bo
         if "1." in ctx and "2." in ctx and "3." in ctx:
             return True
     return False
+
+
+def detect_genui_type(query: str, grounded_context: str | None = None) -> tuple[str, str]:
+    """Determines the UI type and human-friendly title for early progressive skeleton generation."""
+    q = query.lower()
+    if any(kw in q for kw in _CALCULATOR_KEYWORDS):
+        return ("calculator", "Interactive Policy Calculator")
+    if any(kw in q for kw in _PROCEDURE_KEYWORDS):
+        return ("procedure", "Procedure Guide & Checklist")
+    if any(kw in q for kw in _COMPARISON_KEYWORDS):
+        return ("comparison", "Policy Comparison Matrix")
+    if any(kw in q for kw in _GENUI_TRIGGER_KEYWORDS):
+        return ("custom", "Interactive Policy Overview")
+    return ("comparison", "Policy Overview & Comparison")
+
+
+def build_skeleton_genui(ui_type: str, query: str) -> str:
+    """Generates an animated, shimmering Tailwind skeleton placeholder for early streaming."""
+    escaped_query = html.escape(query)
+
+    if ui_type == "calculator":
+        content = f"""
+        <div id="genui-root" class="w-full rounded-xl bg-gradient-to-br from-blue-50/40 via-white to-indigo-50/30 p-4 border border-blue-100 shadow-2xs animate-pulse">
+          <!-- Top Bar -->
+          <div class="flex items-center justify-between pb-3 border-b border-blue-100/60 mb-3.5">
+            <div class="flex items-center gap-2.5">
+              <div class="h-7 w-7 rounded-lg bg-indigo-200/80 animate-pulse"></div>
+              <div class="space-y-1.5">
+                <div class="h-3.5 w-40 bg-zinc-200 rounded"></div>
+                <div class="h-2.5 w-24 bg-zinc-100 rounded"></div>
+              </div>
+            </div>
+            <div class="flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 border border-indigo-200/60">
+              <span class="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-ping"></span>
+              <span class="text-[10px] font-semibold text-indigo-700">Calculating...</span>
+            </div>
+          </div>
+
+          <!-- 2-Column Dashboard Skeleton -->
+          <div class="grid grid-cols-1 md:grid-cols-12 gap-3.5 mb-3">
+            <div class="md:col-span-7 space-y-2.5">
+              <div class="bg-white/80 rounded-xl p-3.5 border border-zinc-200/70 space-y-2.5">
+                <div class="flex justify-between">
+                  <div class="h-3 w-32 bg-zinc-200 rounded"></div>
+                  <div class="h-3 w-12 bg-blue-100 rounded"></div>
+                </div>
+                <div class="h-2 w-full bg-zinc-100 rounded-full"></div>
+              </div>
+              <div class="bg-white/80 rounded-xl p-3.5 border border-zinc-200/70 space-y-2.5">
+                <div class="flex justify-between">
+                  <div class="h-3 w-40 bg-zinc-200 rounded"></div>
+                  <div class="h-3 w-12 bg-indigo-100 rounded"></div>
+                </div>
+                <div class="h-2 w-full bg-zinc-100 rounded-full"></div>
+              </div>
+            </div>
+
+            <div class="md:col-span-5 rounded-xl bg-white/80 p-4 border border-indigo-100/80 flex flex-col justify-between space-y-3">
+              <div class="space-y-2">
+                <div class="h-2.5 w-24 bg-zinc-200 rounded"></div>
+                <div class="h-6 w-36 bg-indigo-100 rounded"></div>
+                <div class="h-2 w-full bg-zinc-100 rounded-full mt-2"></div>
+              </div>
+              <div class="h-7 w-full bg-indigo-200/60 rounded-lg"></div>
+            </div>
+          </div>
+        </div>
+        """
+    elif ui_type == "procedure":
+        content = f"""
+        <div id="genui-root" class="w-full rounded-xl bg-gradient-to-br from-emerald-50/30 via-white to-zinc-50 p-4 border border-emerald-100 shadow-2xs animate-pulse">
+          <!-- Top Bar -->
+          <div class="flex items-center justify-between pb-3 border-b border-emerald-100/60 mb-3">
+            <div class="flex items-center gap-2.5">
+              <div class="h-7 w-7 rounded-lg bg-emerald-200/80 animate-pulse"></div>
+              <div class="space-y-1.5">
+                <div class="h-3.5 w-44 bg-zinc-200 rounded"></div>
+                <div class="h-2.5 w-28 bg-zinc-100 rounded"></div>
+              </div>
+            </div>
+            <div class="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 border border-emerald-200/60">
+              <span class="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+              <span class="text-[10px] font-semibold text-emerald-700">Structuring steps...</span>
+            </div>
+          </div>
+
+          <!-- Step Cards Grid Skeleton -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 mb-3">
+            <div class="p-3 bg-white/90 rounded-xl border border-zinc-200/70 space-y-2">
+              <div class="h-3.5 w-12 bg-emerald-100 rounded"></div>
+              <div class="h-3 w-full bg-zinc-100 rounded"></div>
+              <div class="h-3 w-3/4 bg-zinc-100 rounded"></div>
+            </div>
+            <div class="p-3 bg-white/90 rounded-xl border border-zinc-200/70 space-y-2">
+              <div class="h-3.5 w-12 bg-emerald-100 rounded"></div>
+              <div class="h-3 w-full bg-zinc-100 rounded"></div>
+              <div class="h-3 w-3/4 bg-zinc-100 rounded"></div>
+            </div>
+            <div class="p-3 bg-white/90 rounded-xl border border-zinc-200/70 space-y-2">
+              <div class="h-3.5 w-12 bg-emerald-100 rounded"></div>
+              <div class="h-3 w-full bg-zinc-100 rounded"></div>
+              <div class="h-3 w-3/4 bg-zinc-100 rounded"></div>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between pt-2.5 border-t border-zinc-100">
+            <div class="h-3 w-32 bg-zinc-100 rounded"></div>
+            <div class="h-6 w-24 bg-emerald-100 rounded"></div>
+          </div>
+        </div>
+        """
+    else:  # comparison & custom
+        content = f"""
+        <div id="genui-root" class="w-full rounded-xl bg-gradient-to-b from-zinc-50 to-white p-4 border border-zinc-200 shadow-2xs animate-pulse">
+          <!-- Top Bar -->
+          <div class="flex items-center justify-between pb-3 border-b border-zinc-200/70 mb-3">
+            <div class="flex items-center gap-2.5">
+              <div class="h-7 w-7 rounded-lg bg-blue-200/80 animate-pulse"></div>
+              <div class="space-y-1.5">
+                <div class="h-3.5 w-44 bg-zinc-200 rounded"></div>
+                <div class="h-2.5 w-32 bg-zinc-100 rounded"></div>
+              </div>
+            </div>
+            <div class="flex items-center gap-1.5 rounded-full bg-blue-50 px-2.5 py-1 border border-blue-200/60">
+              <span class="h-1.5 w-1.5 rounded-full bg-blue-500 animate-ping"></span>
+              <span class="text-[10px] font-semibold text-blue-700">Synthesizing matrix...</span>
+            </div>
+          </div>
+
+          <!-- Comparison Grid Skeleton -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 mb-3">
+            <div class="p-3 bg-white/90 rounded-xl border border-zinc-200/70 space-y-2">
+              <div class="flex items-center gap-2">
+                <div class="h-5 w-5 rounded-full bg-blue-100"></div>
+                <div class="h-3.5 w-24 bg-zinc-200 rounded"></div>
+              </div>
+              <div class="h-3 w-full bg-zinc-100 rounded"></div>
+              <div class="h-3 w-4/5 bg-zinc-100 rounded"></div>
+            </div>
+            <div class="p-3 bg-white/90 rounded-xl border border-zinc-200/70 space-y-2">
+              <div class="flex items-center gap-2">
+                <div class="h-5 w-5 rounded-full bg-blue-100"></div>
+                <div class="h-3.5 w-24 bg-zinc-200 rounded"></div>
+              </div>
+              <div class="h-3 w-full bg-zinc-100 rounded"></div>
+              <div class="h-3 w-4/5 bg-zinc-100 rounded"></div>
+            </div>
+            <div class="p-3 bg-white/90 rounded-xl border border-zinc-200/70 space-y-2">
+              <div class="flex items-center gap-2">
+                <div class="h-5 w-5 rounded-full bg-blue-100"></div>
+                <div class="h-3.5 w-24 bg-zinc-200 rounded"></div>
+              </div>
+              <div class="h-3 w-full bg-zinc-100 rounded"></div>
+              <div class="h-3 w-4/5 bg-zinc-100 rounded"></div>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between pt-2.5 border-t border-zinc-100">
+            <div class="h-3 w-28 bg-zinc-100 rounded"></div>
+            <div class="h-6 w-24 bg-zinc-200 rounded"></div>
+          </div>
+        </div>
+        """
+
+    return f"{_HTML_SHELL_HEAD}{content}{_HTML_SHELL_TAIL}"
 
 
 def build_comparison_genui(query: str, answer: str, context: str) -> str:
@@ -567,6 +732,7 @@ async def generate_knowledge_genui(
             "spec": "ag-ui/v1",
             "ui_type": "calculator",
             "title": "Interactive Policy Calculator",
+            "status": "ready",
             "html": html_doc,
         }
 
@@ -577,6 +743,7 @@ async def generate_knowledge_genui(
             "spec": "ag-ui/v1",
             "ui_type": "procedure",
             "title": "Procedure Guide & Checklist",
+            "status": "ready",
             "html": html_doc,
         }
 
@@ -587,6 +754,7 @@ async def generate_knowledge_genui(
             "spec": "ag-ui/v1",
             "ui_type": "comparison",
             "title": "Policy Comparison Matrix",
+            "status": "ready",
             "html": html_doc,
         }
 
@@ -615,6 +783,7 @@ async def generate_knowledge_genui(
                     "spec": "ag-ui/v1",
                     "ui_type": "custom",
                     "title": "Interactive Policy Overview",
+                    "status": "ready",
                     "html": full_doc,
                 }
         except Exception as e:
@@ -627,5 +796,6 @@ async def generate_knowledge_genui(
         "spec": "ag-ui/v1",
         "ui_type": "comparison",
         "title": "Policy Overview & Comparison",
+        "status": "ready",
         "html": html_doc,
     }

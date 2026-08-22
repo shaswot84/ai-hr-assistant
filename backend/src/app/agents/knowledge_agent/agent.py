@@ -36,7 +36,12 @@ from langchain_core.messages import AIMessage, BaseMessage
 from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 
 from app.agents.context import history_text
-from app.agents.knowledge_agent.genui import generate_knowledge_genui
+from app.agents.knowledge_agent.genui import (
+    build_skeleton_genui,
+    detect_genui_type,
+    generate_knowledge_genui,
+    should_generate_genui,
+)
 from app.agents.knowledge_agent.prompts import REPAIR_SYSTEM, REWRITE_SYSTEM
 from app.agents.leave_agent.tools import (
     ToolError,
@@ -417,6 +422,19 @@ async def stream_knowledge_turn(
                 "agent": "knowledge",
                 "safety": GuardVerdict.PASS.value,
             }
+
+        # Emit early progressive skeleton GenUI widget if the query warrants interactive UI
+        if llm is not None and should_generate_genui(query, result.grounded_context):
+            ui_type, title = detect_genui_type(query, result.grounded_context)
+            skeleton_widget = {
+                "type": "genui_iframe",
+                "spec": "ag-ui/v1",
+                "ui_type": ui_type,
+                "title": title,
+                "status": "streaming",
+                "html": build_skeleton_genui(ui_type, query),
+            }
+            writer({"type": "ui_widget", "widget": skeleton_widget})
 
         draft = ""
         async for token in service.stream_answer(rewritten, result, history=history_block):

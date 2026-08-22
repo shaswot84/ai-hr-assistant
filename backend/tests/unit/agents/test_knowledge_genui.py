@@ -8,6 +8,8 @@ from app.agents.knowledge_agent.genui import (
     build_calculator_genui,
     build_comparison_genui,
     build_procedure_genui,
+    build_skeleton_genui,
+    detect_genui_type,
     format_inline_markdown,
     generate_knowledge_genui,
     should_generate_genui,
@@ -46,6 +48,28 @@ def test_should_generate_genui_keywords():
     assert should_generate_genui("visualize this as a genui widget")
     assert should_generate_genui("what is the policy?", "| Col 1 | Col 2 |\n|---|---|")
     assert not should_generate_genui("hello who are you?")
+
+
+def test_detect_genui_type():
+    assert detect_genui_type("calculate my leave carryover")[0] == "calculator"
+    assert detect_genui_type("how to apply step by step checklist")[0] == "procedure"
+    assert detect_genui_type("compare annual and sick leave")[0] == "comparison"
+    assert detect_genui_type("visualize dashboard genui")[0] == "custom"
+
+
+def test_build_skeleton_genui():
+    calc_skel = build_skeleton_genui("calculator", "calculate carryover")
+    assert "animate-pulse" in calc_skel
+    assert "Calculating..." in calc_skel
+    assert "ag_ui:resize" in calc_skel
+
+    proc_skel = build_skeleton_genui("procedure", "steps to apply")
+    assert "animate-pulse" in proc_skel
+    assert "Structuring steps..." in proc_skel
+
+    comp_skel = build_skeleton_genui("comparison", "compare policies")
+    assert "animate-pulse" in comp_skel
+    assert "Synthesizing matrix..." in comp_skel
 
 
 def test_build_comparison_genui():
@@ -98,6 +122,7 @@ async def test_generate_knowledge_genui_calculator():
     assert widget["type"] == "genui_iframe"
     assert widget["spec"] == "ag-ui/v1"
     assert widget["ui_type"] == "calculator"
+    assert widget["status"] == "ready"
     assert "html" in widget
     assert "<!DOCTYPE html>" in widget["html"]
 
@@ -114,4 +139,5 @@ async def test_generate_knowledge_genui_llm_custom():
     assert widget is not None
     assert widget["type"] == "genui_iframe"
     assert widget["ui_type"] == "custom"
+    assert widget["status"] == "ready"
     assert "Custom GenUI" in widget["html"]

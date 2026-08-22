@@ -83,7 +83,15 @@ export function GenUIIframeWidget({ widget, onAction, disabled = false }: GenUII
     }
   };
 
+  const isStreaming = widget.status === "streaming";
+
   const getPillLabel = () => {
+    if (isStreaming) {
+      return {
+        label: "⚡ Generating Interactive UI...",
+        color: "bg-blue-50 text-blue-700 border-blue-200 animate-pulse",
+      };
+    }
     switch (widget.ui_type) {
       case "calculator":
         return { label: "Interactive Calculator", color: "bg-indigo-50 text-indigo-700 border-indigo-200" };
@@ -204,11 +212,18 @@ export function GenUIIframeWidget({ widget, onAction, disabled = false }: GenUII
 
         {/* Bottom Status Bar */}
         <div className="flex items-center justify-between border-t border-zinc-100 bg-zinc-50/40 px-2.5 py-1 text-[9px] text-zinc-400">
-          <div className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span>AG-UI Sandbox</span>
-          </div>
-          <span>Interactive</span>
+          {isStreaming ? (
+            <div className="flex items-center gap-1 text-blue-600 font-medium">
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-600 animate-ping" />
+              <span>Streaming component structure…</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              <span>AG-UI Sandbox</span>
+            </div>
+          )}
+          <span>{isStreaming ? "Progressive Hydration" : "Interactive"}</span>
         </div>
       </div>
 
