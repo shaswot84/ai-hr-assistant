@@ -100,7 +100,7 @@ async def test_routes_to_leave_stub():
 
     assert state["agent"] == "leave"
     assert "Leave" in state["answer"]
-    assert "chat" in state["answer"]
+    assert "employees" in state["answer"]
     assert state["citations"] == []
     assert state["knowledge_result"] is None
 
@@ -125,15 +125,155 @@ async def test_routes_to_recruitment_node():
 
 @pytest.mark.asyncio
 async def test_routes_to_clarify():
-    """An ambiguous message routes to the clarify node, which asks for specifics."""
+    """An ambiguous HR-related message routes to the clarify node."""
     graph = build_supervisor_graph(
         llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
     )
 
-    state = await graph.ainvoke({"messages": [], "current_query": "hi"})
+    state = await graph.ainvoke({"messages": [], "current_query": "I need help with my leave thing"})
 
     assert state["agent"] == "clarify"
     assert "Could you clarify" in state["answer"]
+
+
+@pytest.mark.asyncio
+async def test_off_topic_message_shows_generic_decline():
+    """An off-topic message (no HR keywords) shows a generic decline."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    state = await graph.ainvoke({"messages": [], "current_query": "what's the weather today?"})
+
+    assert state["agent"] == "clarify"
+    assert "I'm sorry, I can't help with that" in state["answer"]
+    assert "Could you clarify" not in state["answer"]
+
+
+@pytest.mark.asyncio
+async def test_role_specific_capabilities_hr_admin():
+    """HR_ADMIN sees leave management and recruitment capabilities."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "hello", "actor_role": "HR_ADMIN"}
+    )
+
+    assert state["agent"] == "clarify"
+    assert "Leave management" in state["answer"]
+    assert "approve/reject" in state["answer"]
+    assert "Recruitment" in state["answer"]
+    assert "review applications" in state["answer"]
+
+
+@pytest.mark.asyncio
+async def test_greeting_gets_friendly_reply():
+    """A bare greeting gets a hello reply with role-specific capabilities."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "hello", "actor_role": "EMPLOYEE"}
+    )
+
+    assert state["agent"] == "clarify"
+    assert "Hello" in state["answer"]
+    assert "I can assist you with" in state["answer"]
+    assert "Leave" in state["answer"]
+    assert state["clarification_type"] == "greeting"
+
+
+@pytest.mark.asyncio
+async def test_good_morning_greeting():
+    """Time-of-day greetings are recognized as greetings."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "good morning", "actor_role": None}
+    )
+
+    assert state["agent"] == "clarify"
+    assert "Hello" in state["answer"]
+    assert state["clarification_type"] == "greeting"
+
+
+@pytest.mark.asyncio
+async def test_farewell_gets_warm_signoff():
+    """Goodbye/thanks get a warm farewell instead of the clarify prompt."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "goodbye", "actor_role": "EMPLOYEE"}
+    )
+    assert state["agent"] == "clarify"
+    assert "Have a great day" in state["answer"]
+    assert "Could you clarify" not in state["answer"]
+    assert state["clarification_type"] == "farewell"
+
+    state2 = await graph.ainvoke(
+        {"messages": [], "current_query": "thanks a lot!"}
+    )
+    assert state2["agent"] == "clarify"
+    assert "Have a great day" in state2["answer"]
+    assert state2["clarification_type"] == "farewell"
+
+
+@pytest.mark.asyncio
+async def test_role_specific_capabilities_employee():
+    """EMPLOYEE sees leave and team calendar capabilities."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "hey", "actor_role": "EMPLOYEE"}
+    )
+
+    assert state["agent"] == "clarify"
+    assert "Leave" in state["answer"]
+    assert "balances, submit requests, cancel requests, team calendar" in state["answer"]
+    assert "Leave management" not in state["answer"]
+
+
+@pytest.mark.asyncio
+async def test_role_specific_capabilities_candidate():
+    """CANDIDATE sees recruitment capabilities only."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "hi there", "actor_role": "CANDIDATE"}
+    )
+
+    assert state["agent"] == "clarify"
+    assert "Recruitment" in state["answer"]
+    assert "browse vacancies, apply, check application status" in state["answer"]
+    assert "Leave" not in state["answer"]
+
+
+@pytest.mark.asyncio
+async def test_visitor_sees_limited_capabilities():
+    """Visitor (no role) sees knowledge and recruitment only."""
+    graph = build_supervisor_graph(
+        llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "greetings"}
+    )
+
+    assert state["agent"] == "clarify"
+    assert "Company policy & knowledge" in state["answer"]
+    assert "Recruitment" in state["answer"]
+    assert "Leave" not in state["answer"]
 
 
 @pytest.mark.asyncio
@@ -448,7 +588,72 @@ async def test_unwired_leave_node_stays_stub():
     state = await graph.ainvoke({"messages": [], "current_query": "my leave balance"})
 
     assert "Leave" in state["answer"]
-    assert "chat" in state["answer"]
+    assert "employees" in state["answer"]
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_candidate_asking_leave_gets_employee_only_message():
+    """A candidate routed to the leave node gets the employee-only message
+    deterministically — no model call, no session restore."""
+    from app.agents.leave_agent.state import SessionStore
+
+    provider = FakeChatProvider(
+        {"reply": "should not be used", "action": "reply", "tool": None, "args": {}}
+    )
+    candidate = UserContext(
+        subject="cand-1",
+        email="cand@example.com",
+        display_name="Candidate",
+        coarse_role="CANDIDATE",
+    )
+    graph = build_supervisor_graph(
+        llm=FakeLLM("leave"),
+        knowledge_service=FakeKnowledgeService(make_result()),
+        leave_actor=candidate,
+        leave_store=SessionStore(),
+        leave_chat_provider=provider,
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "I want to apply for leave", "conversation_id": str(uuid.uuid4())}
+    )
+
+    assert state["agent"] == "leave"
+    assert "only available to employees" in state["answer"]
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_hr_admin_apply_intent_rejected_deterministically():
+    """An HR admin asking to APPLY for leave is stopped before the model —
+    the interceptor explains the manager role instead."""
+    from app.agents.leave_agent.state import SessionStore
+
+    provider = FakeChatProvider(
+        {"reply": "should not be used", "action": "reply", "tool": None, "args": {}}
+    )
+    admin = UserContext(
+        subject="mgr-1",
+        email="manager@example.com",
+        display_name="Manager",
+        coarse_role="HR_ADMIN",
+    )
+    graph = build_supervisor_graph(
+        llm=FakeLLM("leave"),
+        knowledge_service=FakeKnowledgeService(make_result()),
+        leave_actor=admin,
+        leave_store=SessionStore(),
+        leave_chat_provider=provider,
+    )
+
+    state = await graph.ainvoke(
+        {"messages": [], "current_query": "can i apply for leave", "conversation_id": str(uuid.uuid4())}
+    )
+
+    assert state["agent"] == "leave"
+    assert "HR administrator" in state["answer"]
+    assert "can't apply for leave" in state["answer"]
     assert provider.calls == 0
 
 
@@ -483,7 +688,7 @@ async def test_subagent_unhandled_fallback_routes_to_clarify():
         builder.add_edge(node, END)
     graph = builder.compile()
 
-    state = await graph.ainvoke({"messages": [], "current_query": "unhandled question"})
+    state = await graph.ainvoke({"messages": [], "current_query": "unhandled question", "actor_role": "EMPLOYEE"})
 
     assert state["agent"] == "clarify"
     assert "I searched policy docs but could not find information about your query." in state["answer"]
