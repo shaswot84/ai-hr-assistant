@@ -548,7 +548,7 @@ export default function WelcomePage() {
     <div className="flex min-h-screen flex-col bg-zinc-50">
       <header className="border-b border-zinc-200 bg-white shadow-xs">
         <div className="mx-auto flex w-full max-w-4xl items-center justify-between px-4 py-3.5 sm:px-6">
-          <div className="flex items-center gap-2.5">
+          <Link href="/?splash=1" className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 shadow-sm text-white">
               <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path
@@ -563,7 +563,7 @@ export default function WelcomePage() {
               <p className="text-sm font-semibold tracking-tight text-zinc-900">AI HR Assistant</p>
               <p className="text-[11px] text-zinc-500">Recruitment & Policy Platform</p>
             </div>
-          </div>
+          </Link>
           <div className="flex items-center gap-2.5">
             <Link
               href="/candidate"

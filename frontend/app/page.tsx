@@ -2,14 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api } from "@/lib/api";
-import { getAuthToken } from "@/lib/auth";
-
-const ROLE_HOME: Record<string, string> = {
-  HR_ADMIN: "/manager",
-  CANDIDATE: "/candidate",
-  EMPLOYEE: "/employee",
-};
+import FluidCanvas from "@/components/fluid-canvas";
 
 const FEATURES = [
   {
@@ -267,14 +260,6 @@ interface LampProps {
 export default function HomePage() {
   const router = useRouter();
 
-  // Already-authenticated visitors who land here get sent straight to their
-  // portal instead of having to pull the cord again; a stale/invalid token
-  // skips the splash entirely and goes straight to reauth. `checkingSession`
-  // only ever matters for the token-present case — both outcomes below
-  // navigate away, so a genuinely unauthenticated visitor (the common case)
-  // sees the splash instantly with no async gate at all.
-  const [checkingSession, setCheckingSession] = useState(true);
-
   const [igniting, setIgniting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [slinging, setSlinging] = useState(false);
@@ -296,114 +281,6 @@ export default function HomePage() {
       if (slingRafRef.current !== null) cancelAnimationFrame(slingRafRef.current);
     };
   }, []);
-
-  // Original cross/star sparkle trail — small blue/gold stars with glowing cores,
-  // varied sizes and short fade-out. Reuses .sparkle / .sparkle-star /
-  // .sparkle-core / .sparkle-dot (see globals.css). Pointer-safe, once on
-  // mount, fully cleaned on unmount/navigation.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-
-    const colors = ["#3b82f6", "#60a5fa", "#d4a373", "#f59e0b", "#fcd34d"];
-    const sparkles: HTMLElement[] = [];
-    const timeouts = new Set<number>();
-    let lastX = -1000;
-    let lastY = -1000;
-
-    function createSparkle(x: number, y: number) {
-      const el = document.createElement("div");
-      el.className = "sparkle";
-      const size = 7 + Math.random() * 9; // 7–16px varied sizes
-      const color = colors[Math.floor(Math.random() * colors.length)];
-      const rotation = Math.floor(Math.random() * 90);
-      const driftX = (Math.random() - 0.5) * 10;
-      const driftY = (Math.random() - 0.5) * 10 - 4;
-
-      el.style.left = `${x + driftX}px`;
-      el.style.top = `${y + driftY}px`;
-      el.style.color = color;
-      el.style.setProperty("--sparkle-size", `${size}px`);
-      el.style.setProperty("--sparkle-rot", `${rotation}deg`);
-
-      const star = document.createElement("div");
-      star.className = "sparkle-star";
-
-      const core = document.createElement("div");
-      core.className = "sparkle-core";
-
-      const dot = document.createElement("div");
-      dot.className = "sparkle-dot";
-
-      star.appendChild(core);
-      el.appendChild(star);
-      el.appendChild(dot);
-
-      document.body.appendChild(el);
-      sparkles.push(el);
-
-      const t = window.setTimeout(() => {
-        el.remove();
-        const idx = sparkles.indexOf(el);
-        if (idx !== -1) sparkles.splice(idx, 1);
-        timeouts.delete(t);
-      }, 650);
-      timeouts.add(t);
-    }
-
-    function onMove(e: MouseEvent) {
-      const dx = e.clientX - lastX;
-      const dy = e.clientY - lastY;
-      const dist = Math.hypot(dx, dy);
-      // throttle tiny jitter, keep short trail
-      if (dist < 2) return;
-      createSparkle(e.clientX, e.clientY);
-      // add occasional second sparkle for fast moves to fill the trail
-      if (dist > 18 && Math.random() > 0.4) {
-        createSparkle(e.clientX - dx * 0.25, e.clientY - dy * 0.25);
-      }
-      lastX = e.clientX;
-      lastY = e.clientY;
-    }
-
-    document.addEventListener("mousemove", onMove, { passive: true });
-
-    return () => {
-      document.removeEventListener("mousemove", onMove);
-      timeouts.forEach((t) => clearTimeout(t));
-      timeouts.clear();
-      sparkles.forEach((el) => el.remove());
-      sparkles.length = 0;
-      // fallback: remove any stray .sparkle left by HMR/fast-refresh
-      document.querySelectorAll(".sparkle").forEach((n) => n.remove());
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const token = getAuthToken();
-    if (!token) {
-      // Nothing to verify — resolve on a microtask so this stays a reaction
-      // to an external check rather than a synchronous effect-body setState.
-      Promise.resolve().then(() => {
-        if (!cancelled) setCheckingSession(false);
-      });
-      return () => {
-        cancelled = true;
-      };
-    }
-    api
-      .me()
-      .then((res) => {
-        if (!cancelled) router.replace(ROLE_HOME[res.user.coarse_role] ?? "/welcome");
-      })
-      .catch(() => {
-        if (!cancelled) router.replace("/signin");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [router]);
 
   /** Pulling the cord switches the lamp on for good — no toggling back off,
    * this page is a one-way splash into the app. The lamp itself is never
@@ -527,16 +404,14 @@ export default function HomePage() {
     }
   }
 
-  if (checkingSession) {
-    return <div className="min-h-screen bg-[#0a0a0a]" />;
-  }
-
   return (
     <div
       className={`relative min-h-screen select-none overflow-hidden transition-colors duration-500 ${
         igniting ? "bg-white" : "bg-[#0a0a0a]"
       }`}
     >
+      <FluidCanvas />
+
       {/* neutral grey glow that blooms to fill the screen on ignite,
           washing the page to white right as we hand off to the (light-themed)
           app — grey rather than a lamp's usual warm gold, sitting midway

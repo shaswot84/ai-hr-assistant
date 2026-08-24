@@ -36,6 +36,12 @@ from langchain_core.messages import AIMessage, BaseMessage
 from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 
 from app.agents.context import history_text
+from app.agents.knowledge_agent.genui import (
+    build_skeleton_genui,
+    detect_genui_type,
+    generate_knowledge_genui,
+    should_generate_genui,
+)
 from app.agents.knowledge_agent.prompts import REPAIR_SYSTEM, REWRITE_SYSTEM
 from app.agents.leave_agent.tools import (
     ToolError,
@@ -315,6 +321,12 @@ async def _track_and_guard(
                 )
                 verdict = rechecked.verdict
 
+    # Clean up raw <br> tags, inline bullets, and unicode narrow spaces in draft
+    import re
+    draft = re.sub(r"<br\s*/?>", "\n", draft, flags=re.IGNORECASE)
+    draft = re.sub(r"[\u00a0\u202f\u200b\ufeff]", " ", draft)
+    draft = re.sub(r"(?<=\S)\s*•\s+", "\n• ", draft)
+
     # Persist markers ONLY for citations the answer actually cited, and
     # renumber them densely (1..k) so marker N always indexes the k-th served
     # citation — never a chunk that was retrieved but not cited.
@@ -417,6 +429,19 @@ async def stream_knowledge_turn(
                 "safety": GuardVerdict.PASS.value,
             }
 
+        # Emit early progressive skeleton GenUI widget if the query warrants interactive UI
+        if llm is not None and should_generate_genui(query, result.grounded_context):
+            ui_type, title = detect_genui_type(query, result.grounded_context)
+            skeleton_widget = {
+                "type": "genui_iframe",
+                "spec": "ag-ui/v1",
+                "ui_type": ui_type,
+                "title": title,
+                "status": "streaming",
+                "html": build_skeleton_genui(ui_type, query),
+            }
+            writer({"type": "ui_widget", "widget": skeleton_widget})
+
         draft = ""
         async for token in service.stream_answer(rewritten, result, history=history_block):
             draft += token
@@ -439,6 +464,18 @@ async def stream_knowledge_turn(
         agent_span.set_attribute("agent.confidence", float(result.confidence))
         agent_span.set_attribute("agent.safety", safety)
 
+        ui_widget = None
+        if llm is not None and not _is_refusal(message) and safety != GuardVerdict.BLOCKED.value:
+            ui_widget = await generate_knowledge_genui(
+                llm=llm,
+                query=query,
+                answer=message,
+                grounded_context=result.grounded_context,
+                actor=actor,
+            )
+            if ui_widget:
+                writer({"type": "ui_widget", "widget": ui_widget})
+
         return {
             "messages": [AIMessage(content=message)],
             "knowledge_result": result,
@@ -447,6 +484,7 @@ async def stream_knowledge_turn(
             "confidence": result.confidence,
             "agent": "knowledge",
             "safety": safety,
+            "ui_widget": ui_widget,
         }
 
 

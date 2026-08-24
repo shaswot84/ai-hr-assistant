@@ -66,8 +66,18 @@ function cleanTextForSpeech(markdown: string): string {
     .trim();
 }
 
+/** Normalizes raw HTML linebreaks, inline bullets, and non-breaking spaces. */
+function normalizeMarkdownText(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/[\u00a0\u202f\u200b\ufeff]/g, " ")
+    .replace(/(?<=\S)\s*•\s+/g, "\n• ");
+}
+
 /** Markdown renderer shared by assistant bubbles (same styles as knowledge-chat). */
 function Markdown({ children }: { children: string }) {
+  const normalized = normalizeMarkdownText(children);
   return (
     <div className="text-sm leading-relaxed text-zinc-700">
       <ReactMarkdown
@@ -111,7 +121,7 @@ function Markdown({ children }: { children: string }) {
           ),
         }}
       >
-        {children}
+        {normalized}
       </ReactMarkdown>
     </div>
   );
@@ -179,6 +189,7 @@ const MessageBubble = memo(function MessageBubble({
   ttsSupported?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const [showTextDetails, setShowTextDetails] = useState(false);
 
   async function handleCopy() {
     try {
@@ -200,6 +211,14 @@ const MessageBubble = memo(function MessageBubble({
     );
   }
 
+  const isGenUIWidget = Boolean(
+    message.meta?.ui_widget &&
+      (message.meta.ui_widget.type === "genui_iframe" ||
+        message.meta.ui_widget.type === "knowledge_genui" ||
+        message.meta.ui_widget.type === "ag_ui_widget" ||
+        (message.meta.agent === "knowledge" && message.meta.ui_widget.type))
+  );
+
   const lowConfidence = message.meta?.low_confidence ?? false;
   const confidence = message.meta?.confidence ?? 0;
   const confidenceApplicable = message.meta?.confidence_applicable ?? confidence > 0;
@@ -210,8 +229,12 @@ const MessageBubble = memo(function MessageBubble({
     message.meta?.safety === "FLAGGED_FOR_REVIEW" ||
     agentLabel !== undefined;
   return (
-    <div className="group relative flex justify-start">
-      <div className="max-w-[85%] rounded-2xl rounded-bl-sm border border-zinc-200 bg-white px-4 py-3 shadow-sm">
+    <div className={`group relative flex justify-start ${isGenUIWidget ? "w-full" : ""}`}>
+      <div
+        className={`${
+          isGenUIWidget ? "w-full max-w-4xl" : "max-w-[85%]"
+        } rounded-2xl rounded-bl-sm border border-zinc-200 bg-white px-4 py-3 shadow-sm`}
+      >
         {message.content && !message.streaming && (
           <div className="absolute right-2 top-2 flex items-center gap-1">
             {ttsSupported && (
@@ -254,8 +277,8 @@ const MessageBubble = memo(function MessageBubble({
               title={copied ? "Copied" : "Copy message"}
             >
               {copied ? (
-                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                <svg className="h-3.5 w-3.5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
                 </svg>
               ) : (
                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -270,77 +293,120 @@ const MessageBubble = memo(function MessageBubble({
             </button>
           </div>
         )}
-        {message.content ? (
-          /* While streaming, render plain text so markdown isn't re-parsed on
-             every token; switch to the full renderer once the turn finishes. */
-          message.streaming ? (
-            <div className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-700">
-              {message.content}
-            </div>
-          ) : (
-            <Markdown>{message.content}</Markdown>
-          )
-        ) : (
-          /* Staged live status — only while the answer is actually streaming
-             (a restored empty message must never look like it is thinking
-             forever). Absent phase = thinking/routing. */
-          message.streaming && !message.meta?.ui_widget && (
-            message.phase === "searching" ? (
-              <span
-                className="flex items-center gap-2 py-1 text-sm text-zinc-500"
-                aria-label="Searching the knowledge base"
-              >
-                <svg
-                  className="h-3.5 w-3.5 animate-spin text-blue-500"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  aria-hidden="true"
-                >
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                Searching the knowledge base…
-              </span>
-            ) : message.phase === "generating" ? (
-              <span
-                className="flex items-center gap-1.5 py-1 text-sm text-zinc-500"
-                aria-label="Generating response"
-              >
-                Generating…
-                <span
-                  aria-hidden="true"
-                  className="inline-block h-3.5 w-[2px] animate-blink rounded-[1px] bg-blue-500"
-                />
-              </span>
-            ) : (
-              <span className="flex items-center gap-1.5 py-1 text-sm text-zinc-500" aria-label="Thinking">
-                <span className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400" />
-                <span
-                  className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400"
-                  style={{ animationDelay: "150ms" }}
-                />
-                <span
-                  className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400"
-                  style={{ animationDelay: "300ms" }}
-                />
-                Thinking…
-              </span>
-            )
-          )
-        )}
-        {message.streaming && message.content && (
-          <span
-            aria-hidden="true"
-            className="ml-0.5 inline-block h-3.5 w-[2px] animate-blink rounded-[1px] bg-blue-500 align-text-bottom"
-          />
-        )}
 
-        {message.meta?.ui_widget && (
-          <ChatWidgetRenderer
-            widget={message.meta.ui_widget}
-            onAction={onAction}
-            disabled={disabled}
-          />
+        {isGenUIWidget ? (
+          /* When a GenUI component exists: render the GenUI widget as primary, with a collapsible text dropdown */
+          <div>
+            {message.meta?.ui_widget && (
+              <ChatWidgetRenderer
+                widget={message.meta.ui_widget}
+                onAction={onAction}
+                disabled={disabled}
+              />
+            )}
+
+            {message.content && (
+              <div className="mt-2.5 pt-1.5 border-t border-zinc-100">
+                <button
+                  type="button"
+                  onClick={() => setShowTextDetails((v) => !v)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50/80 px-2.5 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 transition-colors shadow-2xs"
+                >
+                  <svg
+                    className={`h-3.5 w-3.5 text-zinc-400 transition-transform duration-200 ${
+                      showTextDetails ? "rotate-180" : ""
+                    }`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                  <span>{showTextDetails ? "Hide text explanation" : "Show text explanation"}</span>
+                </button>
+                {showTextDetails && (
+                  <div className="mt-2 rounded-xl bg-zinc-50/50 p-3 border border-zinc-100 text-sm leading-relaxed text-zinc-700 animate-fadeIn">
+                    {message.streaming ? (
+                      <div className="whitespace-pre-wrap">{normalizeMarkdownText(message.content)}</div>
+                    ) : (
+                      <Markdown>{message.content}</Markdown>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          /* Standard text message flow without GenUI */
+          <>
+            {message.content ? (
+              message.streaming ? (
+                <div className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-700">
+                  {normalizeMarkdownText(message.content)}
+                </div>
+              ) : (
+                <Markdown>{message.content}</Markdown>
+              )
+            ) : (
+              message.streaming && !message.meta?.ui_widget && (
+                message.phase === "searching" ? (
+                  <span
+                    className="flex items-center gap-2 py-1 text-sm text-zinc-500"
+                    aria-label="Searching the knowledge base"
+                  >
+                    <svg
+                      className="h-3.5 w-3.5 animate-spin text-blue-500"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      aria-hidden="true"
+                    >
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Searching the knowledge base…
+                  </span>
+                ) : message.phase === "generating" ? (
+                  <span
+                    className="flex items-center gap-1.5 py-1 text-sm text-zinc-500"
+                    aria-label="Generating response"
+                  >
+                    Generating…
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-3.5 w-[2px] animate-blink rounded-[1px] bg-blue-500"
+                    />
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 py-1 text-sm text-zinc-500" aria-label="Thinking">
+                    <span className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400" />
+                    <span
+                      className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400"
+                      style={{ animationDelay: "150ms" }}
+                    />
+                    <span
+                      className="h-1.5 w-1.5 animate-bounce-dot rounded-full bg-zinc-400"
+                      style={{ animationDelay: "300ms" }}
+                    />
+                    Thinking…
+                  </span>
+                )
+              )
+            )}
+            {message.streaming && message.content && (
+              <span
+                aria-hidden="true"
+                className="ml-0.5 inline-block h-3.5 w-[2px] animate-blink rounded-[1px] bg-blue-500 align-text-bottom"
+              />
+            )}
+
+            {message.meta?.ui_widget && (
+              <ChatWidgetRenderer
+                widget={message.meta.ui_widget}
+                onAction={onAction}
+                disabled={disabled}
+              />
+            )}
+          </>
         )}
 
         <CitationChips citations={message.citations ?? []} />
