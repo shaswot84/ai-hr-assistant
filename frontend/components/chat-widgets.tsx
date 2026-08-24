@@ -701,6 +701,7 @@ function LeaveBalanceWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const balances: any[] = widget.balances || [];
   const year = widget.year;
   const employeeCode = widget.employee_code;
+  const employeeName = widget.employee_name;
 
   if (balances.length === 0) return null;
 
@@ -710,7 +711,11 @@ function LeaveBalanceWidget({ widget, onAction, disabled }: ChatWidgetProps) {
         <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
           <CalendarIcon className="w-3.5 h-3.5 text-blue-600" />
           <span>
-            {employeeCode ? `Leave Balance for ${employeeCode}` : "Your Leave Balance"}
+            {employeeName
+              ? `Leave Balance for ${employeeName}${employeeCode ? ` (${employeeCode})` : ""}`
+              : employeeCode
+              ? `Leave Balance for ${employeeCode}`
+              : "Your Leave Balance"}
             {year ? ` (${year})` : ""}
           </span>
         </div>
@@ -726,7 +731,9 @@ function LeaveBalanceWidget({ widget, onAction, disabled }: ChatWidgetProps) {
               <UserIcon className="w-3.5 h-3.5" />
             </div>
             <div>
-              <span className="font-bold text-blue-950">Employee {employeeCode}</span>
+              <span className="font-bold text-blue-950">
+                {employeeName ? `${employeeName} (${employeeCode})` : `Employee ${employeeCode}`}
+              </span>
               <span className="text-blue-700 block text-[11px]">Manager Quota Inspection</span>
             </div>
           </div>

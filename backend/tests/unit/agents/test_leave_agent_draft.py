@@ -183,11 +183,14 @@ async def test_list_my_requests_is_deterministic(db, manager_context, employee_c
     svc = LeaveService(db)
     leave_type = await _create_leave_type(svc, manager_context)
     today = get_clock().today()
+    start = today + timedelta(days=1)
+    while start.weekday() >= 4:
+        start += timedelta(days=1)
     await svc.request_leave(
         employee_context,
         leave_type_id=leave_type.leave_type_id,
-        start_date=today + timedelta(days=5),
-        end_date=today + timedelta(days=6),
+        start_date=start,
+        end_date=start + timedelta(days=1),
         reason=None,
     )
 

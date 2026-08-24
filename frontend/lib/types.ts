@@ -458,6 +458,27 @@ export interface LeaveBalance {
   remaining_days: string;
 }
 
+export interface EmployeeLeaveBalance {
+  employee_name: string;
+  employee_code: string;
+  department_name: string | null;
+  year: number;
+  balances: LeaveBalance[];
+}
+
+export interface AllEmployeeBalances {
+  employee_id: string;
+  employee_code: string;
+  employee_name: string;
+  employee_email: string;
+  manager_employee_id: string | null;
+  department_name: string | null;
+  designation_title: string | null;
+  year: number;
+  balances: LeaveBalance[];
+}
+
+
 export type LeaveRequestStatus = "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
 
 export interface LeaveRequest {

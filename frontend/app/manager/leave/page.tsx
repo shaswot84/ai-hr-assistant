@@ -9,14 +9,16 @@ import { EmptyState } from "@/components/empty-state";
 import { useToast } from "@/components/toast";
 import { api, ApiError } from "@/lib/api";
 import type {
+  AllEmployeeBalances,
   CompanyHoliday,
   Department,
+  EmployeeLeaveBalance,
   LeaveRequestDetail,
   LeaveType,
   TeamMemberOutOfOffice,
 } from "@/lib/types";
 
-type Tab = "requests" | "types" | "calendar" | "holidays";
+type Tab = "requests" | "balances" | "types" | "calendar" | "holidays";
 
 function formatDate(value: string) {
   return new Date(value).toLocaleDateString("en-US", {
@@ -29,6 +31,7 @@ function formatDate(value: string) {
 function TabSwitch({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   const tabs: { key: Tab; label: string }[] = [
     { key: "requests", label: "Requests" },
+    { key: "balances", label: "Employee Balances" },
     { key: "types", label: "Leave Types" },
     { key: "calendar", label: "Team Calendar" },
     { key: "holidays", label: "Company Holidays" },
@@ -751,6 +754,230 @@ function HolidaysTab() {
   );
 }
 
+function BalancesTab() {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [individualResult, setIndividualResult] = useState<EmployeeLeaveBalance | null>(null);
+  const [disambiguationMessage, setDisambiguationMessage] = useState<string | null>(null);
+  const [allBalances, setAllBalances] = useState<AllEmployeeBalances[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(true);
+  const [searchError, setSearchError] = useState<string | null>(null);
+
+  const fetchAll = useMemo(
+    () => () => {
+      setLoadingAll(true);
+      api
+        .listAllEmployeeBalances()
+        .then(setAllBalances)
+        .catch(() => {})
+        .finally(() => setLoadingAll(false));
+    },
+    []
+  );
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
+  async function handleSearch(targetCodeOrName?: string) {
+    const q = (targetCodeOrName || searchQuery).trim();
+    if (!q) return;
+    setLoading(true);
+    setSearchError(null);
+    setDisambiguationMessage(null);
+    setIndividualResult(null);
+
+    try {
+      const res = await api.getEmployeeLeaveBalance(q);
+      setIndividualResult(res);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 400 && err.detail.includes("Multiple employees found")) {
+          setDisambiguationMessage(err.detail);
+        } else {
+          setSearchError(err.detail);
+        }
+      } else {
+        setSearchError("Failed to fetch employee leave balance.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Individual Employee Search */}
+      <div className="card p-5 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-zinc-900">Check Individual Employee Leave Balance</h3>
+          <p className="text-xs text-zinc-500">
+            Search an employee by name (e.g. &quot;John Doe&quot;) or unique employee code (e.g. &quot;EMP-001&quot;).
+          </p>
+        </div>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleSearch();
+          }}
+          className="flex gap-2 max-w-lg"
+        >
+          <input
+            type="text"
+            className="input text-xs"
+            placeholder="Enter employee name or employee code..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          <button type="submit" disabled={loading || !searchQuery.trim()} className="btn-primary shrink-0 text-xs">
+            {loading ? "Searching..." : "Check Balance"}
+          </button>
+        </form>
+
+        {/* Disambiguation Box when multiple employees share the name */}
+        {disambiguationMessage && (
+          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 space-y-2">
+            <div className="flex items-center gap-2">
+              <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <span className="font-semibold text-xs">Duplicate Name Disambiguation Required</span>
+            </div>
+            <p className="text-xs leading-relaxed">{disambiguationMessage}</p>
+            <p className="text-[11px] text-amber-700 font-medium">
+              Tip: Employee codes are strictly unique for each employee. Click any code below or enter it in the search box to view that employee&apos;s balance.
+            </p>
+          </div>
+        )}
+
+        {searchError && (
+          <div className="notice border-red-200 bg-red-50 text-red-700 text-xs">{searchError}</div>
+        )}
+
+        {/* Single Employee Balance Result Card */}
+        {individualResult && (
+          <div className="p-4 rounded-xl bg-blue-50/50 border border-blue-200/90 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="font-bold text-zinc-900 text-sm">
+                  {individualResult.employee_name} ({individualResult.employee_code})
+                </h4>
+                <p className="text-xs text-zinc-500">
+                  {individualResult.department_name || "General"} · Year {individualResult.year}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIndividualResult(null)}
+                className="text-xs text-zinc-400 hover:text-zinc-600"
+              >
+                Clear
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+              {individualResult.balances.map((b) => {
+                const allocated = parseFloat(b.allocated_days) || 0;
+                const remaining = parseFloat(b.remaining_days) || 0;
+                const pct = allocated > 0 ? Math.min(100, Math.max(0, (remaining / allocated) * 100)) : 0;
+                return (
+                  <div key={b.leave_type_id} className="p-3 bg-white rounded-lg border border-zinc-200/80 shadow-xs space-y-1.5">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="font-semibold text-zinc-800">{b.leave_type_name}</span>
+                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${remaining > 0 ? "bg-emerald-50 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
+                        {remaining > 0 ? "Available" : "Exhausted"}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-lg font-bold text-zinc-900">{remaining}</span>
+                      <span className="text-xs text-zinc-500">/ {allocated} days</span>
+                    </div>
+                    <div className="w-full h-1 bg-zinc-100 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${pct > 50 ? "bg-blue-600" : pct > 20 ? "bg-amber-500" : "bg-rose-500"}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Organization Wide Balances Overview */}
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-zinc-900">All Employee Leave Balances</h3>
+          <p className="text-xs text-zinc-500">Complete overview of all active employee quotas and leave balances.</p>
+        </div>
+
+        {loadingAll ? (
+          <ListSkeleton rows={4} />
+        ) : allBalances.length === 0 ? (
+          <div className="card">
+            <EmptyState title="No employee balances" description="No active employee records found." />
+          </div>
+        ) : (
+          <div className="card overflow-hidden">
+            <div className="table-scroll">
+              <table className="w-full">
+                <thead className="bg-zinc-50">
+                  <tr>
+                    <th className="table-th">Employee</th>
+                    <th className="table-th">Department & Designation</th>
+                    <th className="table-th">Leave Balances</th>
+                    <th className="table-th text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-100">
+                  {allBalances.map((emp) => (
+                    <tr key={emp.employee_id} className="table-row">
+                      <td className="table-td font-medium text-zinc-900">
+                        <div>
+                          <span>{emp.employee_name}</span>
+                          <span className="block text-xs font-mono text-zinc-400">{emp.employee_code}</span>
+                        </div>
+                      </td>
+                      <td className="table-td text-xs text-zinc-600">
+                        <div>{emp.department_name || "General"}</div>
+                        <div className="text-zinc-400">{emp.designation_title || "Staff"}</div>
+                      </td>
+                      <td className="table-td text-xs">
+                        <div className="flex flex-wrap gap-1.5">
+                          {emp.balances.map((b) => (
+                            <span key={b.leave_type_id} className="inline-flex items-center px-2 py-0.5 rounded bg-zinc-100 text-zinc-700 text-[11px]">
+                              <strong className="font-semibold mr-1">{b.leave_type_name}:</strong> {b.remaining_days}/{b.allocated_days}d
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="table-td text-right">
+                        <button
+                          type="button"
+                          className="link text-blue-600 hover:text-blue-700 text-xs font-medium"
+                          onClick={() => {
+                            setSearchQuery(emp.employee_code);
+                            handleSearch(emp.employee_code);
+                          }}
+                        >
+                          Inspect
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function ManagerLeavePage() {
   const [tab, setTab] = useState<Tab>("requests");
 
@@ -758,10 +985,11 @@ export default function ManagerLeavePage() {
     <div className="space-y-6">
       <PageHeader
         title="Leave Management"
-        description="Review employee leave requests, configure leave types, schedule company holidays, and view team out-of-office overlaps."
+        description="Review employee leave requests, check individual and team leave balances, configure leave types, schedule company holidays, and view team out-of-office overlaps."
         meta={<TabSwitch tab={tab} onChange={setTab} />}
       />
       {tab === "requests" && <RequestsTab />}
+      {tab === "balances" && <BalancesTab />}
       {tab === "types" && <TypesTab />}
       {tab === "calendar" && <CalendarTab />}
       {tab === "holidays" && <HolidaysTab />}

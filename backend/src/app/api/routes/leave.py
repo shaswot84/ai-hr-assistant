@@ -13,8 +13,10 @@ from app.db.session import get_db
 from app.domain.identity import Employee, Person
 from app.domain.leave import LeaveRequest
 from app.schemas.leave import (
+    AllEmployeeBalancesOut,
     CompanyHolidayCreate,
     CompanyHolidayOut,
+    EmployeeLeaveBalanceOut,
     LeaveBalanceOut,
     LeaveDecisionRequest,
     LeaveRequestCreate,
@@ -243,6 +245,60 @@ async def my_balance(
         )
         for row in rows
     ]
+
+
+@router.get("/employee-balance", response_model=EmployeeLeaveBalanceOut)
+async def get_employee_balance(
+    employee_identifier: str = Query(..., description="Employee code (e.g. EMP-001) or name (e.g. John Doe)"),
+    year: int | None = Query(default=None),
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: LeaveService = Depends(_svc),
+):
+    """Return an individual employee's leave balance by employee code or name (manager-only)."""
+    try:
+        rows = await svc.get_employee_balance(user, employee_identifier, year)
+    except PermissionError_ as err:
+        raise HTTPException(status_code=403, detail=str(err)) from err
+    except ValueError as err:
+        msg = str(err)
+        if "Multiple employees found" in msg:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg) from err
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg) from err
+
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No leave balance records found.")
+
+    first_row = rows[0]
+    return EmployeeLeaveBalanceOut(
+        employee_name=first_row.get("employee_name", ""),
+        employee_code=first_row.get("employee_code", ""),
+        department_name=first_row.get("department_name"),
+        year=first_row.get("year", year or 2026),
+        balances=[
+            LeaveBalanceOut(
+                leave_type_id=r["leave_type"].leave_type_id,
+                leave_type_name=r["leave_type"].leave_name,
+                year=r["year"],
+                allocated_days=r["allocated_days"],
+                used_days=r["used_days"],
+                remaining_days=r["remaining_days"],
+            )
+            for r in rows
+        ],
+    )
+
+
+@router.get("/all-balances", response_model=list[AllEmployeeBalancesOut])
+async def list_all_employee_balances(
+    year: int | None = Query(default=None),
+    user: UserContext = Depends(require_role("HR_ADMIN")),
+    svc: LeaveService = Depends(_svc),
+):
+    """Return all active employees' leave balances with organization hierarchy (manager-only)."""
+    try:
+        return await svc.list_all_employee_balances(user, year)
+    except PermissionError_ as err:
+        raise HTTPException(status_code=403, detail=str(err)) from err
 
 
 # ---- requests -------------------------------------------------------------
