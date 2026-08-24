@@ -758,7 +758,7 @@ async def test_ambiguous_message_routes_to_clarify():
     graph = build_supervisor_graph(
         llm=FakeLLM("clarify"), knowledge_service=FakeKnowledgeService(make_result())
     )
-    state = await graph.ainvoke({"messages": [], "current_query": "hi"})
+    state = await graph.ainvoke({"messages": [], "current_query": "I need help with my leave thing"})
     assert state["agent"] == "clarify"
     assert "Could you clarify" in state["answer"]
 

@@ -52,3 +52,8 @@ class SupervisorState(TypedDict, total=False):
     can_handle: bool
     # Context/hint provided by a subagent for the clarify agent when fallback is triggered
     clarification_hint: str | None
+    # Coarse role of the authenticated user (HR_ADMIN | EMPLOYEE | CANDIDATE | None for visitors).
+    actor_role: str | None
+    # Why the message landed in clarify: "greeting" | "farewell" | "ambiguous" |
+    # "off_topic" | "subagent_fallback" | None.
+    clarification_type: str | None

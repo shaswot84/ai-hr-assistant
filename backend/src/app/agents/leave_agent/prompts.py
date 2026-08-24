@@ -173,11 +173,16 @@ def build_system_prompt() -> str:
 def build_turn_prompt(
     user_message: str,
     *,
+    role: str = "EMPLOYEE",
     history: list[dict[str, str]] | None = None,
     pending_confirmation: dict | None = None,
     draft: dict | None = None,
 ) -> str:
     """Build the user-role prompt for one turn.
+
+    `role` is the caller's coarse role (EMPLOYEE | HR_ADMIN | CANDIDATE) —
+    the model must know WHO it is talking to so an HR admin asking about
+    leave gets routed to the manager tools, never offered self-service.
 
     `history` is a list of {"role": "employee"|"agent", "content": ...} pairs
     from earlier in this session — kept short (state.py is responsible for
@@ -197,6 +202,10 @@ def build_turn_prompt(
     draft the system is still completing.
     """
     parts: list[str] = []
+
+    role_label = "an HR ADMINISTRATOR (manager tools only; cannot apply for leave)" if role == "HR_ADMIN" else "an EMPLOYEE"
+    parts.append(f"CURRENT USER IS {role_label}.")
+    parts.append("")
 
     if history:
         parts.append("CONVERSATION SO FAR:")
@@ -227,7 +236,7 @@ def build_turn_prompt(
         )
         parts.append("")
 
-    parts.append(f"EMPLOYEE'S NEW MESSAGE:\n{user_message}")
+    parts.append(f"USER'S NEW MESSAGE:\n{user_message}")
     return "\n".join(parts)
 
 

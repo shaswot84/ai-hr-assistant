@@ -63,8 +63,8 @@ ROUTE_TO_NODE = {
 }
 
 _LEAVE_STUB = (
-    "Leave isn't available in chat yet. Please use the **Leave** section in "
-    "the portal to request leave or check your balance."
+    "Leave features are only available to employees. Please use the **Leave** "
+    "section in the portal, or contact your HR department for assistance."
 )
 
 
@@ -230,7 +230,7 @@ def build_supervisor_graph(
             chat_provider=recruitment_chat_provider,
         ),
     )
-    builder.add_node("clarify", make_clarify_node())
+    builder.add_node("clarify", make_clarify_node(actor=knowledge_actor))
     builder.add_node("recap", make_recap_node(llm))
     builder.add_edge(START, "route")
     builder.add_conditional_edges("route", _select_route, ROUTE_TO_NODE)

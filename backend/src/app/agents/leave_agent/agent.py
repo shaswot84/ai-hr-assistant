@@ -220,6 +220,7 @@ async def handle_turn(
     system_prompt = prompts.build_system_prompt()
     turn_prompt = prompts.build_turn_prompt(
         user_message,
+        role=actor.coarse_role,
         history=state.history_for_prompt(),
         pending_confirmation=state.pending_for_prompt(),
         draft=state.draft_for_prompt(),
@@ -787,6 +788,25 @@ async def _intercept_draft_turn(
     if is_history_question(user_message):
         return _recap_reply(state, clock=clock)
 
+    # HR admins have no self-service leave. This check must run BEFORE the
+    # no-draft early-return below, so "can I apply for leave?" (request
+    # intent, no dates) is answered deterministically instead of falling
+    # through to the model. Manager-scope phrasings ("show all requests",
+    # "any pending requests?") are excluded — they belong to the manager
+    # tools/listing flows, not the employee draft flow.
+    if (
+        actor.coarse_role == "HR_ADMIN"
+        and _is_request_intent(user_message)
+        and not _is_manager_scope_ask(user_message.lower())
+    ):
+        return _reply(
+            state,
+            "As an HR administrator you can review employees' leave requests "
+            "and approve, reject, or cancel them — but you can't apply for "
+            "leave yourself.",
+            clock=clock,
+        )
+
     today = clock.today()
     if actor.coarse_role == "EMPLOYEE" and _is_balance_ask(user_message):
         mentioned = await mentioned_leave_type(service, user_message)
@@ -816,15 +836,6 @@ async def _intercept_draft_turn(
         if start is not None:
             draft.start_date = start
             draft.end_date = start
-
-    if actor.coarse_role == "HR_ADMIN":
-        return _reply(
-            state,
-            "As an HR administrator you can review employees' leave requests "
-            "and approve, reject, or cancel them — but you can't apply for "
-            "leave yourself.",
-            clock=clock,
-        )
 
     if start is None and end is None and state.draft is not None and state.draft.start_date is not None:
         end = resolve_end_date(user_message, state.draft.start_date, today)
@@ -1384,6 +1395,29 @@ _REQUEST_INTENT_WORDS = (
     "go on leave",
     "going on leave",
 )
+
+# Manager-scope vocabulary. When an HR admin's message contains any of these
+# it is about REVIEWING others' leave (list/approve flows), never about
+# applying for their own — the self-service apply guard must stay silent.
+_MANAGER_SCOPE_WORDS = (
+    "all",
+    "pending",
+    "team",
+    "everyone",
+    "employees",
+    "employee's",
+    "employees'",
+    "list",
+    "show",
+    "view",
+    "see",
+    "review",
+)
+
+
+def _is_manager_scope_ask(lowered: str) -> bool:
+    """Is this HR-admin message about managing others' leave, not applying?"""
+    return any(word in lowered for word in _MANAGER_SCOPE_WORDS)
 
 
 def _is_request_intent(user_message: str) -> bool:

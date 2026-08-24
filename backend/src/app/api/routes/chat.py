@@ -302,6 +302,7 @@ async def chat(
             "messages": history_messages,
             "current_query": message,
             "conversation_id": str(conversation_id),
+            "actor_role": user.coarse_role if user else None,
         }
     )
 
@@ -395,6 +396,7 @@ async def chat_stream(
                     "messages": history_messages,
                     "current_query": message,
                     "conversation_id": str(conversation_id),
+                    "actor_role": user.coarse_role if user else None,
                 },
                 stream_mode=["custom", "updates"],
             ):
@@ -562,6 +564,7 @@ async def public_chat(
             "messages": history_messages,
             "current_query": message,
             "conversation_id": "public",
+            "actor_role": user.coarse_role if user else None,
         }
     )
 
@@ -629,6 +632,7 @@ async def public_chat_stream(
                     "messages": history_messages,
                     "current_query": message,
                     "conversation_id": "public",
+                    "actor_role": user.coarse_role if user else None,
                 },
                 stream_mode=["custom", "updates"],
             ):

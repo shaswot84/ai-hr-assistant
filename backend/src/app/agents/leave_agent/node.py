@@ -64,6 +64,24 @@ def make_leave_node(
     """Build the leave node for the supervisor graph."""
 
     async def leave_node(state: SupervisorState, writer: StreamWriter) -> dict:
+        # Leave is an employee/HR feature. Candidates and anonymous visitors
+        # get a plain explanation up front — no session restore, no model call.
+        if actor.coarse_role not in ("EMPLOYEE", "HR_ADMIN"):
+            message = (
+                "Leave features are only available to employees. "
+                "Please contact your HR department for leave-related assistance."
+            )
+            writer({"type": "message", "text": message})
+            return {
+                "messages": [AIMessage(content=message)],
+                "knowledge_result": None,
+                "answer": message,
+                "citations": [],
+                "confidence": 0.0,
+                "agent": "leave",
+                "safety": "PASS",
+            }
+
         conversation_id = state.get("conversation_id", "default")
 
         # Cache-first: the store is never the source of truth. Only when the
