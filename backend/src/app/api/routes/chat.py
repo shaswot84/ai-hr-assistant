@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -44,6 +45,7 @@ from app.knowledge.service import KnowledgeService
 from app.model_gateway.factory import build_embedder, build_llm, build_reranker
 from app.model_gateway.interfaces import LLM, Embedder, Reranker
 from app.model_gateway.ollama import OllamaChatProvider
+from app.repositories.audit import AuditRepo
 from app.repositories.conversation import ConversationRepo
 from app.safety.factory import build_output_guard
 from app.schemas.chat import (
@@ -219,12 +221,13 @@ def _serialize_retrieval_event(event: dict) -> dict:
 
 async def _prepare_turn(
     session: AsyncSession, user: UserContext, body: ChatRequest
-) -> tuple[ConversationRepo, uuid.UUID, list[BaseMessage], str]:
+) -> tuple[ConversationRepo, uuid.UUID, uuid.UUID, list[BaseMessage], str]:
     """Validate, create/get the conversation, persist the user message, hydrate history.
 
     Runs before any streaming starts so validation errors surface as proper
     HTTP errors, and so the user's words are durable even if the graph fails
-    mid-stream.
+    mid-stream. Also resolves the caller's ``application_user.user_id`` —
+    the audit-log actor for this turn.
     """
     message = body.message.strip()
     if not message:
@@ -251,7 +254,7 @@ async def _prepare_turn(
     # History = the bounded window before this turn (current_query is separate).
     transcript = await repo.recent_messages_within_tokens(conversation_id, _HISTORY_TOKEN_BUDGET)
     history_messages = _history_messages(transcript[:-1])
-    return repo, conversation_id, history_messages, message
+    return repo, conversation_id, user_id, history_messages, message
 
 
 async def _persist_reply(
@@ -287,6 +290,102 @@ async def _persist_reply(
     await repo.touch(conversation_id)
 
 
+# Audit actions written when the assistant fails to answer a knowledge
+# question. Two classes, both surfaced by the manager audit viewer's
+# Question & Answer panel:
+#
+# - LOW_CONFIDENCE_ANSWER: the confidence gate refused (low confidence or
+#   zero retrievable citations) and the honest refusal was served.
+# - NO_INFO_ANSWER: the gate PASSED, but the generated answer itself declared
+#   the knowledge base has nothing relevant ("the documents do not contain
+#   ...") — or the safety pipeline blocked the reply. Retrieval matched
+#   something loosely; the answer still leaves the question unanswered.
+LOW_CONFIDENCE_AUDIT_ACTION = "LOW_CONFIDENCE_ANSWER"
+NO_INFO_ANSWER_AUDIT_ACTION = "NO_INFO_ANSWER"
+
+# Phrases by which a GENERATED answer concedes it found nothing — statements
+# about the corpus ("does not contain", "no mention of"), not policy content
+# (a legitimate "remote work is not permitted" never matches). Applied only
+# when the confidence gate passed, so the built-in refusal text never hits
+# these patterns via this path.
+_NO_INFO_ANSWER_PATTERNS = (
+    re.compile(r"\bdo(?:es)?\s+not\s+(?:contain|include|cover|address|mention)\b", re.IGNORECASE),
+    re.compile(r"\bdoesn'?t\s+(?:contain|include|cover|address|mention)\b", re.IGNORECASE),
+    re.compile(r"\bnot\s+(?:mentioned|covered|addressed|specified|documented)\s+in\b", re.IGNORECASE),
+    re.compile(r"\bno\s+(?:information|guidance|policy|provisions?|mentions?)\b", re.IGNORECASE),
+    re.compile(r"\bcouldn'?t\s+find\b", re.IGNORECASE),
+    re.compile(r"\bdon'?t\s+(?:have|see|find)\s+(?:any\s+)?(?:information|details|guidance)\b", re.IGNORECASE),
+)
+
+# Bound on the retrieved-context preview stored in the audit payload — the
+# full grounded context can be large, and the audit row only needs enough of
+# it to see WHAT the knowledge base retrieved (not all of it).
+_RETRIEVED_CONTEXT_PREVIEW_CHARS = 2000
+
+
+def _bad_answer_audit(
+    result: KnowledgeResult | None,
+    answer: str,
+    safety: str,
+) -> tuple[str, str] | None:
+    """Classify a failed knowledge turn, or ``None`` if the turn answered well.
+
+    Returns ``(audit_action, reason)``. Mirrors the knowledge node's refusal
+    condition (low confidence OR zero citations) while excluding the two
+    cases that return *different* deterministic messages: an empty knowledge
+    base (nothing is indexed at all — not an answer-quality problem) and
+    restricted-document denials (an access decision, not a bad answer).
+    """
+    if result is None or result.empty_knowledge_base or result.restricted:
+        return None
+    if result.low_confidence or not result.citations:
+        return LOW_CONFIDENCE_AUDIT_ACTION, "low_confidence"
+    # Gate passed, yet the reply is still not an answer: either the safety
+    # pipeline replaced it with a refusal, or the model itself conceded the
+    # documents say nothing about the question.
+    if safety == "BLOCKED":
+        return NO_INFO_ANSWER_AUDIT_ACTION, "safety_blocked"
+    if any(pattern.search(answer) for pattern in _NO_INFO_ANSWER_PATTERNS):
+        return NO_INFO_ANSWER_AUDIT_ACTION, "no_info_answer"
+    return None
+
+
+async def _audit_low_confidence_answer(
+    session: AsyncSession,
+    *,
+    actor_user_id: uuid.UUID | None,
+    actor_role: str | None,
+    conversation_id: uuid.UUID | None,
+    question: str,
+    answer: str,
+    result: KnowledgeResult,
+    action: str,
+    reason: str,
+) -> None:
+    """Record one failed-knowledge-turn audit row in the current transaction.
+
+    Flush-only via ``AuditRepo.record`` so the row commits atomically with the
+    assistant reply it describes. ``actor_user_id`` is ``None`` for anonymous
+    public-chat refusals; the question/answer pair lands in ``new_state``
+    where the audit viewer's inspection modal surfaces it verbatim.
+    """
+    await AuditRepo(session).record(
+        actor_user_id=actor_user_id,
+        action=action,
+        target_type="conversation" if conversation_id is not None else None,
+        target_id=conversation_id,
+        new_state={
+            "question": question,
+            "answer": answer,
+            "confidence": round(result.confidence, 4),
+            "actor_role": actor_role,
+            "citation_count": len(result.citations),
+            "reason": reason,
+            "retrieved_context": result.grounded_context[:_RETRIEVED_CONTEXT_PREVIEW_CHARS],
+        },
+    )
+
+
 @router.post("", response_model=ChatResponse)
 async def chat(
     body: ChatRequest,
@@ -294,7 +393,9 @@ async def chat(
     session: AsyncSession = Depends(get_session),
 ) -> ChatResponse:
     """Run one chat turn through the supervisor graph and persist it."""
-    repo, conversation_id, history_messages, message = await _prepare_turn(session, user, body)
+    repo, conversation_id, user_id, history_messages, message = await _prepare_turn(
+        session, user, body
+    )
 
     graph = build_chat_graph(session, user)
     result = await graph.ainvoke(
@@ -327,6 +428,18 @@ async def chat(
         confidence_applicable=confidence_applicable,
         ui_widget=ui_widget,
     )
+    if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
+        await _audit_low_confidence_answer(
+            session,
+            actor_user_id=user_id,
+            actor_role=user.coarse_role,
+            conversation_id=conversation_id,
+            question=message,
+            answer=answer,
+            result=knowledge_result,
+            action=audit[0],
+            reason=audit[1],
+        )
     await session.commit()
 
     meta = {
@@ -380,7 +493,9 @@ async def chat_stream(
     reply is persisted when the stream completes. On failure an ``error``
     event is emitted before ``done``.
     """
-    repo, conversation_id, history_messages, message = await _prepare_turn(session, user, body)
+    repo, conversation_id, user_id, history_messages, message = await _prepare_turn(
+        session, user, body
+    )
     graph = build_chat_graph(session, user)
 
     def sse(event: dict) -> str:
@@ -453,6 +568,18 @@ async def chat_stream(
             confidence_applicable=confidence_applicable,
             ui_widget=ui_widget,
         )
+        if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
+            await _audit_low_confidence_answer(
+                session,
+                actor_user_id=user_id,
+                actor_role=user.coarse_role,
+                conversation_id=conversation_id,
+                question=message,
+                answer=answer,
+                result=knowledge_result,
+                action=audit[0],
+                reason=audit[1],
+            )
         await session.commit()
 
         yield sse(
@@ -587,6 +714,20 @@ async def public_chat(
     if ui_widget:
         meta["ui_widget"] = ui_widget
 
+    if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
+        await _audit_low_confidence_answer(
+            session,
+            actor_user_id=None,
+            actor_role=user.coarse_role if user else None,
+            conversation_id=None,
+            question=message,
+            answer=answer,
+            result=knowledge_result,
+            action=audit[0],
+            reason=audit[1],
+        )
+        await session.commit()
+
     return PublicChatResponse(
         message=answer,
         citations=[CitationOut(**c) for c in citations],
@@ -671,7 +812,22 @@ async def public_chat_stream(
         agent = final.get("agent", "unknown")
         confidence = final.get("confidence", 0.0)
         knowledge_result = final.get("knowledge_result")
+        safety = final.get("safety", "PASS")
         ui_widget = final.get("ui_widget") or streamed_ui_widget
+
+        if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
+            await _audit_low_confidence_answer(
+                session,
+                actor_user_id=None,
+                actor_role=user.coarse_role if user else None,
+                conversation_id=None,
+                question=message,
+                answer=answer,
+                result=knowledge_result,
+                action=audit[0],
+                reason=audit[1],
+            )
+            await session.commit()
 
         yield sse(
             {
