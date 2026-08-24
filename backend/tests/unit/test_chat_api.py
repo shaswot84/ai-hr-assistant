@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -24,6 +25,7 @@ from app.api.routes import chat as chat_module
 from app.contracts.auth import UserContext
 from app.db.base import Base
 from app.db.session import get_session
+from app.domain.audit import AuditLog
 from app.domain.conversation import Conversation, ConversationMessage, ConversationWorkflowState
 from app.domain.identity import ApplicationUser, Person
 from app.knowledge.contracts import Citation, KnowledgeResult
@@ -132,6 +134,21 @@ def low_confidence_graph_builder(session, user=None):
     return build_supervisor_graph(llm=FakeLLM("knowledge"), knowledge_service=service)
 
 
+def no_info_answer_graph_builder(session, user=None):
+    """A graph whose confidence gate PASSES but the generated answer concedes
+    the documents say nothing — the sneaky "no information" failure class."""
+    from app.agents.supervisor.graph import build_supervisor_graph
+
+    service = FakeKnowledgeService(
+        make_result(),
+        answer=(
+            "The documents you provided do not contain any information "
+            "about a company policy on quantum computing. [1]"
+        ),
+    )
+    return build_supervisor_graph(llm=fake_llm, knowledge_service=service)
+
+
 def empty_knowledge_base_graph_builder(session, user=None):
     """A graph whose knowledge node finds an empty knowledge base."""
     from app.agents.supervisor.graph import build_supervisor_graph
@@ -216,6 +233,7 @@ async def chat_env(monkeypatch) -> ChatEnv:
             tables=[
                 Person.__table__,
                 ApplicationUser.__table__,
+                AuditLog.__table__,
                 Conversation.__table__,
                 ConversationMessage.__table__,
                 ConversationWorkflowState.__table__,
@@ -757,5 +775,131 @@ async def test_public_chat_stream_anonymous(chat_env, monkeypatch):
     assert "turn_started" in types
     assert "done" in types
     assert events[-1]["conversation_id"] == "public"
+
+
+# --- low-confidence answer audit tests -------------------------------------
+
+
+async def _audit_rows(factory) -> list[AuditLog]:
+    async with factory() as session:
+        rows = (await session.execute(select(AuditLog))).scalars().all()
+        return list(rows)
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_answer_writes_audit_row(chat_env, monkeypatch):
+    """A refused low-confidence turn records a LOW_CONFIDENCE_ANSWER audit row
+    carrying the exact question and refusal as the served answer."""
+    monkeypatch.setattr(chat_module, "build_chat_graph", low_confidence_graph_builder)
+
+    resp = await chat_env.client.post("/api/chat", json={"message": "obscure policy question"})
+    assert resp.status_code == 200
+    conversation_id = uuid.UUID(resp.json()["conversation_id"])
+
+    rows = await _audit_rows(chat_env.factory)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.action == "LOW_CONFIDENCE_ANSWER"
+    assert row.actor_user_id == chat_env.alice_id
+    assert row.target_type == "conversation"
+    assert row.target_id == conversation_id
+    payload = row.new_state
+    assert payload["question"] == "obscure policy question"
+    assert "couldn't find enough evidence" in payload["answer"]
+    assert payload["confidence"] == 0.92
+    assert payload["citation_count"] == 0
+    assert payload["reason"] == "low_confidence"
+
+
+@pytest.mark.asyncio
+async def test_no_info_answer_writes_audit_row(chat_env, monkeypatch):
+    """The gate passed (citations served, confidence fine) but the generated
+    answer concedes the documents say nothing — audited as NO_INFO_ANSWER."""
+    monkeypatch.setattr(chat_module, "build_chat_graph", no_info_answer_graph_builder)
+
+    resp = await chat_env.client.post(
+        "/api/chat", json={"message": "what is the quantum computing policy?"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["low_confidence"] is False  # the gate itself passed
+
+    rows = await _audit_rows(chat_env.factory)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.action == "NO_INFO_ANSWER"
+    assert row.actor_user_id == chat_env.alice_id
+    assert row.target_type == "conversation"
+    assert row.new_state["question"] == "what is the quantum computing policy?"
+    assert "do not contain any information" in row.new_state["answer"]
+    assert row.new_state["reason"] == "no_info_answer"
+    assert row.new_state["citation_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_confident_answer_writes_no_audit_row(chat_env):
+    """A confidently answered turn never writes an audit row."""
+    resp = await chat_env.client.post(
+        "/api/chat", json={"message": "What is the annual leave policy?"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["low_confidence"] is False
+
+    rows = await _audit_rows(chat_env.factory)
+    assert [r.action for r in rows] == []
+
+
+@pytest.mark.asyncio
+async def test_empty_knowledge_base_writes_no_audit_row(chat_env, monkeypatch):
+    """The empty-knowledge-base message is not an answer-quality failure —
+    it must not pollute the low-confidence audit trail."""
+    monkeypatch.setattr(chat_module, "build_chat_graph", empty_knowledge_base_graph_builder)
+
+    resp = await chat_env.client.post("/api/chat", json={"message": "what is the leave policy"})
+    assert resp.status_code == 200
+
+    rows = await _audit_rows(chat_env.factory)
+    assert [r.action for r in rows] == []
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_stream_writes_audit_row(chat_env, monkeypatch):
+    """The SSE variant audits the refused turn when the stream completes."""
+    monkeypatch.setattr(chat_module, "build_chat_graph", low_confidence_graph_builder)
+
+    async with chat_env.client.stream(
+        "POST", "/api/chat/stream", json={"message": "obscure streamed question"}
+    ) as resp:
+        events = await _sse_events(resp)
+    assert events[-1]["low_confidence"] is True
+
+    rows = await _audit_rows(chat_env.factory)
+    assert len(rows) == 1
+    assert rows[0].action == "LOW_CONFIDENCE_ANSWER"
+    assert rows[0].new_state["question"] == "obscure streamed question"
+
+
+@pytest.mark.asyncio
+async def test_public_low_confidence_writes_anonymous_audit_row(chat_env, monkeypatch):
+    """Anonymous public-chat refusals are audited with a null actor and no
+    conversation target — still useful for knowledge-base gap analysis."""
+    monkeypatch.setattr(chat_module, "build_chat_graph", low_confidence_graph_builder)
+
+    resp = await chat_env.client.post(
+        "/api/chat/public",
+        json={"message": "anonymous obscure question", "history": []},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["low_confidence"] is True
+
+    rows = await _audit_rows(chat_env.factory)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.action == "LOW_CONFIDENCE_ANSWER"
+    assert row.actor_user_id is None
+    assert row.target_type is None
+    assert row.target_id is None
+    assert row.new_state["question"] == "anonymous obscure question"
+    assert row.new_state["actor_role"] is None
 
 

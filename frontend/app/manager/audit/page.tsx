@@ -47,6 +47,14 @@ function formatExactTime(dateStr: string): string {
 
 function actionTone(action: string): { bg: string; text: string; ring: string; icon: string } {
   const upper = action.toUpperCase();
+  if (upper.includes("LOW_CONFIDENCE") || upper.includes("NO_INFO")) {
+    return {
+      bg: "bg-amber-50",
+      text: "text-amber-700",
+      ring: "ring-amber-600/20",
+      icon: "M12 9v2m0 4h.01M5 19h14a2 2 0 001.66-3.32l-7-11.66a2 2 0 00-3.32 0l-7 11.66A2 2 0 005 19z",
+    };
+  }
   if (
     upper.includes("CREATE") ||
     upper.includes("HIRE") ||
@@ -126,6 +134,35 @@ function targetShortcutLink(targetType: string | null, targetId: string | null):
   return null;
 }
 
+/** Audit actions the chat layer writes for failed knowledge turns. */
+const BAD_ANSWER_ACTIONS = new Set(["LOW_CONFIDENCE_ANSWER", "NO_INFO_ANSWER"]);
+
+/** Payload shape written by the chat layer for failed-answer audit rows. */
+interface BadAnswerPayload {
+  question?: unknown;
+  answer?: unknown;
+  confidence?: unknown;
+  actor_role?: unknown;
+  citation_count?: unknown;
+  reason?: unknown;
+  retrieved_context?: unknown;
+}
+
+function isBadAnswerEntry(entry: AuditLogEntry): boolean {
+  return BAD_ANSWER_ACTIONS.has(entry.action);
+}
+
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** The question/answer payload of a failed-answer entry, if present. */
+function badAnswerPayload(entry: AuditLogEntry): BadAnswerPayload | null {
+  if (!isBadAnswerEntry(entry) || !entry.new_state) return null;
+  const state = entry.new_state as BadAnswerPayload;
+  return typeof state.question === "string" ? state : null;
+}
+
 function formatJsonValue(val: unknown): string {
   if (val === null || val === undefined) return "—";
   if (typeof val === "object") return JSON.stringify(val);
@@ -172,9 +209,20 @@ function AuditInspectionModal({
   isOpen: boolean;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"diff" | "raw">("diff");
+  const [tab, setTab] = useState<"qa" | "diff" | "raw">("diff");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [lastEntryId, setLastEntryId] = useState<string | null>(null);
   const { addToast } = useToast();
+
+  // Reset to the default tab per inspected entry (adjusting state during
+  // render, per React's "you might not need an effect"): low-confidence
+  // answer entries open on their Question & Answer panel, everything else
+  // on the Visual Diff.
+  const entryId = entry?.audit_id ?? null;
+  if (entryId !== lastEntryId) {
+    setLastEntryId(entryId);
+    setTab(entry && badAnswerPayload(entry) ? "qa" : "diff");
+  }
 
   if (!entry) return null;
 
@@ -182,6 +230,7 @@ function AuditInspectionModal({
   const hasState = !!entry.previous_state || !!entry.new_state;
   const tone = actionTone(entry.action);
   const shortcut = targetShortcutLink(entry.target_type, entry.target_id);
+  const qa = badAnswerPayload(entry);
 
   function copyText(text: string, label: string) {
     navigator.clipboard.writeText(text);
@@ -357,9 +406,20 @@ function AuditInspectionModal({
         {/* State Changes / Payloads */}
         <div>
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-zinc-900">State Changes & Payload</h3>
+            <h3 className="text-sm font-semibold text-zinc-900">State Changes &amp; Payload</h3>
             {hasState && (
               <div className="inline-flex rounded-lg border border-zinc-200 bg-zinc-50 p-0.5 text-xs">
+                {qa && (
+                  <button
+                    type="button"
+                    onClick={() => setTab("qa")}
+                    className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+                      tab === "qa" ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
+                    }`}
+                  >
+                    Question &amp; Answer
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setTab("diff")}
@@ -385,6 +445,81 @@ function AuditInspectionModal({
           {!hasState ? (
             <div className="rounded-lg border border-dashed border-zinc-200 p-6 text-center text-xs text-zinc-400">
               No previous or new state payloads were recorded for this audit entry.
+            </div>
+          ) : tab === "qa" && qa ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-4">
+                <div className="mb-1.5 flex items-center justify-between">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-700">
+                    User Question
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => copyText(asText(qa.question), "Question")}
+                    className="text-[11px] text-blue-600 hover:underline"
+                  >
+                    Copy
+                  </button>
+                </div>
+                <p className="whitespace-pre-wrap text-sm text-zinc-900">{asText(qa.question)}</p>
+              </div>
+
+              <div className="rounded-lg border border-zinc-200 bg-white p-4">
+                <div className="mb-1.5 flex items-center justify-between">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                    {entry.action === "NO_INFO_ANSWER"
+                      ? "Assistant Reply (declared \u201cno information\u201d despite passing the confidence gate)"
+                      : "Assistant Reply (low-confidence refusal)"}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => copyText(asText(qa.answer), "Answer")}
+                    className="text-[11px] text-blue-600 hover:underline"
+                  >
+                    Copy
+                  </button>
+                </div>
+                <p className="whitespace-pre-wrap text-sm text-zinc-800">{asText(qa.answer)}</p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {qa.confidence !== undefined && (
+                  <span className="inline-flex items-center rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20">
+                    Confidence: {String(qa.confidence)}
+                  </span>
+                )}
+                {typeof qa.citation_count === "number" && (
+                  <span className="inline-flex items-center rounded-md bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-700 ring-1 ring-inset ring-zinc-500/10">
+                    Citations served: {qa.citation_count}
+                  </span>
+                )}
+                {typeof qa.reason === "string" && qa.reason && (
+                  <span className="inline-flex items-center rounded-md bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-700 ring-1 ring-inset ring-zinc-500/10">
+                    Reason: {qa.reason}
+                  </span>
+                )}
+                {typeof qa.actor_role === "string" && qa.actor_role && (
+                  <span className={`inline-flex rounded px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset ${roleBadgeTone(qa.actor_role)}`}>
+                    {qa.actor_role}
+                  </span>
+                )}
+                {typeof qa.actor_role !== "string" && (
+                  <span className="inline-flex items-center rounded-md bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600 ring-1 ring-inset ring-zinc-500/10">
+                    Anonymous visitor
+                  </span>
+                )}
+              </div>
+
+              {typeof qa.retrieved_context === "string" && qa.retrieved_context && (
+                <details className="rounded-lg border border-zinc-200 bg-zinc-50/50 p-3">
+                  <summary className="cursor-pointer select-none text-xs font-semibold text-zinc-600">
+                    Retrieved knowledge-base context (preview)
+                  </summary>
+                  <pre className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-zinc-600">
+                    {qa.retrieved_context}
+                  </pre>
+                </details>
+              )}
             </div>
           ) : tab === "diff" ? (
             <div className="overflow-hidden rounded-lg border border-zinc-200">
@@ -1017,6 +1152,7 @@ export default function AuditLogViewerPage() {
                     const tone = actionTone(entry.action);
                     const diffs = computeDiff(entry.previous_state, entry.new_state);
                     const changedFields = diffs.filter((d) => d.status !== "unchanged");
+                    const qa = badAnswerPayload(entry);
 
                     return (
                       <tr key={entry.audit_id} className="table-row">
@@ -1106,7 +1242,11 @@ export default function AuditLogViewerPage() {
 
                         {/* Payload Preview */}
                         <td className="table-td hidden lg:table-cell">
-                          {changedFields.length > 0 ? (
+                          {qa ? (
+                            <span className="block max-w-[280px] truncate text-[11px] italic text-zinc-500" title={asText(qa.question)}>
+                              &ldquo;{asText(qa.question)}&rdquo;
+                            </span>
+                          ) : changedFields.length > 0 ? (
                             <div className="flex flex-wrap items-center gap-1">
                               {changedFields.slice(0, 2).map((f) => (
                                 <span
