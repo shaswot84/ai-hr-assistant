@@ -300,11 +300,54 @@ async def test_rag_pipeline_spans(memory_exporter):
     assert "rag.grounding" in span_names
     assert "rag.retrieve" in span_names
 
-    # Verify top retriever span has OpenInference RETRIEVAL_DOCUMENTS
+    # Verify top retriever span has OpenInference RETRIEVAL_DOCUMENTS and success status
     retriever_span = next(s for s in spans if s.name == "rag.retrieve")
     assert retriever_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "RETRIEVER"
     assert retriever_span.attributes[SpanAttributes.INPUT_VALUE] == "can I work from home?"
     assert f"{SpanAttributes.RETRIEVAL_DOCUMENTS}.0.{DocumentAttributes.DOCUMENT_ID}" in retriever_span.attributes
+    assert retriever_span.attributes["rag.status"] == "success"
+
+    # Verify reranker span ranking delta
+    reranker_span = next(s for s in spans if s.name == "rag.reranker")
+    assert reranker_span.attributes["rag.candidates_in_count"] == 1
+    assert reranker_span.attributes["rag.candidates_out_count"] == 1
+    assert "rag.rerank_score_top" in reranker_span.attributes
+    assert "rag.rank_shift" in reranker_span.attributes
+
+    # Verify parent expansion metrics
+    expand_span = next(s for s in spans if s.name == "rag.parent_expansion")
+    assert expand_span.attributes["rag.candidates_in"] == 1
+    assert expand_span.attributes["rag.expanded_chunks_count"] == 1
+    assert expand_span.attributes["rag.parent_expansion_ratio"] > 1.0
+
+    # Ensure EVERY span has a valid OpenInference kind (no "UNKNOWN" in Phoenix)
+    for s in spans:
+        kind = s.attributes.get(SpanAttributes.OPENINFERENCE_SPAN_KIND)
+        assert kind is not None, f"Span {s.name} is missing OpenInference span kind"
+        assert kind != "UNKNOWN", f"Span {s.name} has UNKNOWN span kind"
+
+
+
+@pytest.mark.asyncio
+async def test_rag_pipeline_refusal_spans(memory_exporter):
+    exporter, provider = memory_exporter
+    from app.knowledge.service import KnowledgeService
+
+    mock_repo = AsyncMock()
+    mock_repo.has_indexed_documents.return_value = False
+    mock_embedder = AsyncMock()
+
+    service = KnowledgeService(repository=mock_repo, embedder=mock_embedder)
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        result = await service.retrieve("can I work from home?")
+
+    assert result.empty_knowledge_base is True
+    spans = exporter.get_finished_spans()
+    retriever_span = next(s for s in spans if s.name == "rag.retrieve")
+    assert retriever_span.attributes["rag.status"] == "refused"
+    assert retriever_span.attributes["rag.refusal_reason"] == "empty_kb"
+
 
 
 @pytest.mark.asyncio

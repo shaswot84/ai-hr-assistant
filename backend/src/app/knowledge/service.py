@@ -101,6 +101,8 @@ class KnowledgeService:
         ) as span:
             if not await self._repository.has_indexed_documents():
                 span.set_attribute("rag.empty_knowledge_base", True)
+                span.set_attribute("rag.status", "refused")
+                span.set_attribute("rag.refusal_reason", "empty_kb")
                 return KnowledgeResult(grounded_context="", empty_knowledge_base=True)
 
             try:
@@ -112,9 +114,15 @@ class KnowledgeService:
                     query_embedding = (await self._embedder.embed([query], prefix="search_query: "))[0]
             except Exception:
                 logger.warning("query embedding failed; serving an empty result", exc_info=True)
+                span.set_attribute("rag.status", "refused")
+                span.set_attribute("rag.refusal_reason", "embedding_failed")
                 return KnowledgeResult(grounded_context="", low_confidence=True)
 
-            with trace_span("rag.search.bm25", attributes={"rag.top_k": top_k}):
+            with trace_span(
+                "rag.search.bm25",
+                span_kind=OpenInferenceSpanKindValues.RETRIEVER,
+                attributes={"rag.top_k": top_k},
+            ):
                 bm25_hits = await self._repository.bm25_search(
                     query,
                     top_k,
@@ -123,7 +131,11 @@ class KnowledgeService:
                     access_roles=access_roles,
                 )
 
-            with trace_span("rag.search.vector", attributes={"rag.top_k": top_k}):
+            with trace_span(
+                "rag.search.vector",
+                span_kind=OpenInferenceSpanKindValues.RETRIEVER,
+                attributes={"rag.top_k": top_k},
+            ):
                 vector_hits = await self._repository.vector_search(
                     query_embedding,
                     top_k,
@@ -137,6 +149,7 @@ class KnowledgeService:
 
             with trace_span(
                 "rag.ranking.rrf",
+                span_kind=OpenInferenceSpanKindValues.RERANKER,
                 attributes={"rag.bm25_hits": len(bm25_hits), "rag.vector_hits": len(vector_hits)},
             ):
                 fused = reciprocal_rank_fusion(
@@ -158,24 +171,48 @@ class KnowledgeService:
                 span_kind=OpenInferenceSpanKindValues.RERANKER,
                 attributes={
                     "rag.reranker_model": getattr(self._reranker, "model", "unknown"),
-                    "rag.candidates_in": len(fused_chunks),
+                    "rag.candidates_in_count": len(fused_chunks),
                 },
-            ):
+            ) as rerank_span:
                 reranked = await self._rerank(query, fused_chunks, vector_scores)
                 final = reranked[: self._settings.rerank_top_n]
+                rerank_span.set_attribute("rag.candidates_out_count", len(final))
+                if final:
+                    top_score = (
+                        final[0].reranker_score
+                        if final[0].reranker_score is not None
+                        else final[0].retrieval_score
+                    )
+                    if top_score is not None:
+                        rerank_span.set_attribute("rag.rerank_score_top", float(top_score))
+                    rank_shift = bool(fused_chunks and fused_chunks[0].chunk_id != final[0].chunk_id)
+                    rerank_span.set_attribute("rag.rank_shift", rank_shift)
 
             # Small-to-big parent context expansion
+            base_chars = sum(len(c.text) for c in final)
             with trace_span(
                 "rag.parent_expansion",
+                span_kind=OpenInferenceSpanKindValues.CHAIN,
                 attributes={"rag.candidates_in": len(final)},
-            ):
+            ) as expand_span:
                 final = await self._expand(final)
+                expanded_chars = sum(len(c.parent_context or "") + len(c.text) for c in final)
+                expanded_count = sum(1 for c in final if c.parent_context)
+                ratio = round(expanded_chars / max(base_chars, 1), 2)
+                expand_span.set_attribute("rag.parent_expansion_ratio", ratio)
+                expand_span.set_attribute("rag.expanded_chunks_count", expanded_count)
 
-            with trace_span("rag.confidence"):
+            with trace_span(
+                "rag.confidence",
+                span_kind=OpenInferenceSpanKindValues.GUARDRAIL,
+            ):
                 confidence = self._confidence.estimate(final)
                 low_confidence = self._low_confidence.is_low(confidence, len(final))
 
-            with trace_span("rag.grounding"):
+            with trace_span(
+                "rag.grounding",
+                span_kind=OpenInferenceSpanKindValues.CHAIN,
+            ):
                 grounded_context, citations = self._grounding.build(final)
 
             restricted: list[RestrictedDocument] = []
@@ -190,6 +227,19 @@ class KnowledgeService:
             span.set_attribute("rag.confidence", float(confidence))
             span.set_attribute("rag.low_confidence", bool(low_confidence))
             span.set_attribute("rag.citation_count", len(citations))
+
+            if restricted:
+                span.set_attribute("rag.status", "refused")
+                span.set_attribute("rag.refusal_reason", "restricted")
+                span.set_attribute("rag.restricted_count", len(restricted))
+            elif low_confidence or not citations:
+                span.set_attribute("rag.status", "refused")
+                span.set_attribute(
+                    "rag.refusal_reason",
+                    "low_confidence" if low_confidence else "no_citations",
+                )
+            else:
+                span.set_attribute("rag.status", "success")
 
             return KnowledgeResult(
                 grounded_context=grounded_context,

@@ -35,7 +35,7 @@ def get_tracer(name: str = _TRACER_NAME) -> trace.Tracer:
 @contextmanager
 def trace_span(
     name: str,
-    span_kind: str | OpenInferenceSpanKindValues | None = None,
+    span_kind: str | OpenInferenceSpanKindValues | None = OpenInferenceSpanKindValues.CHAIN,
     attributes: dict[str, Any] | None = None,
 ) -> Iterator[Span]:
     """Synchronous context manager creating a traced span with OpenInference conventions."""
@@ -62,7 +62,7 @@ def trace_span(
 @asynccontextmanager
 async def async_trace_span(
     name: str,
-    span_kind: str | OpenInferenceSpanKindValues | None = None,
+    span_kind: str | OpenInferenceSpanKindValues | None = OpenInferenceSpanKindValues.CHAIN,
     attributes: dict[str, Any] | None = None,
 ) -> AsyncIterator[Span]:
     """Asynchronous context manager creating a traced span with OpenInference conventions."""
