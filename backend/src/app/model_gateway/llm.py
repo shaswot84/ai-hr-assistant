@@ -7,7 +7,7 @@ import httpx
 from openinference.semconv.trace import SpanAttributes
 
 from app.model_gateway.interfaces import LLM
-from app.observability import trace_llm_call
+from app.observability import set_llm_token_counts, trace_llm_call
 
 
 class OllamaCloudLLM(LLM):
@@ -51,6 +51,11 @@ class OllamaCloudLLM(LLM):
             payload = response.json()
             content = payload["message"]["content"]
             span.set_attribute(SpanAttributes.OUTPUT_VALUE, content)
+            set_llm_token_counts(
+                span,
+                prompt_tokens=payload.get("prompt_eval_count"),
+                completion_tokens=payload.get("eval_count"),
+            )
             return content
 
     async def stream(self, system: str, user: str) -> AsyncIterator[str]:
@@ -81,6 +86,11 @@ class OllamaCloudLLM(LLM):
                         continue
                     payload = json.loads(line)
                     if payload.get("done"):
+                        set_llm_token_counts(
+                            span,
+                            prompt_tokens=payload.get("prompt_eval_count"),
+                            completion_tokens=payload.get("eval_count"),
+                        )
                         break
                     token = payload.get("message", {}).get("content", "")
                     if token:

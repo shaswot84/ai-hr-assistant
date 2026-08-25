@@ -28,6 +28,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from openinference.semconv.trace import SpanAttributes
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +46,7 @@ from app.knowledge.service import KnowledgeService
 from app.model_gateway.factory import build_embedder, build_llm, build_reranker
 from app.model_gateway.interfaces import LLM, Embedder, Reranker
 from app.model_gateway.ollama import OllamaChatProvider
+from app.observability import trace_chat_turn
 from app.repositories.audit import AuditRepo
 from app.repositories.conversation import ConversationRepo
 from app.safety.factory import build_output_guard
@@ -397,71 +399,82 @@ async def chat(
         session, user, body
     )
 
-    graph = build_chat_graph(session, user)
-    result = await graph.ainvoke(
-        {
-            "messages": history_messages,
-            "current_query": message,
-            "conversation_id": str(conversation_id),
-            "actor_role": user.coarse_role if user else None,
-        }
-    )
-
-    answer = result.get("answer", "")
-    citations = [_serialize_citation(c) for c in result.get("citations", [])]
-    agent = result.get("agent", "unknown")
-    confidence = result.get("confidence", 0.0)
-    knowledge_result = result.get("knowledge_result")
-    safety = result.get("safety", "PASS")
-    confidence_applicable = knowledge_result is not None
-    ui_widget = result.get("ui_widget")
-
-    await _persist_reply(
-        repo,
-        conversation_id,
-        answer,
-        citations,
-        agent,
-        confidence,
-        low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
-        safety=safety,
-        confidence_applicable=confidence_applicable,
-        ui_widget=ui_widget,
-    )
-    if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
-        await _audit_low_confidence_answer(
-            session,
-            actor_user_id=user_id,
-            actor_role=user.coarse_role,
-            conversation_id=conversation_id,
-            question=message,
-            answer=answer,
-            result=knowledge_result,
-            action=audit[0],
-            reason=audit[1],
+    async with trace_chat_turn(
+        query=message,
+        conversation_id=str(conversation_id),
+        user_id=user.subject if user else None,
+        actor_role=user.coarse_role if user else None,
+    ) as turn_span:
+        graph = build_chat_graph(session, user)
+        result = await graph.ainvoke(
+            {
+                "messages": history_messages,
+                "current_query": message,
+                "conversation_id": str(conversation_id),
+                "actor_role": user.coarse_role if user else None,
+            }
         )
-    await session.commit()
 
-    meta = {
-        "agent": agent,
-        "confidence": confidence,
-        "low_confidence": bool(knowledge_result is not None and knowledge_result.low_confidence),
-        "safety": safety,
-        "confidence_applicable": confidence_applicable,
-    }
-    if ui_widget:
-        meta["ui_widget"] = ui_widget
+        answer = result.get("answer", "")
+        citations = [_serialize_citation(c) for c in result.get("citations", [])]
+        agent = result.get("agent", "unknown")
+        confidence = result.get("confidence", 0.0)
+        knowledge_result = result.get("knowledge_result")
+        safety = result.get("safety", "PASS")
+        confidence_applicable = knowledge_result is not None
+        ui_widget = result.get("ui_widget")
 
-    return ChatResponse(
-        conversation_id=conversation_id,
-        message=answer,
-        citations=[CitationOut(**c) for c in citations],
-        confidence=confidence,
-        low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
-        agent=agent,
-        confidence_applicable=confidence_applicable,
-        meta=meta,
-    )
+        turn_span.set_attribute(SpanAttributes.OUTPUT_VALUE, answer)
+        turn_span.set_attribute("agent.name", agent)
+        if confidence_applicable:
+            turn_span.set_attribute("rag.confidence", float(confidence))
+
+        await _persist_reply(
+            repo,
+            conversation_id,
+            answer,
+            citations,
+            agent,
+            confidence,
+            low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
+            safety=safety,
+            confidence_applicable=confidence_applicable,
+            ui_widget=ui_widget,
+        )
+        if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
+            await _audit_low_confidence_answer(
+                session,
+                actor_user_id=user_id,
+                actor_role=user.coarse_role,
+                conversation_id=conversation_id,
+                question=message,
+                answer=answer,
+                result=knowledge_result,
+                action=audit[0],
+                reason=audit[1],
+            )
+        await session.commit()
+
+        meta = {
+            "agent": agent,
+            "confidence": confidence,
+            "low_confidence": bool(knowledge_result is not None and knowledge_result.low_confidence),
+            "safety": safety,
+            "confidence_applicable": confidence_applicable,
+        }
+        if ui_widget:
+            meta["ui_widget"] = ui_widget
+
+        return ChatResponse(
+            conversation_id=conversation_id,
+            message=answer,
+            citations=[CitationOut(**c) for c in citations],
+            confidence=confidence,
+            low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
+            agent=agent,
+            confidence_applicable=confidence_applicable,
+            meta=meta,
+        )
 
 
 @router.post("/stream")
@@ -502,101 +515,113 @@ async def chat_stream(
         return f"data: {json.dumps(event)}\n\n"
 
     async def event_stream():
-        yield sse({"type": "turn_started", "conversation_id": str(conversation_id)})
-        final: dict = {}
-        streamed_ui_widget: dict | None = None
-        try:
-            async for mode, chunk in graph.astream(
-                {
-                    "messages": history_messages,
-                    "current_query": message,
-                    "conversation_id": str(conversation_id),
-                    "actor_role": user.coarse_role if user else None,
-                },
-                stream_mode=["custom", "updates"],
-            ):
-                if mode == "custom":
-                    if chunk["type"] == "retrieval":
-                        yield sse(_serialize_retrieval_event(chunk))
-                    else:
-                        if chunk.get("type") == "ui_widget":
-                            streamed_ui_widget = chunk.get("widget")
-                        yield sse(chunk)  # token / message / ui_widget
-                else:  # updates: route first, then the terminal agent
-                    for node_name, update in chunk.items():
-                        if node_name == "route":
-                            yield sse({"type": "route", "route": update.get("route", "knowledge")})
-                        elif node_name in _TERMINAL_NODES:
-                            final = update
-        except Exception as exc:  # noqa: BLE001 - the stream must terminate cleanly
-            logger.warning("chat stream failed for conversation %s: %s", conversation_id, exc)
-            yield sse({"type": "error", "detail": "The assistant failed to respond. Please try again."})
+        async with trace_chat_turn(
+            query=message,
+            conversation_id=str(conversation_id),
+            user_id=user.subject if user else None,
+            actor_role=user.coarse_role if user else None,
+        ) as turn_span:
+            yield sse({"type": "turn_started", "conversation_id": str(conversation_id)})
+            final: dict = {}
+            streamed_ui_widget: dict | None = None
+            try:
+                async for mode, chunk in graph.astream(
+                    {
+                        "messages": history_messages,
+                        "current_query": message,
+                        "conversation_id": str(conversation_id),
+                        "actor_role": user.coarse_role if user else None,
+                    },
+                    stream_mode=["custom", "updates"],
+                ):
+                    if mode == "custom":
+                        if chunk["type"] == "retrieval":
+                            yield sse(_serialize_retrieval_event(chunk))
+                        else:
+                            if chunk.get("type") == "ui_widget":
+                                streamed_ui_widget = chunk.get("widget")
+                            yield sse(chunk)  # token / message / ui_widget
+                    else:  # updates: route first, then the terminal agent
+                        for node_name, update in chunk.items():
+                            if node_name == "route":
+                                yield sse({"type": "route", "route": update.get("route", "knowledge")})
+                            elif node_name in _TERMINAL_NODES:
+                                final = update
+            except Exception as exc:  # noqa: BLE001 - the stream must terminate cleanly
+                logger.warning("chat stream failed for conversation %s: %s", conversation_id, exc)
+                turn_span.set_attribute("chat.error", str(exc))
+                yield sse({"type": "error", "detail": "The assistant failed to respond. Please try again."})
+                yield sse(
+                    {
+                        "type": "done",
+                        "conversation_id": str(conversation_id),
+                        "message": "",
+                        "citations": [],
+                        "confidence": 0.0,
+                        "low_confidence": False,
+                        "confidence_applicable": False,
+                        "agent": "unknown",
+                    }
+                )
+                return
+
+            answer = final.get("answer", "")
+            citations = [_serialize_citation(c) for c in final.get("citations", [])]
+            agent = final.get("agent", "unknown")
+            confidence = final.get("confidence", 0.0)
+            knowledge_result = final.get("knowledge_result")
+            safety = final.get("safety", "PASS")
+            confidence_applicable = knowledge_result is not None
+            ui_widget = final.get("ui_widget") or streamed_ui_widget
+
+            turn_span.set_attribute(SpanAttributes.OUTPUT_VALUE, answer)
+            turn_span.set_attribute("agent.name", agent)
+            if confidence_applicable:
+                turn_span.set_attribute("rag.confidence", float(confidence))
+
+            await _persist_reply(
+                repo,
+                conversation_id,
+                answer,
+                citations,
+                agent,
+                confidence,
+                low_confidence=bool(
+                    knowledge_result is not None and knowledge_result.low_confidence
+                ),
+                safety=safety,
+                confidence_applicable=confidence_applicable,
+                ui_widget=ui_widget,
+            )
+            if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
+                await _audit_low_confidence_answer(
+                    session,
+                    actor_user_id=user_id,
+                    actor_role=user.coarse_role,
+                    conversation_id=conversation_id,
+                    question=message,
+                    answer=answer,
+                    result=knowledge_result,
+                    action=audit[0],
+                    reason=audit[1],
+                )
+            await session.commit()
+
             yield sse(
                 {
                     "type": "done",
                     "conversation_id": str(conversation_id),
-                    "message": "",
-                    "citations": [],
-                    "confidence": 0.0,
-                    "low_confidence": False,
-                    "confidence_applicable": False,
-                    "agent": "unknown",
+                    "message": answer,
+                    "citations": citations,
+                    "confidence": confidence,
+                    "low_confidence": bool(
+                        knowledge_result is not None and knowledge_result.low_confidence
+                    ),
+                    "confidence_applicable": confidence_applicable,
+                    "agent": agent,
+                    "ui_widget": ui_widget,
                 }
             )
-            return
-
-        answer = final.get("answer", "")
-        citations = [_serialize_citation(c) for c in final.get("citations", [])]
-        agent = final.get("agent", "unknown")
-        confidence = final.get("confidence", 0.0)
-        knowledge_result = final.get("knowledge_result")
-        safety = final.get("safety", "PASS")
-        confidence_applicable = knowledge_result is not None
-        ui_widget = final.get("ui_widget") or streamed_ui_widget
-
-        await _persist_reply(
-            repo,
-            conversation_id,
-            answer,
-            citations,
-            agent,
-            confidence,
-            low_confidence=bool(
-                knowledge_result is not None and knowledge_result.low_confidence
-            ),
-            safety=safety,
-            confidence_applicable=confidence_applicable,
-            ui_widget=ui_widget,
-        )
-        if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
-            await _audit_low_confidence_answer(
-                session,
-                actor_user_id=user_id,
-                actor_role=user.coarse_role,
-                conversation_id=conversation_id,
-                question=message,
-                answer=answer,
-                result=knowledge_result,
-                action=audit[0],
-                reason=audit[1],
-            )
-        await session.commit()
-
-        yield sse(
-            {
-                "type": "done",
-                "conversation_id": str(conversation_id),
-                "message": answer,
-                "citations": citations,
-                "confidence": confidence,
-                "low_confidence": bool(
-                    knowledge_result is not None and knowledge_result.low_confidence
-                ),
-                "confidence_applicable": confidence_applicable,
-                "agent": agent,
-                "ui_widget": ui_widget,
-            }
-        )
 
     return StreamingResponse(
         event_stream(),
@@ -685,59 +710,70 @@ async def public_chat(
         elif h.role == "assistant":
             history_messages.append(AIMessage(content=h.content))
 
-    graph = build_chat_graph(session, user)
-    result = await graph.ainvoke(
-        {
-            "messages": history_messages,
-            "current_query": message,
-            "conversation_id": "public",
-            "actor_role": user.coarse_role if user else None,
-        }
-    )
-
-    answer = result.get("answer", "")
-    citations = [_serialize_citation(c) for c in result.get("citations", [])]
-    agent = result.get("agent", "unknown")
-    confidence = result.get("confidence", 0.0)
-    knowledge_result = result.get("knowledge_result")
-    safety = result.get("safety", "PASS")
-    confidence_applicable = knowledge_result is not None
-    ui_widget = result.get("ui_widget")
-
-    meta = {
-        "agent": agent,
-        "confidence": confidence,
-        "low_confidence": bool(knowledge_result is not None and knowledge_result.low_confidence),
-        "safety": safety,
-        "confidence_applicable": confidence_applicable,
-    }
-    if ui_widget:
-        meta["ui_widget"] = ui_widget
-
-    if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
-        await _audit_low_confidence_answer(
-            session,
-            actor_user_id=None,
-            actor_role=user.coarse_role if user else None,
-            conversation_id=None,
-            question=message,
-            answer=answer,
-            result=knowledge_result,
-            action=audit[0],
-            reason=audit[1],
+    async with trace_chat_turn(
+        query=message,
+        conversation_id="public",
+        user_id=user.subject if user else None,
+        actor_role=user.coarse_role if user else None,
+    ) as turn_span:
+        graph = build_chat_graph(session, user)
+        result = await graph.ainvoke(
+            {
+                "messages": history_messages,
+                "current_query": message,
+                "conversation_id": "public",
+                "actor_role": user.coarse_role if user else None,
+            }
         )
-        await session.commit()
 
-    return PublicChatResponse(
-        message=answer,
-        citations=[CitationOut(**c) for c in citations],
-        confidence=confidence,
-        low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
-        agent=agent,
-        confidence_applicable=confidence_applicable,
-        meta=meta,
-        ui_widget=ui_widget,
-    )
+        answer = result.get("answer", "")
+        citations = [_serialize_citation(c) for c in result.get("citations", [])]
+        agent = result.get("agent", "unknown")
+        confidence = result.get("confidence", 0.0)
+        knowledge_result = result.get("knowledge_result")
+        safety = result.get("safety", "PASS")
+        confidence_applicable = knowledge_result is not None
+        ui_widget = result.get("ui_widget")
+
+        turn_span.set_attribute(SpanAttributes.OUTPUT_VALUE, answer)
+        turn_span.set_attribute("agent.name", agent)
+        if confidence_applicable:
+            turn_span.set_attribute("rag.confidence", float(confidence))
+
+        meta = {
+            "agent": agent,
+            "confidence": confidence,
+            "low_confidence": bool(knowledge_result is not None and knowledge_result.low_confidence),
+            "safety": safety,
+            "confidence_applicable": confidence_applicable,
+        }
+        if ui_widget:
+            meta["ui_widget"] = ui_widget
+
+        if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
+            await _audit_low_confidence_answer(
+                session,
+                actor_user_id=None,
+                actor_role=user.coarse_role if user else None,
+                conversation_id=None,
+                question=message,
+                answer=answer,
+                result=knowledge_result,
+                action=audit[0],
+                reason=audit[1],
+            )
+            await session.commit()
+
+        return PublicChatResponse(
+            message=answer,
+            citations=[CitationOut(**c) for c in citations],
+            confidence=confidence,
+            low_confidence=bool(knowledge_result is not None and knowledge_result.low_confidence),
+            agent=agent,
+            confidence_applicable=confidence_applicable,
+            meta=meta,
+            ui_widget=ui_widget,
+        )
 
 
 @router.post("/public/stream")
@@ -764,87 +800,97 @@ async def public_chat_stream(
         return f"data: {json.dumps(event)}\n\n"
 
     async def event_stream():
-        yield sse({"type": "turn_started", "conversation_id": "public"})
-        final: dict = {}
-        streamed_ui_widget: dict | None = None
-        try:
-            async for mode, chunk in graph.astream(
-                {
-                    "messages": history_messages,
-                    "current_query": message,
-                    "conversation_id": "public",
-                    "actor_role": user.coarse_role if user else None,
-                },
-                stream_mode=["custom", "updates"],
-            ):
-                if mode == "custom":
-                    if chunk["type"] == "retrieval":
-                        yield sse(_serialize_retrieval_event(chunk))
-                    else:
-                        if chunk.get("type") == "ui_widget":
-                            streamed_ui_widget = chunk.get("widget")
-                        yield sse(chunk)  # token / message / ui_widget
-                else:
-                    for node_name, update in chunk.items():
-                        if node_name == "route":
-                            yield sse({"type": "route", "route": update.get("route", "knowledge")})
-                        elif node_name in _TERMINAL_NODES:
-                            final = update
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("public chat stream failed: %s", exc)
-            yield sse({"type": "error", "detail": "The assistant failed to respond. Please try again."})
+        async with trace_chat_turn(
+            query=message,
+            conversation_id="public",
+            user_id=user.subject if user else None,
+            actor_role=user.coarse_role if user else None,
+        ) as turn_span:
+            yield sse({"type": "turn_started", "conversation_id": "public"})
+            final: dict = {}
+            streamed_ui_widget: dict | None = None
+            try:
+                async for mode, chunk in graph.astream(
+                    {
+                        "messages": history_messages,
+                        "current_query": message,
+                        "conversation_id": "public",
+                        "actor_role": user.coarse_role if user else None,
+                    },
+                    stream_mode=["custom", "updates"],
+                ):
+                    if mode == "custom":
+                        if chunk["type"] == "retrieval":
+                            yield sse(_serialize_retrieval_event(chunk))
+                        else:
+                            if chunk.get("type") == "ui_widget":
+                                streamed_ui_widget = chunk.get("widget")
+                            yield sse(chunk)  # token / message / ui_widget
+                    else:  # updates: route first, then the terminal agent
+                        for node_name, update in chunk.items():
+                            if node_name == "route":
+                                yield sse({"type": "route", "route": update.get("route", "knowledge")})
+                            elif node_name in _TERMINAL_NODES:
+                                final = update
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("public chat stream failed: %s", exc)
+                turn_span.set_attribute("chat.error", str(exc))
+                yield sse({"type": "error", "detail": "The assistant failed to respond. Please try again."})
+                yield sse(
+                    {
+                        "type": "done",
+                        "conversation_id": "public",
+                        "message": "",
+                        "citations": [],
+                        "confidence": 0.0,
+                        "low_confidence": False,
+                        "confidence_applicable": False,
+                        "agent": "unknown",
+                    }
+                )
+                return
+
+            answer = final.get("answer", "")
+            citations = [_serialize_citation(c) for c in final.get("citations", [])]
+            agent = final.get("agent", "unknown")
+            confidence = final.get("confidence", 0.0)
+            knowledge_result = final.get("knowledge_result")
+            safety = final.get("safety", "PASS")
+            ui_widget = final.get("ui_widget") or streamed_ui_widget
+
+            turn_span.set_attribute(SpanAttributes.OUTPUT_VALUE, answer)
+            turn_span.set_attribute("agent.name", agent)
+            if knowledge_result is not None:
+                turn_span.set_attribute("rag.confidence", float(confidence))
+
+            if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
+                await _audit_low_confidence_answer(
+                    session,
+                    actor_user_id=None,
+                    actor_role=user.coarse_role if user else None,
+                    conversation_id=None,
+                    question=message,
+                    answer=answer,
+                    result=knowledge_result,
+                    action=audit[0],
+                    reason=audit[1],
+                )
+                await session.commit()
+
             yield sse(
                 {
                     "type": "done",
                     "conversation_id": "public",
-                    "message": "",
-                    "citations": [],
-                    "confidence": 0.0,
-                    "low_confidence": False,
-                    "confidence_applicable": False,
-                    "agent": "unknown",
+                    "message": answer,
+                    "citations": citations,
+                    "confidence": confidence,
+                    "low_confidence": bool(
+                        knowledge_result is not None and knowledge_result.low_confidence
+                    ),
+                    "confidence_applicable": knowledge_result is not None,
+                    "agent": agent,
+                    "ui_widget": ui_widget,
                 }
             )
-            return
-
-        answer = final.get("answer", "")
-        citations = [_serialize_citation(c) for c in final.get("citations", [])]
-        agent = final.get("agent", "unknown")
-        confidence = final.get("confidence", 0.0)
-        knowledge_result = final.get("knowledge_result")
-        safety = final.get("safety", "PASS")
-        ui_widget = final.get("ui_widget") or streamed_ui_widget
-
-        if (audit := _bad_answer_audit(knowledge_result, answer, safety)) is not None:
-            await _audit_low_confidence_answer(
-                session,
-                actor_user_id=None,
-                actor_role=user.coarse_role if user else None,
-                conversation_id=None,
-                question=message,
-                answer=answer,
-                result=knowledge_result,
-                action=audit[0],
-                reason=audit[1],
-            )
-            await session.commit()
-
-        yield sse(
-            {
-                "type": "done",
-                "conversation_id": "public",
-                "message": answer,
-                "citations": citations,
-                "confidence": confidence,
-                "low_confidence": bool(
-                    knowledge_result is not None and knowledge_result.low_confidence
-                ),
-                "confidence_applicable": knowledge_result is not None,
-                "agent": agent,
-                "ui_widget": ui_widget,
-            }
-        )
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-

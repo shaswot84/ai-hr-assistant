@@ -23,9 +23,11 @@ from app.knowledge.models import DocumentCategory
 from app.observability import (
     async_trace_span,
     init_observability,
+    set_llm_token_counts,
     set_retrieval_documents,
     shutdown_observability,
     trace_agent_turn,
+    trace_chat_turn,
     trace_llm_call,
     trace_span,
     trace_tool_call,
@@ -321,3 +323,180 @@ async def test_supervisor_route_intent_tracing(memory_exporter):
     assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "CHAIN"
     assert s.attributes["agent.route"] == "leave"
     assert s.attributes[SpanAttributes.INPUT_VALUE] == "how much annual leave do I have?"
+
+
+@pytest.mark.asyncio
+async def test_trace_chat_turn(memory_exporter):
+    exporter, provider = memory_exporter
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        async with trace_chat_turn(
+            query="What is the bereavement leave policy?",
+            conversation_id="conv-abc-123",
+            user_id="usr-789",
+            actor_role="EMPLOYEE",
+        ) as span:
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, "Bereavement leave is 5 days.")
+            span.set_attribute("agent.name", "knowledge")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.name == "chat.turn"
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "CHAIN"
+    assert s.attributes[SpanAttributes.INPUT_VALUE] == "What is the bereavement leave policy?"
+    assert s.attributes[SpanAttributes.SESSION_ID] == "conv-abc-123"
+    assert s.attributes[SpanAttributes.USER_ID] == "usr-789"
+    assert s.attributes["actor.role"] == "EMPLOYEE"
+    assert s.attributes[SpanAttributes.OUTPUT_VALUE] == "Bereavement leave is 5 days."
+    assert s.attributes["agent.name"] == "knowledge"
+
+
+def test_set_llm_token_counts(memory_exporter):
+    exporter, provider = memory_exporter
+    with (
+        patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")),
+        trace_span("test.llm", span_kind=OpenInferenceSpanKindValues.LLM) as span,
+    ):
+        set_llm_token_counts(span, prompt_tokens=42, completion_tokens=18)
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_PROMPT] == 42
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_COMPLETION] == 18
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_TOTAL] == 60
+
+
+@pytest.mark.asyncio
+async def test_ollama_cloud_llm_token_tracking_complete(memory_exporter):
+    exporter, provider = memory_exporter
+    from unittest.mock import MagicMock
+    import httpx
+    from app.model_gateway.llm import OllamaCloudLLM
+
+    fake_response = {
+        "model": "test-model",
+        "message": {"role": "assistant", "content": "Hello world"},
+        "prompt_eval_count": 25,
+        "eval_count": 10,
+    }
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_post_res = MagicMock(spec=httpx.Response)
+    mock_post_res.status_code = 200
+    mock_post_res.json.return_value = fake_response
+    mock_post_res.raise_for_status.return_value = None
+    mock_client.post.return_value = mock_post_res
+
+    llm = OllamaCloudLLM(
+        base_url="https://api.ollama.com",
+        api_key="secret-key",
+        model="test-model",
+        client=mock_client,
+    )
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        result = await llm.complete("system", "user")
+
+    assert result == "Hello world"
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_PROMPT] == 25
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_COMPLETION] == 10
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_TOTAL] == 35
+
+
+@pytest.mark.asyncio
+async def test_ollama_cloud_llm_token_tracking_stream(memory_exporter):
+    exporter, provider = memory_exporter
+    import httpx
+    from contextlib import asynccontextmanager
+    from app.model_gateway.llm import OllamaCloudLLM
+
+    lines = [
+        json.dumps({"message": {"content": "Hello"}}),
+        json.dumps({"message": {"content": " world"}}),
+        json.dumps({"done": True, "prompt_eval_count": 30, "eval_count": 12}),
+    ]
+
+    class FakeStreamResponse:
+        def raise_for_status(self):
+            pass
+
+        async def aiter_lines(self):
+            for line in lines:
+                yield line
+
+    @asynccontextmanager
+    async def fake_stream(*args, **kwargs):
+        yield FakeStreamResponse()
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.stream = fake_stream
+
+    llm = OllamaCloudLLM(
+        base_url="https://api.ollama.com",
+        api_key="secret-key",
+        model="test-model",
+        client=mock_client,
+    )
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        tokens = [t async for t in llm.stream("system", "user")]
+
+    assert "".join(tokens) == "Hello world"
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_PROMPT] == 30
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_COMPLETION] == 12
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_TOTAL] == 42
+
+
+@pytest.mark.asyncio
+async def test_ollama_chat_provider_token_tracking(memory_exporter):
+    exporter, provider = memory_exporter
+    from unittest.mock import MagicMock
+    import httpx
+    from app.model_gateway.ollama import OllamaChatProvider
+
+    fake_response = {
+        "choices": [{"message": {"content": json.dumps({"status": "ok"})}}],
+        "usage": {
+            "prompt_tokens": 50,
+            "completion_tokens": 20,
+            "total_tokens": 70,
+        },
+    }
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.__aenter__.return_value = mock_client
+    mock_post_res = MagicMock(spec=httpx.Response)
+    mock_post_res.status_code = 200
+    mock_post_res.json.return_value = fake_response
+    mock_post_res.raise_for_status.return_value = None
+    mock_client.post.return_value = mock_post_res
+
+    chat_provider = OllamaChatProvider(
+        api_base="https://api.ollama.com",
+        model="test-model",
+        api_key="real-key-12345",
+        client=mock_client,
+    )
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        res = await chat_provider.complete_json(
+            system_prompt="system",
+            user_prompt="user",
+        )
+
+    assert res == {"status": "ok"}
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_PROMPT] == 50
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_COMPLETION] == 20
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_TOTAL] == 70
+
+

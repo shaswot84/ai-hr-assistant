@@ -224,3 +224,53 @@ async def trace_llm_call(
         attributes=attributes,
     ) as span:
         yield span
+
+
+def set_llm_token_counts(
+    span: Span,
+    *,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+) -> None:
+    """Populate OpenInference token counts on an LLM span for Phoenix metrics."""
+    if not span.is_recording():
+        return
+    if prompt_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_PROMPT, int(prompt_tokens))
+    if completion_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_COMPLETION, int(completion_tokens))
+    if total_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_TOTAL, int(total_tokens))
+    elif prompt_tokens is not None and completion_tokens is not None:
+        span.set_attribute(
+            SpanAttributes.LLM_TOKEN_COUNT_TOTAL,
+            int(prompt_tokens) + int(completion_tokens),
+        )
+
+
+@asynccontextmanager
+async def trace_chat_turn(
+    query: str,
+    conversation_id: str | None = None,
+    user_id: str | None = None,
+    actor_role: str | None = None,
+) -> AsyncIterator[Span]:
+    """Trace a top-level Chat turn encompassing routing, sub-agents, tools, and output generation."""
+    attributes: dict[str, Any] = {
+        SpanAttributes.INPUT_VALUE: query,
+    }
+    if conversation_id:
+        attributes[SpanAttributes.SESSION_ID] = str(conversation_id)
+    if user_id:
+        attributes[SpanAttributes.USER_ID] = str(user_id)
+    if actor_role:
+        attributes["actor.role"] = actor_role
+
+    async with async_trace_span(
+        "chat.turn",
+        span_kind=OpenInferenceSpanKindValues.CHAIN,
+        attributes=attributes,
+    ) as span:
+        yield span
+
