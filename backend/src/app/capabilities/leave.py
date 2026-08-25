@@ -170,31 +170,85 @@ class LeaveService:
     async def get_employee_balance(
         self, actor: UserContext, employee_code: str, year: int | None = None
     ) -> list[dict]:
-        """Return ANOTHER employee's balance grid (manager-only)."""
+        """Return ANOTHER employee's balance grid by employee code or name (manager-only)."""
         if actor.coarse_role != "HR_ADMIN":
             raise PermissionError_("Only managers can view employee leave balances.")
         target = employee_code.strip()
-        stmt = select(Employee).where(Employee.employee_code.ilike(target))
-        employee = await self._db.scalar(stmt)
-        if employee is None:
-            words = target.split()
+        if not target:
+            raise ValueError("Employee name or code cannot be empty.")
+
+        # 1. Try exact/case-insensitive employee_code match first
+        stmt = (
+            select(Employee, Person, Department)
+            .join(Person, Employee.person_id == Person.person_id)
+            .outerjoin(Department, Employee.department_id == Department.department_id)
+            .where(Employee.employee_code.ilike(target))
+        )
+        res = (await self._db.execute(stmt)).first()
+
+        employee: Employee | None = None
+        person: Person | None = None
+        dept: Department | None = None
+
+        if res is not None:
+            employee, person, dept = res
+        else:
+            # 2. Search by name / email
+            from sqlalchemy import and_, or_
+
+            words = [w for w in target.split() if w]
             if len(words) >= 2:
-                p_stmt = select(Person).where(
-                    Person.first_name.ilike(f"%{words[0]}%"),
-                    Person.last_name.ilike(f"%{words[-1]}%"),
+                name_filter = or_(
+                    and_(
+                        Person.first_name.ilike(f"%{words[0]}%"),
+                        Person.last_name.ilike(f"%{words[-1]}%"),
+                    ),
+                    (Person.first_name + " " + Person.last_name).ilike(f"%{target}%"),
+                    Person.email.ilike(f"%{target}%"),
                 )
             else:
-                p_stmt = select(Person).where(
-                    (Person.first_name.ilike(f"%{target}%"))
-                    | (Person.last_name.ilike(f"%{target}%"))
-                    | (Person.email.ilike(f"%{target}%"))
+                name_filter = or_(
+                    Person.first_name.ilike(f"%{target}%"),
+                    Person.last_name.ilike(f"%{target}%"),
+                    Person.email.ilike(f"%{target}%"),
+                    (Person.first_name + " " + Person.last_name).ilike(f"%{target}%"),
                 )
-            person = await self._db.scalar(p_stmt)
-            if person is not None:
-                employee = await self._db.scalar(select(Employee).where(Employee.person_id == person.person_id))
-        if employee is None:
-            raise ValueError(f"Employee '{employee_code}' not found.")
-        return await self._balance_rows(employee, year or self._clock.today().year)
+
+            name_stmt = (
+                select(Employee, Person, Department)
+                .join(Person, Employee.person_id == Person.person_id)
+                .outerjoin(Department, Employee.department_id == Department.department_id)
+                .where(name_filter)
+                .order_by(Employee.employee_code)
+            )
+            matches = (await self._db.execute(name_stmt)).all()
+
+            if len(matches) == 0:
+                raise ValueError(f"Employee '{employee_code}' not found.")
+            elif len(matches) == 1:
+                employee, person, dept = matches[0]
+            else:
+                # Disambiguation needed when multiple employees match
+                candidates_info = [
+                    f"{p.first_name} {p.last_name} (Code: {e.employee_code}{f', Dept: {d.name}' if d else ''})"
+                    for e, p, d in matches
+                ]
+                raise ValueError(
+                    f"Multiple employees found with name '{target}': {', '.join(candidates_info)}. "
+                    f"Please provide the employee code (e.g. {matches[0][0].employee_code}) to check their leave balance."
+                )
+
+        raw_rows = await self._balance_rows(employee, year or self._clock.today().year)
+        emp_name = f"{person.first_name} {person.last_name}".strip() if person else ""
+        emp_code = employee.employee_code if employee else ""
+        dept_name = dept.name if dept else None
+
+        for r in raw_rows:
+            r["employee_name"] = emp_name
+            r["employee_code"] = emp_code
+            r["department_name"] = dept_name
+
+        return raw_rows
 
     async def list_all_employee_balances(
         self, actor: UserContext, year: int | None = None

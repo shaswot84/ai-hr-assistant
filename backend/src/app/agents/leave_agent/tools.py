@@ -594,6 +594,9 @@ async def get_employee_leave_balance(
             "allocated_days": str(row["allocated_days"]),
             "used_days": str(row["used_days"]),
             "remaining_days": str(row["remaining_days"]),
+            "employee_name": row.get("employee_name"),
+            "employee_code": row.get("employee_code"),
+            "department_name": row.get("department_name"),
         }
         for row in rows
     ]
@@ -628,11 +631,25 @@ async def decide_leave_request(
 
 
 def format_tool_result(tool_name: str, result: Any) -> str:
-    if tool_name in ("get_leave_balance", "get_employee_leave_balance"):
+    if tool_name == "get_leave_balance":
         if not result:
             return "You have no leave balance records for this year."
         lines = [f"{r['leave_type_name']}: {r['remaining_days']} of {r['allocated_days']} days remaining" for r in result]
         return "Your leave balance:\n" + "\n".join(lines)
+
+    if tool_name == "get_employee_leave_balance":
+        if not result:
+            return "No leave balance records found for this employee."
+        emp_name = result[0].get("employee_name") if result else None
+        emp_code = result[0].get("employee_code") if result else None
+        if emp_name and emp_code:
+            header = f"Leave balance for {emp_name} ({emp_code}):"
+        elif emp_code:
+            header = f"Leave balance for {emp_code}:"
+        else:
+            header = "Employee leave balance:"
+        lines = [f"{r['leave_type_name']}: {r['remaining_days']} of {r['allocated_days']} days remaining" for r in result]
+        return f"{header}\n" + "\n".join(lines)
 
     if tool_name == "list_all_employee_balances":
         if not result:
@@ -784,9 +801,9 @@ TOOLS: dict[str, ToolSpec] = {
     ),
     "get_employee_leave_balance": ToolSpec(
         name="get_employee_leave_balance",
-        description="Get another employee's remaining leave balance per leave type, identified by employee code (HR administrators only).",
+        description="Get another employee's remaining leave balance per leave type by their name (e.g. 'John Doe') or employee code (e.g. 'EMP-001') (HR administrators only). If multiple employees share the same name, specify their unique employee code.",
         parameters={
-            "employee_code": "string, required — the employee's code, e.g. 'EMP-001'",
+            "employee_code": "string, required — the employee's name or code, e.g. 'John Doe' or 'EMP-001'",
             "year": "integer, optional — defaults to the current year",
         },
         handler=get_employee_leave_balance,

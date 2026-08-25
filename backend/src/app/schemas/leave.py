@@ -145,3 +145,28 @@ class TeamMemberOutOfOfficeOut(BaseModel):
     half_day_period: str | None = None
     status: str
 
+
+class EmployeeLeaveBalanceOut(BaseModel):
+    """An employee's leave balance overview with identity context."""
+
+    employee_name: str
+    employee_code: str
+    department_name: str | None = None
+    year: int
+    balances: list[LeaveBalanceOut]
+
+
+class AllEmployeeBalancesOut(BaseModel):
+    """All active employees' leave balances with organization hierarchy."""
+
+    employee_id: uuid.UUID
+    employee_code: str
+    employee_name: str
+    employee_email: str
+    manager_employee_id: uuid.UUID | None = None
+    department_name: str | None = None
+    designation_title: str | None = None
+    year: int
+    balances: list[LeaveBalanceOut]
+
+

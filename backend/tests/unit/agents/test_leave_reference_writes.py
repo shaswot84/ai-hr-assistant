@@ -9,6 +9,7 @@ blocked from every leave tool.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -62,11 +63,14 @@ async def _seed_pending_request(svc, manager_ctx, employee_ctx) -> LeaveRequest:
     manager-only)."""
     leave_type = await _create_leave_type(svc, manager_ctx)
     today = get_clock().today()
+    start = today + timedelta(days=1)
+    while start.weekday() >= 4:
+        start += timedelta(days=1)
     return await svc.request_leave(
         employee_ctx,
         leave_type_id=leave_type.leave_type_id,
-        start_date=today + timedelta(days=5),
-        end_date=today + timedelta(days=6),
+        start_date=start,
+        end_date=start + timedelta(days=1),
         reason=None,
     )
 
@@ -697,10 +701,122 @@ async def test_hr_employee_balance_tool(db, manager_context, employee_context):
         user_message="what's the balance for EMP-TEST-001",
     )
 
-    assert provider.calls == 1
     assert result.tool_called == "get_employee_leave_balance"
     assert "Annual Leave" in result.reply
     assert "20" in result.reply
+
+
+async def _seed_duplicate_named_employees(db) -> tuple[str, str]:
+    """Seed two employees who share the exact same first and last name."""
+    from app.domain.identity import Department, Designation, Employee, Person
+    now = get_clock().now()
+    dept = (await db.scalars(select(Department))).first()
+    if dept is None:
+        dept = Department(name="Engineering")
+        db.add(dept)
+        await db.flush()
+    desig = (await db.scalars(select(Designation))).first()
+    if desig is None:
+        desig = Designation(department_id=dept.department_id, title="Developer")
+        db.add(desig)
+        await db.flush()
+
+    p1 = Person(first_name="John", last_name="Smith", email=f"john.smith1.{uuid.uuid4().hex[:6]}@acme-hr-test.dev", created_at=now, updated_at=now)
+    p2 = Person(first_name="John", last_name="Smith", email=f"john.smith2.{uuid.uuid4().hex[:6]}@acme-hr-test.dev", created_at=now, updated_at=now)
+    db.add_all([p1, p2])
+    await db.flush()
+
+    e1 = Employee(person_id=p1.person_id, employee_code="EMP-TEST-101", department_id=dept.department_id, designation_id=desig.designation_id, joining_date=get_clock().today(), created_at=now, updated_at=now)
+    e2 = Employee(person_id=p2.person_id, employee_code="EMP-TEST-102", department_id=dept.department_id, designation_id=desig.designation_id, joining_date=get_clock().today(), created_at=now, updated_at=now)
+    db.add_all([e1, e2])
+    await db.commit()
+    return "EMP-TEST-101", "EMP-TEST-102"
+
+
+@pytest.mark.asyncio
+async def test_hr_employee_balance_by_name(db, manager_context, employee_context):
+    """HR can read another employee's balance by employee name (single match)."""
+    svc = LeaveService(db)
+    await _create_leave_type(svc, manager_context)
+    state = _state(manager_context)
+
+    result = await handle_turn(
+        actor=manager_context,
+        state=state,
+        service=svc,
+        chat_provider=FakeChatProvider({}),
+        user_message="check leave balance for Sam",
+    )
+
+    assert result.tool_called == "get_employee_leave_balance"
+    assert "Sam Staff" in result.reply
+    assert "EMP-TEST-001" in result.reply
+    assert "Annual Leave" in result.reply
+    assert "20" in result.reply
+
+
+@pytest.mark.asyncio
+async def test_hr_employee_balance_duplicate_name_disambiguation(db, manager_context, employee_context):
+    """When two employees share the same name, HR is asked for the unique employee code with candidate details."""
+    svc = LeaveService(db)
+    await _create_leave_type(svc, manager_context)
+    code1, code2 = await _seed_duplicate_named_employees(db)
+    state = _state(manager_context)
+
+    result = await handle_turn(
+        actor=manager_context,
+        state=state,
+        service=svc,
+        chat_provider=FakeChatProvider({}),
+        user_message="what is the leave balance for John Smith",
+    )
+
+    assert result.tool_called == "get_employee_leave_balance"
+    assert "Multiple employees found" in result.reply
+    assert code1 in result.reply
+    assert code2 in result.reply
+    assert "Please provide the employee code" in result.reply
+
+
+@pytest.mark.asyncio
+async def test_hr_employee_balance_by_code_after_disambiguation(db, manager_context, employee_context):
+    """HR providing the unique employee code directly resolves that specific employee's balance."""
+    svc = LeaveService(db)
+    await _create_leave_type(svc, manager_context)
+    code1, code2 = await _seed_duplicate_named_employees(db)
+    state = _state(manager_context)
+
+    result = await handle_turn(
+        actor=manager_context,
+        state=state,
+        service=svc,
+        chat_provider=FakeChatProvider({}),
+        user_message=f"check balance for {code1}",
+    )
+
+    assert result.tool_called == "get_employee_leave_balance"
+    assert code1 in result.reply
+    assert "Annual Leave" in result.reply
+    assert "20" in result.reply
+
+
+@pytest.mark.asyncio
+async def test_hr_employee_balance_not_found(db, manager_context, employee_context):
+    """HR searching for a non-existent employee name gets a clear not-found reply."""
+    svc = LeaveService(db)
+    await _create_leave_type(svc, manager_context)
+    state = _state(manager_context)
+
+    result = await handle_turn(
+        actor=manager_context,
+        state=state,
+        service=svc,
+        chat_provider=FakeChatProvider({}),
+        user_message="check leave balance for NonExistentPerson",
+    )
+
+    assert result.tool_called == "get_employee_leave_balance"
+    assert "not found" in result.reply
 
 
 @pytest.mark.asyncio

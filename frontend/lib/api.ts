@@ -13,6 +13,8 @@ import type {
   EmployeeCreateBody,
   EmployeeUpdateBody,
   HireCandidateBody,
+  AllEmployeeBalances,
+  EmployeeLeaveBalance,
   KnowledgeCitation,
   KnowledgeChunk,
   KnowledgeClearResult,
@@ -328,6 +330,16 @@ export const api = {
 
   myLeaveBalance: (year?: number) =>
     request<LeaveBalance[]>(`/api/leave/balance${year ? `?year=${year}` : ""}`),
+
+  getEmployeeLeaveBalance: (employeeIdentifier: string, year?: number) =>
+    request<EmployeeLeaveBalance>(
+      `/api/leave/employee-balance?employee_identifier=${encodeURIComponent(employeeIdentifier)}${
+        year ? `&year=${year}` : ""
+      }`
+    ),
+
+  listAllEmployeeBalances: (year?: number) =>
+    request<AllEmployeeBalances[]>(`/api/leave/all-balances${year ? `?year=${year}` : ""}`),
 
   requestLeave: (body: LeaveRequestCreateBody) =>
     request<LeaveRequest>("/api/leave/requests", {

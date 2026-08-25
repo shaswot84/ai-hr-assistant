@@ -129,12 +129,18 @@ def _action_result_widget(tool_name: str, result: Any) -> dict[str, Any]:
     }
 
 
-def _leave_balance_widget(result: list[dict], year: int | None = None, employee_code: str | None = None) -> dict[str, Any]:
+def _leave_balance_widget(
+    result: list[dict],
+    year: int | None = None,
+    employee_code: str | None = None,
+    employee_name: str | None = None,
+) -> dict[str, Any]:
     return {
         "type": "leave_balance",
         "balances": result,
         "year": year,
         "employee_code": employee_code,
+        "employee_name": employee_name,
     }
 
 
@@ -736,7 +742,7 @@ def _is_balance_ask(user_message: str) -> bool:
     return "get" in lowered and "my leave" in lowered
 
 
-_EMP_CODE_RE = re.compile(r"EMP-\d{3,}", re.IGNORECASE)
+_EMP_CODE_RE = re.compile(r"EMP-[A-Z0-9-]+|\bEMP-\d+\b", re.IGNORECASE)
 
 
 def _extract_employee_lookup_target(user_message: str) -> str | None:
@@ -744,17 +750,44 @@ def _extract_employee_lookup_target(user_message: str) -> str | None:
     match = _EMP_CODE_RE.search(user_message)
     if match:
         return match.group(0).upper()
-    lowered = user_message.lower()
+    lowered = user_message.lower().strip()
+    if not any(w in lowered for w in ("balance", "remaining", "quota", "pto", "leave", "how much", "how many")):
+        return None
+    if any(p in lowered for p in ("all employee", "all the employee", "everyone", "team balance", "org chart", "hierarchy")):
+        return None
+
+    # Pattern: "John's balance", "John Doe's leave balance"
+    possessive_match = re.search(r"\b([A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)*)'s\s+(?:leave\s+)?(?:balance|quota|pto|days)", user_message)
+    if possessive_match:
+        return possessive_match.group(1).strip()
+
+    # Pattern: "how much leave does <name> have", "how many days does <name> have"
+    does_match = re.search(r"does\s+(?:employee\s+)?([A-Za-z]+(?:\s+[A-Za-z]+)*)\s+have", user_message, re.IGNORECASE)
+    if does_match:
+        return does_match.group(1).strip()
+
     if " for " in lowered:
         idx = lowered.find(" for ")
         target = user_message[idx + 5:].strip().rstrip(".?!\"'")
         if target.lower().startswith("employee "):
             target = target[9:].strip()
+        target = re.sub(r"\s+(?:balance|quota|pto|in\s+\d{4})$", "", target, flags=re.IGNORECASE).strip()
         if target:
             return target
+
+    if " of " in lowered:
+        idx = lowered.find(" of ")
+        target = user_message[idx + 4:].strip().rstrip(".?!\"'")
+        if target.lower().startswith("employee "):
+            target = target[9:].strip()
+        target = re.sub(r"\s+(?:balance|quota|pto|in\s+\d{4})$", "", target, flags=re.IGNORECASE).strip()
+        if target:
+            return target
+
     if "employee " in lowered:
         idx = lowered.find("employee ")
         target = user_message[idx + 9:].strip().rstrip(".?!\"'")
+        target = re.sub(r"\s+(?:balance|quota|pto|in\s+\d{4})$", "", target, flags=re.IGNORECASE).strip()
         if target:
             return target
     return None
@@ -820,6 +853,35 @@ async def _intercept_draft_turn(
             tool_called="get_leave_balance", tool_result=result,
             ui_widget=_leave_balance_widget(result, year=today.year),
         )
+
+    if actor.coarse_role == "HR_ADMIN":
+        target = _extract_employee_lookup_target(user_message)
+        if target:
+            try:
+                result = await get_employee_leave_balance(service, actor, employee_code=target, year=today.year)
+                text = format_tool_result("get_employee_leave_balance", result)
+                emp_name = result[0].get("employee_name") if result else None
+                emp_code = result[0].get("employee_code") if result else target
+                return _reply(
+                    state,
+                    text,
+                    clock=clock,
+                    tool_called="get_employee_leave_balance",
+                    tool_result=result,
+                    ui_widget=_leave_balance_widget(
+                        result,
+                        year=today.year,
+                        employee_code=emp_code,
+                        employee_name=emp_name,
+                    ),
+                )
+            except ToolError as err:
+                return _reply(
+                    state,
+                    str(err),
+                    clock=clock,
+                    tool_called="get_employee_leave_balance",
+                )
 
     start, end = extract_dates(user_message, today)
     is_half, period = extract_half_day_info(user_message)
@@ -1310,8 +1372,17 @@ async def _handle_read(
     logger.info("Leave Agent: executed read tool %s (args=%r)", tool_name, args)
 
     ui_widget: dict[str, Any] | None = None
-    if tool_name in ("get_leave_balance", "get_employee_leave_balance"):
-        ui_widget = _leave_balance_widget(result, year=args.get("year"), employee_code=args.get("employee_code"))
+    if tool_name == "get_leave_balance":
+        ui_widget = _leave_balance_widget(result, year=args.get("year"))
+    elif tool_name == "get_employee_leave_balance":
+        emp_name = result[0].get("employee_name") if result else None
+        emp_code = result[0].get("employee_code") if result else args.get("employee_code")
+        ui_widget = _leave_balance_widget(
+            result,
+            year=args.get("year"),
+            employee_code=emp_code,
+            employee_name=emp_name,
+        )
     elif tool_name == "list_leave_types":
         ui_widget = _leave_types_widget(result)
     elif tool_name == "list_my_leave_requests":
@@ -1412,6 +1483,8 @@ _MANAGER_SCOPE_WORDS = (
     "view",
     "see",
     "review",
+    "requests",
+    "what",
 )
 
 
