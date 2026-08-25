@@ -412,7 +412,8 @@ async def chat(
                 "current_query": message,
                 "conversation_id": str(conversation_id),
                 "actor_role": user.coarse_role if user else None,
-            }
+            },
+            config={"run_name": "supervisor.graph"},
         )
 
         answer = result.get("answer", "")
@@ -533,6 +534,7 @@ async def chat_stream(
                         "actor_role": user.coarse_role if user else None,
                     },
                     stream_mode=["custom", "updates"],
+                    config={"run_name": "supervisor.graph"},
                 ):
                     if mode == "custom":
                         if chunk["type"] == "retrieval":
@@ -723,7 +725,8 @@ async def public_chat(
                 "current_query": message,
                 "conversation_id": "public",
                 "actor_role": user.coarse_role if user else None,
-            }
+            },
+            config={"run_name": "supervisor.graph"},
         )
 
         answer = result.get("answer", "")
@@ -818,6 +821,7 @@ async def public_chat_stream(
                         "actor_role": user.coarse_role if user else None,
                     },
                     stream_mode=["custom", "updates"],
+                    config={"run_name": "supervisor.graph"},
                 ):
                     if mode == "custom":
                         if chunk["type"] == "retrieval":

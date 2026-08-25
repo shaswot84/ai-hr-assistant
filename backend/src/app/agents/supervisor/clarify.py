@@ -13,8 +13,11 @@ import re
 from langchain_core.messages import AIMessage
 from langgraph.types import StreamWriter
 
+from openinference.semconv.trace import SpanAttributes
+
 from app.agents.supervisor.state import SupervisorState
 from app.contracts.auth import UserContext
+from app.observability import trace_agent_turn
 
 # ── Role-specific capability lists ────────────────────────────────────
 
@@ -188,17 +191,27 @@ def make_clarify_node(actor: UserContext | None = None):
             message = _ambiguous_message(role)
 
         writer({"type": "message", "text": message})
-        return {
-            "messages": [AIMessage(content=message)],
-            "knowledge_result": None,
-            "answer": message,
-            "citations": [],
-            "confidence": 0.0,
-            "agent": "clarify",
-            "can_handle": True,
-            "clarification_hint": None,
-            "actor_role": role,
-            "clarification_type": clar_type,
-        }
+
+        async with trace_agent_turn(
+            "clarify",
+            query=query,
+            conversation_id=state.get("conversation_id"),
+            user_id=actor.subject if actor else None,
+        ) as span:
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, message)
+            span.set_attribute("clarify.type", clar_type)
+
+            return {
+                "messages": [AIMessage(content=message)],
+                "knowledge_result": None,
+                "answer": message,
+                "citations": [],
+                "confidence": 0.0,
+                "agent": "clarify",
+                "can_handle": True,
+                "clarification_hint": None,
+                "actor_role": role,
+                "clarification_type": clar_type,
+            }
 
     return clarify_node

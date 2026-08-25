@@ -20,9 +20,12 @@ import logging
 from langchain_core.messages import AIMessage
 from langgraph.types import StreamWriter
 
+from openinference.semconv.trace import SpanAttributes
+
 from app.agents.context import history_text, is_history_question
 from app.agents.supervisor.state import SupervisorState
 from app.model_gateway.interfaces import LLM
+from app.observability import trace_agent_turn
 
 logger = logging.getLogger(__name__)
 
@@ -77,26 +80,34 @@ def make_recap_node(llm: LLM | None):
     """
 
     async def recap_node(state: SupervisorState, writer: StreamWriter) -> dict:
-        transcript = history_text(state.get("messages", []), max_tokens=2000)
-        answer = f"{_FALLBACK_HEADER}\n{transcript}"
-        if llm is not None:
-            try:
-                raw = await llm.complete(
-                    _RECAP_SYSTEM, f"CONVERSATION TRANSCRIPT:\n{transcript}\n\nSUMMARY:"
-                )
-                if raw and raw.strip():
-                    answer = raw.strip()
-            except Exception:  # noqa: BLE001 - the fallback answer is always safe
-                logger.warning("Recap: LLM summarization failed; serving the transcript", exc_info=True)
-        writer({"type": "message", "text": answer})
-        return {
-            "messages": [AIMessage(content=answer)],
-            "knowledge_result": None,
-            "answer": answer,
-            "citations": [],
-            "confidence": 0.0,
-            "agent": "recap",
-            "safety": "PASS",
-        }
+        query = state.get("current_query", "")
+        async with trace_agent_turn(
+            "recap",
+            query=query,
+            conversation_id=state.get("conversation_id"),
+        ) as span:
+            transcript = history_text(state.get("messages", []), max_tokens=2000)
+            answer = f"{_FALLBACK_HEADER}\n{transcript}"
+            if llm is not None:
+                try:
+                    raw = await llm.complete(
+                        _RECAP_SYSTEM, f"CONVERSATION TRANSCRIPT:\n{transcript}\n\nSUMMARY:"
+                    )
+                    if raw and raw.strip():
+                        answer = raw.strip()
+                except Exception:  # noqa: BLE001 - the fallback answer is always safe
+                    logger.warning("Recap: LLM summarization failed; serving the transcript", exc_info=True)
+            writer({"type": "message", "text": answer})
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, answer)
+            return {
+                "messages": [AIMessage(content=answer)],
+                "knowledge_result": None,
+                "answer": answer,
+                "citations": [],
+                "confidence": 0.0,
+                "agent": "recap",
+                "safety": "PASS",
+            }
 
     return recap_node
+
