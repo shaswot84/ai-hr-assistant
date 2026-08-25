@@ -19,7 +19,7 @@ from openinference.semconv.trace import (
     SpanAttributes,
 )
 from opentelemetry import trace
-from opentelemetry.trace import Span
+from opentelemetry.trace import Span, Status, StatusCode
 
 if TYPE_CHECKING:
     from app.knowledge.contracts import RetrievedChunk
@@ -56,7 +56,14 @@ def trace_span(
                     else:
                         span.set_attribute(key, val)
 
-        yield span
+        try:
+            yield span
+            if span.is_recording() and span.status.status_code == StatusCode.UNSET:
+                span.set_status(Status(StatusCode.OK))
+        except Exception as exc:
+            if span.is_recording():
+                span.set_status(Status(StatusCode.ERROR, description=str(exc)))
+            raise
 
 
 @asynccontextmanager
@@ -83,7 +90,14 @@ async def async_trace_span(
                     else:
                         span.set_attribute(key, val)
 
-        yield span
+        try:
+            yield span
+            if span.is_recording() and span.status.status_code == StatusCode.UNSET:
+                span.set_status(Status(StatusCode.OK))
+        except Exception as exc:
+            if span.is_recording():
+                span.set_status(Status(StatusCode.ERROR, description=str(exc)))
+            raise
 
 
 def set_retrieval_documents(

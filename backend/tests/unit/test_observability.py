@@ -16,6 +16,7 @@ from openinference.semconv.trace import (
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
 from app.config.settings import ObservabilitySettings
 from app.knowledge.contracts import RetrievedChunk
@@ -320,11 +321,13 @@ async def test_rag_pipeline_spans(memory_exporter):
     assert expand_span.attributes["rag.expanded_chunks_count"] == 1
     assert expand_span.attributes["rag.parent_expansion_ratio"] > 1.0
 
-    # Ensure EVERY span has a valid OpenInference kind (no "UNKNOWN" in Phoenix)
+    # Ensure EVERY span has a valid OpenInference kind (no "UNKNOWN" in Phoenix) and status is OK (not "UNSET")
     for s in spans:
         kind = s.attributes.get(SpanAttributes.OPENINFERENCE_SPAN_KIND)
         assert kind is not None, f"Span {s.name} is missing OpenInference span kind"
         assert kind != "UNKNOWN", f"Span {s.name} has UNKNOWN span kind"
+        assert s.status.status_code == StatusCode.OK, f"Span {s.name} status is {s.status.status_code}, expected StatusCode.OK"
+
 
 
 
