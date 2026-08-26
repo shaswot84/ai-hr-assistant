@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { getAuthToken, setAuthToken } from "@/lib/auth";
 import { GenUIIframeWidget } from "@/components/genui-iframe-widget";
@@ -1854,8 +1855,28 @@ function SingleLeaveRequestWidget({ widget }: ChatWidgetProps) {
  * 9. Vacancies List Widget
  */
 function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const pathname = usePathname();
   const vacancies = widget.vacancies || [];
-  const canApply = widget.can_apply !== false;
+  const [userRole, setUserRole] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (getAuthToken()) {
+      api
+        .me()
+        .then((res) => setUserRole(res.user.coarse_role))
+        .catch(() => {});
+    }
+  }, []);
+
+  const isEmployeeOrManager =
+    pathname?.startsWith("/employee") ||
+    pathname?.startsWith("/manager") ||
+    userRole === "EMPLOYEE" ||
+    userRole === "HR_ADMIN" ||
+    widget.can_apply === false;
+
+  const canApply = !isEmployeeOrManager;
+
   if (vacancies.length === 0) return null;
 
   return (
@@ -1903,7 +1924,7 @@ function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
                   type="button"
                   disabled={disabled}
                   onClick={() => onAction?.(`Tell me about the ${v.title} vacancy`)}
-                  className={`rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors ${
+                  className={`rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors ${
                     itemCanApply ? "flex-1" : "w-full"
                   }`}
                 >
@@ -1914,7 +1935,7 @@ function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
                     type="button"
                     disabled={disabled}
                     onClick={() => onAction?.(`I want to apply for ${v.title}`)}
-                    className="flex-1 rounded-lg bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
+                    className="flex-1 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
                   >
                     Apply in Chat
                   </button>
@@ -1932,9 +1953,30 @@ function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
  * 10. Vacancy Detail Widget
  */
 function VacancyDetailWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const pathname = usePathname();
   const vacancy = widget.vacancy;
+  const [userRole, setUserRole] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (getAuthToken()) {
+      api
+        .me()
+        .then((res) => setUserRole(res.user.coarse_role))
+        .catch(() => {});
+    }
+  }, []);
+
   if (!vacancy) return null;
-  const canApply = widget.can_apply !== false && vacancy.can_apply !== false;
+
+  const isEmployeeOrManager =
+    pathname?.startsWith("/employee") ||
+    pathname?.startsWith("/manager") ||
+    userRole === "EMPLOYEE" ||
+    userRole === "HR_ADMIN" ||
+    widget.can_apply === false ||
+    vacancy.can_apply === false;
+
+  const canApply = !isEmployeeOrManager;
 
   return (
     <div className="mt-3 w-full max-w-xl rounded-xl border border-zinc-200 bg-white p-4 shadow-sm space-y-3">
@@ -1989,6 +2031,7 @@ function VacancyDetailWidget({ widget, onAction, disabled }: ChatWidgetProps) {
  * 11. Apply Vacancy Widget (In-Chat Resume Upload & Candidate Setup)
  */
 function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
+  const pathname = usePathname();
   const vacancyId = widget.vacancy_id;
   const vacancyTitle = widget.vacancy_title || "Position";
 
@@ -2020,6 +2063,12 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
         .catch(() => {});
     }
   }, []);
+
+  const isEmployeeOrManager =
+    pathname?.startsWith("/employee") ||
+    pathname?.startsWith("/manager") ||
+    userRole === "EMPLOYEE" ||
+    userRole === "HR_ADMIN";
 
   const allowedExts = [".pdf", ".docx"];
   const maxBytes = 10 * 1024 * 1024;
@@ -2113,7 +2162,7 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
     }
   }
 
-  if (userRole === "EMPLOYEE" || userRole === "HR_ADMIN") {
+  if (isEmployeeOrManager) {
     return (
       <div className="mt-3 w-full max-w-xl rounded-xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm space-y-2.5">
         <div className="flex items-center gap-2">
