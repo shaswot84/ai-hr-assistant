@@ -357,10 +357,10 @@ async def apply_to_vacancy(
         raise HTTPException(status_code=400, detail="Only PDF or DOCX resumes are accepted.")
 
     extraction = extract_text(data, filename, file.content_type or "")
-    is_resume, reason = looks_like_resume(extraction.text)
+    is_resume, reason = await looks_like_resume(extraction.text)
     if not is_resume:
         raise HTTPException(status_code=400, detail=reason)
-    is_parsable, parsability_reason = is_ats_friendly(extraction.text)
+    is_parsable, parsability_reason = await is_ats_friendly(extraction.text)
     if not is_parsable:
         raise HTTPException(status_code=400, detail=parsability_reason)
 
@@ -405,10 +405,10 @@ async def apply_as_new_candidate(
         raise HTTPException(status_code=400, detail="Only PDF or DOCX resumes are accepted.")
 
     extraction = extract_text(data, filename, file.content_type or "")
-    is_resume, reason = looks_like_resume(extraction.text)
+    is_resume, reason = await looks_like_resume(extraction.text)
     if not is_resume:
         raise HTTPException(status_code=400, detail=reason)
-    is_parsable, parsability_reason = is_ats_friendly(extraction.text)
+    is_parsable, parsability_reason = await is_ats_friendly(extraction.text)
     if not is_parsable:
         raise HTTPException(status_code=400, detail=parsability_reason)
 

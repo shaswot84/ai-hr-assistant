@@ -67,22 +67,22 @@ SKILLS
 Python, Excel, Communication"""
 
 
-def test_looks_like_resume_accepts_real_resume():
-    is_resume, reason = looks_like_resume(REAL_RESUME_TEXT)
+async def test_looks_like_resume_accepts_real_resume():
+    is_resume, reason = await looks_like_resume(REAL_RESUME_TEXT)
     assert is_resume is True
     assert reason == ""
 
 
-def test_looks_like_resume_accepts_short_resume_missing_contact_info():
+async def test_looks_like_resume_accepts_short_resume_missing_contact_info():
     """Regression test: a real (if sparse) resume missing contact info must
     not be rejected just because one signal is absent.
     """
-    is_resume, reason = looks_like_resume(SHORT_RESUME_NO_CONTACT)
+    is_resume, reason = await looks_like_resume(SHORT_RESUME_NO_CONTACT)
     assert is_resume is True
     assert reason == ""
 
 
-def test_looks_like_resume_accepts_resume_with_single_header_and_degree():
+async def test_looks_like_resume_accepts_resume_with_single_header_and_degree():
     """Only one explicit section header ("SKILLS"), but a degree phrase and
     a date make up for it — still confidently a resume.
     """
@@ -90,24 +90,24 @@ def test_looks_like_resume_accepts_resume_with_single_header_and_degree():
 SKILLS
 Java, SQL, Project Management
 Graduated from Boston University in 2020 with a Bachelor of Arts."""
-    is_resume, reason = looks_like_resume(text)
+    is_resume, reason = await looks_like_resume(text)
     assert is_resume is True
     assert reason == ""
 
 
-def test_looks_like_resume_rejects_blank_text():
-    is_resume, reason = looks_like_resume("")
+async def test_looks_like_resume_rejects_blank_text():
+    is_resume, reason = await looks_like_resume("")
     assert is_resume is False
     assert "readable text" in reason
 
 
-def test_looks_like_resume_rejects_short_text():
-    is_resume, reason = looks_like_resume("Thanks for your time, see attached.")
+async def test_looks_like_resume_rejects_short_text():
+    is_resume, reason = await looks_like_resume("Thanks for your time, see attached.")
     assert is_resume is False
     assert "readable text" in reason
 
 
-def test_looks_like_resume_rejects_unrelated_long_document():
+async def test_looks_like_resume_rejects_unrelated_long_document():
     """A long document with zero resume signals (no contact info, no section
     header lines, no degree phrasing, no dates, no line structure) is
     confidently rejected without needing an LLM call — e.g. a business report.
@@ -116,7 +116,7 @@ def test_looks_like_resume_rejects_unrelated_long_document():
         "This quarterly report summarizes company performance across several "
         "business units and outlines strategic priorities for the coming period. "
     ) * 5
-    is_resume, reason = looks_like_resume(unrelated)
+    is_resume, reason = await looks_like_resume(unrelated)
     assert is_resume is False
     assert "doesn't look like a resume" in reason
 
@@ -133,13 +133,19 @@ def test_classify_resume_flags_single_signal_document_as_ambiguous():
     assert reason == ""
 
 
-def test_looks_like_resume_fails_open_on_ambiguous_without_llm_configured():
+async def test_looks_like_resume_fails_open_on_ambiguous_without_llm_configured():
     """No AI provider is configured in the test environment, so an ambiguous
     case must fail open (accept) rather than silently block a real candidate
     just because no tie-breaker was available.
+
+    Regression: this test runs inside a live event loop (pytest-asyncio),
+    exactly like the async apply routes. The old sync implementation called
+    `asyncio.run()` for ambiguous cases and crashed every such upload with
+    "RuntimeError: asyncio.run() cannot be called from a running event loop"
+    (HTTP 500). The awaited tie-break must instead degrade to fail-open.
     """
     text = "Jane Doe jane.doe@example.com Thank you for reaching out. " * 6
-    is_resume, reason = looks_like_resume(text)
+    is_resume, reason = await looks_like_resume(text)
     assert is_resume is True
     assert reason == ""
 
@@ -224,24 +230,28 @@ def test_assess_parsability_rejects_too_short_text():
     assert "Not enough text" in reason
 
 
-def test_is_ats_friendly_accepts_well_formatted_resume():
-    is_friendly, reason = is_ats_friendly(REAL_RESUME_TEXT)
+async def test_is_ats_friendly_accepts_well_formatted_resume():
+    is_friendly, reason = await is_ats_friendly(REAL_RESUME_TEXT)
     assert is_friendly is True
     assert reason == ""
 
 
-def test_is_ats_friendly_rejects_garbled_resume_without_llm():
-    is_friendly, reason = is_ats_friendly(GARBLED_MERGED_TEXT)
+async def test_is_ats_friendly_rejects_garbled_resume_without_llm():
+    is_friendly, reason = await is_ats_friendly(GARBLED_MERGED_TEXT)
     assert is_friendly is False
     assert "couldn't be reliably parsed" in reason
 
 
-def test_is_ats_friendly_fails_open_on_ambiguous_without_llm_configured():
+async def test_is_ats_friendly_fails_open_on_ambiguous_without_llm_configured():
     """No AI provider is configured in the test environment, so an
     ambiguous formatting case must fail open (accept) rather than block a
     real candidate just because the tie-breaker was unavailable.
+
+    Regression companion to the looks_like_resume test above: proves the
+    awaited tie-break path is event-loop safe (the old `asyncio.run` call
+    crashed ambiguous uploads with HTTP 500 inside async routes).
     """
-    is_friendly, reason = is_ats_friendly(FLATTENED_PROSE_TEXT)
+    is_friendly, reason = await is_ats_friendly(FLATTENED_PROSE_TEXT)
     assert is_friendly is True
     assert reason == ""
 
@@ -256,7 +266,7 @@ def test_extract_text_from_normal_pdf_is_readable():
     assert "Backend Engineer" in result.text
 
 
-def test_extract_text_reconstructs_spaces_from_position_only_pdf():
+async def test_extract_text_reconstructs_spaces_from_position_only_pdf():
     """Regression case: many LaTeX resume templates (Overleaf's Awesome-CV,
     Deedy-Resume, and similar) lay out justified text as individually
     positioned glyph runs with no literal space character between words —
@@ -288,6 +298,6 @@ def test_extract_text_reconstructs_spaces_from_position_only_pdf():
     assert verdict == "ok"
     assert reason == ""
 
-    is_friendly, reason = is_ats_friendly(result.text)
+    is_friendly, reason = await is_ats_friendly(result.text)
     assert is_friendly is True
     assert reason == ""

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import io
 import re
 from dataclasses import dataclass
@@ -176,21 +175,21 @@ async def verify_parsability_with_llm(text: str) -> bool:
     return bool(data.get("well_formatted"))
 
 
-def is_ats_friendly(text: str) -> tuple[bool, str]:
-    """Decide whether extracted resume text is well-formatted enough to screen, for use in a sync context.
+async def is_ats_friendly(text: str) -> tuple[bool, str]:
+    """Decide whether extracted resume text is well-formatted enough to screen.
 
     Same shape as `looks_like_resume`: confident cases resolved by
-    `assess_parsability` alone, ambiguous cases get one LLM tie-break call.
-    Fails open (accepts) when no provider is configured or the call fails,
-    so a real candidate is never blocked purely because the tie-breaker was
-    unavailable.
+    `assess_parsability` alone, ambiguous cases get one awaited LLM
+    tie-break call. Fails open (accepts) when no provider is configured or
+    the call fails, so a real candidate is never blocked purely because the
+    tie-breaker was unavailable.
     """
     verdict, reason = assess_parsability(text)
     if verdict != "ambiguous":
         return verdict == "ok", reason
 
     try:
-        well_formatted = asyncio.run(verify_parsability_with_llm(text))
+        well_formatted = await verify_parsability_with_llm(text)
     except ChatProviderError:
         return True, ""
     if well_formatted:
@@ -388,14 +387,12 @@ async def verify_resume_with_llm(text: str) -> bool:
     return bool(data.get("is_resume"))
 
 
-def looks_like_resume(text: str) -> tuple[bool, str]:
-    """Decide whether extracted text is plausibly a resume, for use in a sync context.
+async def looks_like_resume(text: str) -> tuple[bool, str]:
+    """Decide whether extracted text is plausibly a resume.
 
     Confident cases are resolved by `classify_resume` alone. Ambiguous cases
-    get one LLM tie-break call via `asyncio.run` — safe here because this is
-    only ever called from FastAPI's sync `def` route handlers, which run in
-    a threadpool thread with no event loop of their own. Falls back to
-    accepting (fail open) when no provider is configured or the call fails.
+    get one awaited LLM tie-break call. Falls back to accepting (fail open)
+    when no provider is configured or the call fails.
 
     Returns (is_resume, reason) — reason is a user-facing message when
     `is_resume` is False, empty string otherwise.
@@ -405,7 +402,7 @@ def looks_like_resume(text: str) -> tuple[bool, str]:
         return verdict == "resume", reason
 
     try:
-        is_resume = asyncio.run(verify_resume_with_llm(text))
+        is_resume = await verify_resume_with_llm(text)
     except ChatProviderError:
         return True, ""
     if is_resume:
