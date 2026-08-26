@@ -265,3 +265,54 @@ async def test_non_candidate_withdraw_blocked():
     state, events = await _run(employee, service, "withdraw my application")
 
     assert "Only candidates" in state["answer"]
+
+
+@pytest.mark.asyncio
+async def test_employee_views_open_vacancies_receives_can_apply_false():
+    employee = UserContext(
+        subject="emp-1", email="e@x.com", display_name="E", coarse_role="EMPLOYEE"
+    )
+    service = FakeRecruitmentService(*_seeded())
+    state, events = await _run(employee, service, "what jobs are open")
+
+    assert state["agent"] == "recruitment"
+    assert "Data Analyst" in state["answer"]
+    assert "internal transfer" in state["answer"].lower()
+    assert state["ui_widget"] is not None
+    assert state["ui_widget"]["type"] == "vacancies_list"
+    assert state["ui_widget"]["can_apply"] is False
+    assert state["ui_widget"]["vacancies"][0]["can_apply"] is False
+
+
+@pytest.mark.asyncio
+async def test_employee_views_vacancy_detail_receives_detail_widget_not_apply_widget():
+    employee = UserContext(
+        subject="emp-1", email="e@x.com", display_name="E", coarse_role="EMPLOYEE"
+    )
+    service = FakeRecruitmentService(*_seeded())
+    state, events = await _run(employee, service, "tell me about the data analyst vacancy")
+
+    assert "Data Analyst" in state["answer"]
+    assert "upload your resume" not in state["answer"].lower()
+    assert "internal transfer" in state["answer"].lower()
+    assert state["ui_widget"] is not None
+    assert state["ui_widget"]["type"] == "vacancy_detail"
+    assert state["ui_widget"]["can_apply"] is False
+    assert state["ui_widget"]["vacancy"]["title"] == "Data Analyst"
+
+
+@pytest.mark.asyncio
+async def test_employee_asks_to_apply_receives_internal_transfer_guidance():
+    employee = UserContext(
+        subject="emp-1", email="e@x.com", display_name="E", coarse_role="EMPLOYEE"
+    )
+    service = FakeRecruitmentService(*_seeded())
+    state, events = await _run(employee, service, "i want to apply for the data analyst position")
+
+    assert "Data Analyst" in state["answer"]
+    assert "external candidates" in state["answer"].lower()
+    assert "internal transfer" in state["answer"].lower()
+    assert state["ui_widget"] is not None
+    assert state["ui_widget"]["type"] == "vacancy_detail"
+    assert state["ui_widget"]["can_apply"] is False
+

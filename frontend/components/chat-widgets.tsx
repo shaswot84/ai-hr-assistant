@@ -1855,6 +1855,7 @@ function SingleLeaveRequestWidget({ widget }: ChatWidgetProps) {
  */
 function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const vacancies = widget.vacancies || [];
+  const canApply = widget.can_apply !== false;
   if (vacancies.length === 0) return null;
 
   return (
@@ -1865,56 +1866,63 @@ function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
         </span>
       </div>
       <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-        {vacancies.map((v: any) => (
-          <div
-            key={v.vacancy_id}
-            className="flex flex-col justify-between rounded-xl border border-zinc-200 bg-white p-3.5 shadow-sm transition-all hover:border-blue-300 hover:shadow"
-          >
-            <div>
-              <div className="flex items-start justify-between gap-1.5">
-                <h4 className="text-sm font-semibold text-zinc-900 leading-tight">
-                  {v.title}
-                </h4>
-                <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">
-                  {(v.employment_type || "").replaceAll("_", " ")}
-                </span>
+        {vacancies.map((v: any) => {
+          const itemCanApply = canApply && v.can_apply !== false;
+          return (
+            <div
+              key={v.vacancy_id}
+              className="flex flex-col justify-between rounded-xl border border-zinc-200 bg-white p-3.5 shadow-sm transition-all hover:border-blue-300 hover:shadow"
+            >
+              <div>
+                <div className="flex items-start justify-between gap-1.5">
+                  <h4 className="text-sm font-semibold text-zinc-900 leading-tight">
+                    {v.title}
+                  </h4>
+                  <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">
+                    {(v.employment_type || "").replaceAll("_", " ")}
+                  </span>
+                </div>
+                {v.department_name && (
+                  <p className="mt-1 text-xs text-zinc-500 font-medium">
+                    {v.department_name}
+                  </p>
+                )}
+                {v.description && (
+                  <p className="mt-2 line-clamp-2 text-xs text-zinc-600 leading-relaxed">
+                    {v.description}
+                  </p>
+                )}
+                {v.closing_date && (
+                  <p className="mt-2 text-[11px] text-zinc-400">
+                    Closes: {v.closing_date}
+                  </p>
+                )}
               </div>
-              {v.department_name && (
-                <p className="mt-1 text-xs text-zinc-500 font-medium">
-                  {v.department_name}
-                </p>
-              )}
-              {v.description && (
-                <p className="mt-2 line-clamp-2 text-xs text-zinc-600 leading-relaxed">
-                  {v.description}
-                </p>
-              )}
-              {v.closing_date && (
-                <p className="mt-2 text-[11px] text-zinc-400">
-                  Closes: {v.closing_date}
-                </p>
-              )}
+              <div className="mt-3 flex items-center gap-2 border-t border-zinc-100 pt-2.5">
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onAction?.(`Tell me about the ${v.title} vacancy`)}
+                  className={`rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors ${
+                    itemCanApply ? "flex-1" : "w-full"
+                  }`}
+                >
+                  Details
+                </button>
+                {itemCanApply && (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => onAction?.(`I want to apply for ${v.title}`)}
+                    className="flex-1 rounded-lg bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
+                  >
+                    Apply in Chat
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="mt-3 flex items-center gap-2 border-t border-zinc-100 pt-2.5">
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => onAction?.(`Tell me about the ${v.title} vacancy`)}
-                className="flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors"
-              >
-                Details
-              </button>
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => onAction?.(`I want to apply for ${v.title}`)}
-                className="flex-1 rounded-lg bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
-              >
-                Apply in Chat
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -1926,6 +1934,7 @@ function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 function VacancyDetailWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const vacancy = widget.vacancy;
   if (!vacancy) return null;
+  const canApply = widget.can_apply !== false && vacancy.can_apply !== false;
 
   return (
     <div className="mt-3 w-full max-w-xl rounded-xl border border-zinc-200 bg-white p-4 shadow-sm space-y-3">
@@ -1956,16 +1965,22 @@ function VacancyDetailWidget({ widget, onAction, disabled }: ChatWidgetProps) {
         </p>
       )}
 
-      <div className="pt-2 flex justify-end">
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => onAction?.(`I want to apply for ${vacancy.title}`)}
-          className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
-        >
-          Apply for this Role
-        </button>
-      </div>
+      {canApply ? (
+        <div className="pt-2 flex justify-end">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onAction?.(`I want to apply for ${vacancy.title}`)}
+            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
+          >
+            Apply for this Role
+          </button>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-zinc-100 bg-zinc-50/80 p-2.5 text-[11px] text-zinc-500">
+          Internal position notice · For internal transfers or inquiries, please contact HR or your manager.
+        </div>
+      )}
     </div>
   );
 }
@@ -1978,6 +1993,7 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const vacancyTitle = widget.vacancy_title || "Position";
 
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => !!getAuthToken());
+  const [userRole, setUserRole] = useState<string | null>(null);
   const [form, setForm] = useState({
     first_name: "",
     last_name: "",
@@ -1990,6 +2006,20 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [appId, setAppId] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (getAuthToken()) {
+      api
+        .me()
+        .then((res) => {
+          setUserRole(res.user.coarse_role);
+          if (res.user.coarse_role === "CANDIDATE") {
+            setIsLoggedIn(true);
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
 
   const allowedExts = [".pdf", ".docx"];
   const maxBytes = 10 * 1024 * 1024;
@@ -2068,13 +2098,42 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
       }
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(err.detail);
+        if (err.status === 401) {
+          setError("Your session has expired or you are not authenticated. Please sign in.");
+        } else if (err.status === 403) {
+          setError("Only candidate accounts can submit job applications. For internal transfers, please contact HR.");
+        } else {
+          setError(err.detail);
+        }
       } else {
         setError("Failed to submit application. Please try again.");
       }
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (userRole === "EMPLOYEE" || userRole === "HR_ADMIN") {
+    return (
+      <div className="mt-3 w-full max-w-xl rounded-xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm space-y-2.5">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-600 text-white shadow-xs">
+            <UserIcon className="h-4 w-4" />
+          </div>
+          <div>
+            <h4 className="text-sm font-bold text-amber-900">
+              Internal Employee Notice
+            </h4>
+            <p className="text-xs text-amber-700">
+              Role: <strong>{vacancyTitle}</strong>
+            </p>
+          </div>
+        </div>
+        <p className="text-xs text-amber-800 leading-relaxed">
+          Job applications submitted through this chatbot flow are for external candidates. As an active employee, if you are interested in internal transfer or career mobility opportunities for this position, please reach out to HR or your manager.
+        </p>
+      </div>
+    );
   }
 
   if (submitted) {

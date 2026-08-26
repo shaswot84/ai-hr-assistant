@@ -82,6 +82,7 @@ async def handle_turn(
 ) -> AgentTurnResult:
     clock = clock or get_clock()
     lowered = user_message.lower()
+    can_apply = actor is None or actor.coarse_role == "CANDIDATE"
 
     if state is not None:
         state.add_turn("user", user_message, clock=clock)
@@ -166,12 +167,28 @@ async def handle_turn(
     if any(word in lowered for word in _APPLY_WORDS):
         matched_v = await find_matched_vacancy(service, user_message)
         all_open = await list_vacancies_tool(service, actor)
-        if matched_v is not None:
-            reply = format_apply_reply(matched_v, all_open)
-            widget = apply_vacancy_widget(matched_v)
+        if not can_apply:
+            if matched_v is not None:
+                reply = (
+                    f"Job applications through this portal are for external candidates. "
+                    f"As an internal employee, you can view the **{matched_v.title}** details below. "
+                    f"If you are interested in internal transfer or mobility opportunities, please contact HR or your manager."
+                )
+                widget = vacancy_detail_widget(matched_v, can_apply=False)
+            else:
+                reply = (
+                    "Job applications through this portal are for external candidates. "
+                    "As an internal employee, you can view open positions below. "
+                    "For internal transfer or mobility opportunities, please contact HR or your manager."
+                )
+                widget = vacancies_list_widget(all_open, can_apply=False) if all_open else None
         else:
-            reply = format_apply_reply(None, all_open)
-            widget = vacancies_list_widget(all_open) if all_open else None
+            if matched_v is not None:
+                reply = format_apply_reply(matched_v, all_open)
+                widget = apply_vacancy_widget(matched_v)
+            else:
+                reply = format_apply_reply(None, all_open)
+                widget = vacancies_list_widget(all_open, can_apply=True) if all_open else None
         if state is not None:
             state.add_turn("agent", reply, clock=clock)
         return AgentTurnResult(reply=reply, ui_widget=widget)
@@ -179,8 +196,8 @@ async def handle_turn(
     # 5. Specific Vacancy Detail
     matched_v = await find_matched_vacancy(service, user_message)
     if matched_v is not None:
-        reply = format_vacancy_detail_reply(matched_v)
-        widget = apply_vacancy_widget(matched_v)
+        reply = format_vacancy_detail_reply(matched_v, can_apply=can_apply)
+        widget = apply_vacancy_widget(matched_v) if can_apply else vacancy_detail_widget(matched_v, can_apply=False)
         if state is not None:
             state.add_turn("agent", reply, clock=clock)
         return AgentTurnResult(reply=reply, ui_widget=widget)
@@ -188,8 +205,8 @@ async def handle_turn(
     # 6. List open vacancies
     if any(word in lowered for word in _VACANCY_WORDS):
         vacancies = await list_vacancies_tool(service, actor)
-        reply = format_vacancies_reply(vacancies)
-        widget = vacancies_list_widget(vacancies) if vacancies else None
+        reply = format_vacancies_reply(vacancies, can_apply=can_apply)
+        widget = vacancies_list_widget(vacancies, can_apply=can_apply) if vacancies else None
         if state is not None:
             state.add_turn("agent", reply, clock=clock)
         return AgentTurnResult(reply=reply, ui_widget=widget)
@@ -220,15 +237,15 @@ async def handle_turn(
                     args = raw.get("args", {})
                     if tool == "list_vacancies":
                         vacancies = await list_vacancies_tool(service, actor)
-                        reply = format_vacancies_reply(vacancies)
-                        widget = vacancies_list_widget(vacancies) if vacancies else None
+                        reply = format_vacancies_reply(vacancies, can_apply=can_apply)
+                        widget = vacancies_list_widget(vacancies, can_apply=can_apply) if vacancies else None
                         return AgentTurnResult(reply=reply, tool_called=tool, raw_model_action=raw, ui_widget=widget)
                     if tool == "get_vacancy_detail":
                         title = args.get("title", "")
                         v = await get_vacancy_detail_tool(service, actor, title)
                         if v:
-                            reply = format_vacancy_detail_reply(v)
-                            widget = apply_vacancy_widget(v)
+                            reply = format_vacancy_detail_reply(v, can_apply=can_apply)
+                            widget = apply_vacancy_widget(v) if can_apply else vacancy_detail_widget(v, can_apply=False)
                         else:
                             reply = f"I couldn't find an open vacancy for {title!r}."
                             widget = None
@@ -265,8 +282,8 @@ async def handle_turn(
 
     # 8. Default help reply
     vacancies = await list_vacancies_tool(service, actor)
-    reply = format_help_reply(vacancies)
-    widget = vacancies_list_widget(vacancies) if vacancies else None
+    reply = format_help_reply(vacancies, can_apply=can_apply)
+    widget = vacancies_list_widget(vacancies, can_apply=can_apply) if vacancies else None
     if state is not None:
         state.add_turn("agent", reply, clock=clock)
     return AgentTurnResult(reply=reply, ui_widget=widget)

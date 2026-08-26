@@ -156,9 +156,10 @@ async def list_manager_applications_tool(
 # ---- UI Widgets ----------------------------------------------------------
 
 
-def vacancies_list_widget(vacancies: list[Vacancy]) -> dict[str, Any]:
+def vacancies_list_widget(vacancies: list[Vacancy], *, can_apply: bool = True) -> dict[str, Any]:
     return {
         "type": "vacancies_list",
+        "can_apply": can_apply,
         "vacancies": [
             {
                 "vacancy_id": str(getattr(v, "vacancy_id", "")),
@@ -172,15 +173,17 @@ def vacancies_list_widget(vacancies: list[Vacancy]) -> dict[str, Any]:
                     else None
                 ),
                 "status": getattr(v, "status", "OPEN"),
+                "can_apply": can_apply,
             }
             for v in vacancies
         ],
     }
 
 
-def vacancy_detail_widget(vacancy: Vacancy) -> dict[str, Any]:
+def vacancy_detail_widget(vacancy: Vacancy, *, can_apply: bool = True) -> dict[str, Any]:
     return {
         "type": "vacancy_detail",
+        "can_apply": can_apply,
         "vacancy": {
             "vacancy_id": str(getattr(vacancy, "vacancy_id", "")),
             "title": getattr(vacancy, "title", ""),
@@ -193,6 +196,7 @@ def vacancy_detail_widget(vacancy: Vacancy) -> dict[str, Any]:
                 else None
             ),
             "status": getattr(vacancy, "status", "OPEN"),
+            "can_apply": can_apply,
         },
     }
 
@@ -263,23 +267,32 @@ def application_lines(applications: list[Application]) -> str:
     )
 
 
-def format_vacancies_reply(vacancies: list[Vacancy]) -> str:
+def format_vacancies_reply(vacancies: list[Vacancy], *, can_apply: bool = True) -> str:
     if not vacancies:
         return "There are no open vacancies right now. Please check back later!"
+    if can_apply:
+        return (
+            "Here are the currently available job vacancies:\n\n"
+            + vacancy_lines(vacancies)
+            + "\n\nYou can click **Apply** below or ask me about any specific role to get started!"
+        )
     return (
         "Here are the currently available job vacancies:\n\n"
         + vacancy_lines(vacancies)
-        + "\n\nYou can click **Apply** below or ask me about any specific role to get started!"
+        + "\n\nAs an employee, you can view open positions and ask for details. For internal transfers or job mobility, please contact HR or your manager."
     )
 
 
-def format_vacancy_detail_reply(vacancy: Vacancy) -> str:
+def format_vacancy_detail_reply(vacancy: Vacancy, *, can_apply: bool = True) -> str:
     parts = [f"### **{vacancy.title}** ({vacancy.employment_type})"]
     if vacancy.description:
         parts.append(vacancy.description)
     if vacancy.closing_date is not None:
         parts.append(f"**Closing Date:** {vacancy.closing_date.isoformat()}")
-    parts.append("You can apply directly below by uploading your resume.")
+    if can_apply:
+        parts.append("You can apply directly below by uploading your resume.")
+    else:
+        parts.append("As an employee, you can view vacancy details above. For internal transfer inquiries, please reach out to HR or your manager.")
     return "\n\n".join(parts)
 
 
@@ -312,14 +325,22 @@ def format_apply_reply(vacancy: Vacancy | None, all_vacancies: list[Vacancy]) ->
     )
 
 
-def format_help_reply(vacancies: list[Vacancy]) -> str:
-    lines = [
-        "Here's what I can help you with on Recruitment:",
-        "- **View Open Vacancies**: Ask *'What jobs are open?'* to explore available roles.",
-        "- **Apply for Vacancies**: Ask *'How do I apply for [Job Title]?'* or click Apply to submit your resume directly.",
-        "- **Check Application Status**: Ask *'What's the status of my application?'* to track your progress.",
-        "- **Withdraw Application**: Ask *'Withdraw my application for [Job Title]'* to withdraw an active application.",
-    ]
+def format_help_reply(vacancies: list[Vacancy], *, can_apply: bool = True) -> str:
+    if can_apply:
+        lines = [
+            "Here's what I can help you with on Recruitment:",
+            "- **View Open Vacancies**: Ask *'What jobs are open?'* to explore available roles.",
+            "- **Apply for Vacancies**: Ask *'How do I apply for [Job Title]?'* or click Apply to submit your resume directly.",
+            "- **Check Application Status**: Ask *'What's the status of my application?'* to track your progress.",
+            "- **Withdraw Application**: Ask *'Withdraw my application for [Job Title]'* to withdraw an active application.",
+        ]
+    else:
+        lines = [
+            "Here's what I can help you with on Recruitment:",
+            "- **View Open Vacancies**: Ask *'What jobs are open?'* to explore available roles.",
+            "- **Vacancy Details**: Ask *'Tell me about [Job Title]'* to view role details.",
+            "- **Internal Transfers**: Contact HR or your manager for internal career opportunities.",
+        ]
     if vacancies:
         lines.extend(["", "Currently open roles:", vacancy_lines(vacancies)])
     return "\n".join(lines)
