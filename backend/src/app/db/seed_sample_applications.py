@@ -1,17 +1,24 @@
+from __future__ import annotations
+
 import asyncio
 import io
+import logging
+from typing import Any
 
 from docx import Document
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.capabilities.recruitment import RecruitmentService
 from app.db.session import async_session_factory, init_db
-from app.domain.recruitment import Vacancy
+from app.domain.identity import Candidate, Person
+from app.domain.recruitment import Application, Vacancy
 from app.integrations.object_store import SyncS3ObjectStore
 from app.knowledge.resume_extraction import extract_text, is_ats_friendly, looks_like_resume
 
-DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+logger = logging.getLogger(__name__)
 
+DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 def _build_resume_docx(lines: list[tuple[str, str]]) -> bytes:
@@ -40,18 +47,19 @@ def _build_resume_docx(lines: list[tuple[str, str]]) -> bytes:
 # requirements-gate/ranking UI has genuine good-vs-bad examples produced by
 # the real AI screening pipeline (ATS-parsability check + weighted keyword
 # scoring), not fabricated scores.
-SAMPLE_APPLICATIONS = [
-    # ---- Junior Frontend Developer -------------------------------------
+SAMPLE_APPLICATIONS: list[dict[str, Any]] = [
+    # ---- 1. Junior Frontend Developer ----------------------------------
+    # MATCH (CS grad, React internship, HTML/CSS/JS fundamentals, Git)
     {
         "vacancy_title": "Junior Frontend Developer",
         "first": "Maya",
         "last": "Chen",
-        "email": "maya.chen@sample-applicant.test",
+        "email": "maya.chen@example.com",
         "phone": "+1-415-555-0142",
         "filename": "maya_chen_resume.docx",
         "lines": [
             ("title", "Maya Chen"),
-            ("body", "maya.chen@sample-applicant.test | +1-415-555-0142 | San Francisco, CA"),
+            ("body", "maya.chen@example.com | +1-415-555-0142 | San Francisco, CA"),
             ("heading", "Professional Summary"),
             (
                 "body",
@@ -62,7 +70,7 @@ SAMPLE_APPLICATIONS = [
                 ),
             ),
             ("heading", "Experience"),
-            ("body", "Frontend Engineering Intern, Brightpath Software — Summer 2025"),
+            ("body", "Frontend Engineering Intern, Brightpath Software — 2024-2025"),
             (
                 "body",
                 "- Built and styled 6 responsive page templates using HTML, CSS, and JavaScript.",
@@ -73,7 +81,7 @@ SAMPLE_APPLICATIONS = [
             ),
             ("body", "- Used Git and pull requests daily as part of a 5-person engineering team."),
             ("body", "- Fixed 12 layout and cross-browser CSS bugs reported by QA."),
-            ("body", "Teaching Assistant, Intro to Web Development — State University, 2024"),
+            ("body", "Teaching Assistant, Intro to Web Development — State University, 2023-2024"),
             ("body", "- Helped 30+ students debug HTML/CSS/JavaScript assignments weekly."),
             ("heading", "Projects"),
             (
@@ -85,24 +93,25 @@ SAMPLE_APPLICATIONS = [
                 "Recipe Finder App — React app calling a public API, styled with responsive CSS.",
             ),
             ("heading", "Education"),
-            ("body", "B.S. in Computer Science, State University — May 2025"),
+            ("body", "B.S. in Computer Science, State University — 2025"),
             ("heading", "Skills"),
             (
                 "body",
-                "HTML, CSS, JavaScript, React (basics), Git, responsive design, Chrome DevTools",
+                "HTML, CSS, JavaScript, React, Git, responsive design, Chrome DevTools",
             ),
         ],
     },
+    # NO MATCH (Warehouse coordinator, no web/frontend dev skills)
     {
         "vacancy_title": "Junior Frontend Developer",
         "first": "Robert",
         "last": "Kwan",
-        "email": "robert.kwan@sample-applicant.test",
+        "email": "robert.kwan@example.com",
         "phone": "+1-312-555-0198",
         "filename": "robert_kwan_resume.docx",
         "lines": [
             ("title", "Robert Kwan"),
-            ("body", "robert.kwan@sample-applicant.test | +1-312-555-0198 | Chicago, IL"),
+            ("body", "robert.kwan@example.com | +1-312-555-0198 | Chicago, IL"),
             ("heading", "Professional Summary"),
             (
                 "body",
@@ -132,17 +141,18 @@ SAMPLE_APPLICATIONS = [
             ("body", "Inventory management, team scheduling, forklift certified, Microsoft Excel"),
         ],
     },
-    # ---- Senior Backend Engineer ----------------------------------------
+    # ---- 2. Senior Backend Engineer ------------------------------------
+    # MATCH (9+ yrs Python backend, distributed systems, system design, mentoring, AWS)
     {
         "vacancy_title": "Senior Backend Engineer",
         "first": "David",
         "last": "Okonkwo",
-        "email": "david.okonkwo@sample-applicant.test",
+        "email": "david.okonkwo@example.com",
         "phone": "+1-206-555-0173",
         "filename": "david_okonkwo_resume.docx",
         "lines": [
             ("title", "David Okonkwo"),
-            ("body", "david.okonkwo@sample-applicant.test | +1-206-555-0173 | Seattle, WA"),
+            ("body", "david.okonkwo@example.com | +1-206-555-0173 | Seattle, WA"),
             ("heading", "Professional Summary"),
             (
                 "body",
@@ -180,16 +190,17 @@ SAMPLE_APPLICATIONS = [
             ),
         ],
     },
+    # NO MATCH (Junior QA tester, 1 yr exp, no Python/distributed systems/system design)
     {
         "vacancy_title": "Senior Backend Engineer",
         "first": "Priya",
         "last": "Raman",
-        "email": "priya.raman@sample-applicant.test",
+        "email": "priya.raman@example.com",
         "phone": "+1-469-555-0114",
         "filename": "priya_raman_resume.docx",
         "lines": [
             ("title", "Priya Raman"),
-            ("body", "priya.raman@sample-applicant.test | +1-469-555-0114 | Dallas, TX"),
+            ("body", "priya.raman@example.com | +1-469-555-0114 | Dallas, TX"),
             ("heading", "Professional Summary"),
             (
                 "body",
@@ -211,17 +222,18 @@ SAMPLE_APPLICATIONS = [
             ("body", "Manual testing, Jira, customer communication, basic HTML"),
         ],
     },
-    # ---- Marketing Manager ------------------------------------------------
+    # ---- 3. Marketing Manager ------------------------------------------
+    # MATCH (6+ yrs B2B marketing, $600k budget management, team leadership, GA4)
     {
         "vacancy_title": "Marketing Manager",
         "first": "Sofia",
         "last": "Alvarez",
-        "email": "sofia.alvarez@sample-applicant.test",
+        "email": "sofia.alvarez@example.com",
         "phone": "+1-305-555-0161",
         "filename": "sofia_alvarez_resume.docx",
         "lines": [
             ("title", "Sofia Alvarez"),
-            ("body", "sofia.alvarez@sample-applicant.test | +1-305-555-0161 | Miami, FL"),
+            ("body", "sofia.alvarez@example.com | +1-305-555-0161 | Miami, FL"),
             ("heading", "Professional Summary"),
             (
                 "body",
@@ -251,16 +263,17 @@ SAMPLE_APPLICATIONS = [
             ),
         ],
     },
+    # NO MATCH (Junior coordinator, 1 yr social media, no budget/team lead)
     {
         "vacancy_title": "Marketing Manager",
         "first": "Tyler",
         "last": "Brooks",
-        "email": "tyler.brooks@sample-applicant.test",
+        "email": "tyler.brooks@example.com",
         "phone": "+1-614-555-0187",
         "filename": "tyler_brooks_resume.docx",
         "lines": [
             ("title", "Tyler Brooks"),
-            ("body", "tyler.brooks@sample-applicant.test | +1-614-555-0187 | Columbus, OH"),
+            ("body", "tyler.brooks@example.com | +1-614-555-0187 | Columbus, OH"),
             ("heading", "Professional Summary"),
             (
                 "body",
@@ -274,7 +287,7 @@ SAMPLE_APPLICATIONS = [
             ("body", "- Scheduled and posted content across Instagram, Facebook, and TikTok."),
             ("body", "- Drafted weekly promotional emails using a template builder."),
             ("body", "- Compiled basic engagement metrics into a monthly spreadsheet report."),
-            ("body", "Marketing Intern, Ohio Valley Retail — Summer 2023"),
+            ("body", "Marketing Intern, Ohio Valley Retail — 2023-2024"),
             ("body", "- Assisted with in-store event promotion and social media scheduling."),
             ("heading", "Education"),
             ("body", "B.A. in Communications, Ohio State University — 2023"),
@@ -282,17 +295,18 @@ SAMPLE_APPLICATIONS = [
             ("body", "Social media scheduling, email drafting, Canva, basic spreadsheets"),
         ],
     },
-    # ---- Data Analyst ------------------------------------------------------
+    # ---- 4. Data Analyst -----------------------------------------------
+    # MATCH (3 yrs SQL, 15 Tableau dashboards, Python pandas, stakeholder reporting)
     {
         "vacancy_title": "Data Analyst",
         "first": "Wei",
         "last": "Zhang",
-        "email": "wei.zhang@sample-applicant.test",
+        "email": "wei.zhang@example.com",
         "phone": "+1-512-555-0129",
         "filename": "wei_zhang_resume.docx",
         "lines": [
             ("title", "Wei Zhang"),
-            ("body", "wei.zhang@sample-applicant.test | +1-512-555-0129 | Austin, TX"),
+            ("body", "wei.zhang@example.com | +1-512-555-0129 | Austin, TX"),
             ("heading", "Professional Summary"),
             (
                 "body",
@@ -323,16 +337,17 @@ SAMPLE_APPLICATIONS = [
             ),
         ],
     },
+    # NO MATCH (Graphic designer, branding/illustrator background, no SQL/dashboards)
     {
         "vacancy_title": "Data Analyst",
         "first": "Jordan",
         "last": "Blake",
-        "email": "jordan.blake@sample-applicant.test",
+        "email": "jordan.blake@example.com",
         "phone": "+1-720-555-0155",
         "filename": "jordan_blake_resume.docx",
         "lines": [
             ("title", "Jordan Blake"),
-            ("body", "jordan.blake@sample-applicant.test | +1-720-555-0155 | Denver, CO"),
+            ("body", "jordan.blake@example.com | +1-720-555-0155 | Denver, CO"),
             ("heading", "Professional Summary"),
             (
                 "body",
@@ -357,17 +372,18 @@ SAMPLE_APPLICATIONS = [
             ("body", "Adobe Illustrator, Photoshop, InDesign, brand design, typography"),
         ],
     },
-    # ---- Director of Sales -------------------------------------------------
+    # ---- 5. Director of Sales ------------------------------------------
+    # MATCH (14 yrs enterprise B2B sales, 25-person team leadership, $15M revenue growth)
     {
         "vacancy_title": "Director of Sales",
         "first": "Marcus",
         "last": "Webb",
-        "email": "marcus.webb@sample-applicant.test",
+        "email": "marcus.webb@example.com",
         "phone": "+1-404-555-0136",
         "filename": "marcus_webb_resume.docx",
         "lines": [
             ("title", "Marcus Webb"),
-            ("body", "marcus.webb@sample-applicant.test | +1-404-555-0136 | Atlanta, GA"),
+            ("body", "marcus.webb@example.com | +1-404-555-0136 | Atlanta, GA"),
             ("heading", "Professional Summary"),
             (
                 "body",
@@ -403,16 +419,17 @@ SAMPLE_APPLICATIONS = [
             ),
         ],
     },
+    # NO MATCH (Sales rep, 1.5 yrs small business cold-calling, no leadership)
     {
         "vacancy_title": "Director of Sales",
         "first": "Ashley",
         "last": "Kim",
-        "email": "ashley.kim@sample-applicant.test",
+        "email": "ashley.kim@example.com",
         "phone": "+1-702-555-0192",
         "filename": "ashley_kim_resume.docx",
         "lines": [
             ("title", "Ashley Kim"),
-            ("body", "ashley.kim@sample-applicant.test | +1-702-555-0192 | Las Vegas, NV"),
+            ("body", "ashley.kim@example.com | +1-702-555-0192 | Las Vegas, NV"),
             ("heading", "Professional Summary"),
             (
                 "body",
@@ -438,50 +455,144 @@ SAMPLE_APPLICATIONS = [
 ]
 
 
-async def seed_sample_applications() -> int:
+async def _seed_single_application(
+    db: AsyncSession,
+    svc: RecruitmentService,
+    store: SyncS3ObjectStore,
+    entry: dict[str, Any],
+) -> bool:
+    """Submit a single sample application through the real resume pipeline idempotently."""
+    vacancy = await db.scalar(select(Vacancy).where(Vacancy.title == entry["vacancy_title"]))
+    if vacancy is None:
+        logger.warning("Skipping %s: vacancy '%s' not found.", entry["email"], entry["vacancy_title"])
+        return False
+
+    # Check if application already exists for this candidate on this vacancy
+    existing_app = await db.scalar(
+        select(Application)
+        .join(Candidate, Candidate.candidate_id == Application.candidate_id)
+        .join(Person, Person.person_id == Candidate.person_id)
+        .where(Person.email == entry["email"], Application.vacancy_id == vacancy.vacancy_id)
+    )
+    if existing_app is not None:
+        return False
+
+    data = _build_resume_docx(entry["lines"])
+    extraction = extract_text(data, entry["filename"], DOCX_CONTENT_TYPE)
+    is_resume, reason = await looks_like_resume(extraction.text)
+    if not is_resume:
+        logger.warning("Skipping %s: failed resume classification — %s", entry["email"], reason)
+        return False
+    is_parsable, parsability_reason = await is_ats_friendly(extraction.text)
+    if not is_parsable:
+        logger.warning("Skipping %s: failed ATS-parsability check — %s", entry["email"], parsability_reason)
+        return False
+
+    object_key = store.put_resume(data, entry["filename"], DOCX_CONTENT_TYPE)
+
+    person = await db.scalar(select(Person).where(Person.email == entry["email"]))
+    if person is None:
+        try:
+            await svc.apply_as_new_candidate(
+                vacancy_id=vacancy.vacancy_id,
+                cv_object_key=object_key,
+                first_name=entry["first"],
+                last_name=entry["last"],
+                email=entry["email"],
+                phone=entry["phone"],
+                password="applicant123",
+            )
+            return True
+        except ValueError as err:
+            logger.warning("Skipping %s: %s", entry["email"], err)
+            return False
+    else:
+        # Person already exists (e.g. from previous run); ensure Candidate record
+        candidate = await db.scalar(select(Candidate).where(Candidate.person_id == person.person_id))
+        if candidate is None:
+            now = svc._clock.now()
+            candidate = Candidate(
+                person_id=person.person_id,
+                registration_date=svc._clock.today(),
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(candidate)
+            await db.flush()
+
+        now = svc._clock.now()
+        app = Application(
+            candidate_id=candidate.candidate_id,
+            vacancy_id=vacancy.vacancy_id,
+            cv_object_key=object_key,
+            application_status="APPLIED",
+            applied_at=now,
+            updated_at=now,
+        )
+        await svc._applications.create(app)
+        await svc._outbox.enqueue(
+            "EVALUATE_APPLICATION",
+            {"application_id": str(app.application_id), "cv_object_key": object_key},
+            aggregate_type="application",
+            aggregate_id=app.application_id,
+        )
+        await svc._outbox.enqueue(
+            "SEND_APPLICATION_RECEIVED",
+            {
+                "application_id": str(app.application_id),
+                "to_email": entry["email"],
+                "subject": f"Application received: {vacancy.title}",
+                "body": (
+                    f"Thanks for applying to {vacancy.title}. We've received your resume and "
+                    "will notify you once it's been reviewed."
+                ),
+            },
+            aggregate_type="application",
+            aggregate_id=app.application_id,
+        )
+        manager_email = await svc._manager_email(vacancy)
+        if manager_email:
+            await svc._outbox.enqueue(
+                "SEND_NEW_APPLICATION_ALERT",
+                {
+                    "application_id": str(app.application_id),
+                    "to_email": manager_email,
+                    "subject": f"New application: {vacancy.title}",
+                    "body": (
+                        f"A new candidate applied to {vacancy.title}. Review the application "
+                        "in the manager portal."
+                    ),
+                },
+                aggregate_type="application",
+                aggregate_id=app.application_id,
+            )
+        await db.commit()
+        return True
+
+
+async def seed_sample_applications(db: AsyncSession | None = None) -> int:
     """Submit the sample resumes above as real applications through the full pipeline."""
-    await init_db()
-    async with async_session_factory() as db:
+    store = SyncS3ObjectStore()
+    store.ensure_bucket()
+
+    if db is not None:
         svc = RecruitmentService(db)
-        store = SyncS3ObjectStore()
         created = 0
         for entry in SAMPLE_APPLICATIONS:
-            vacancy = await db.scalar(select(Vacancy).where(Vacancy.title == entry["vacancy_title"]))
-            if vacancy is None:
-                print(f"Skipping {entry['email']}: vacancy '{entry['vacancy_title']}' not found.")
-                continue
+            if await _seed_single_application(db, svc, store, entry):
+                created += 1
+        return created
 
-            data = _build_resume_docx(entry["lines"])
-            extraction = extract_text(data, entry["filename"], DOCX_CONTENT_TYPE)
-            is_resume, reason = await looks_like_resume(extraction.text)
-            if not is_resume:
-                print(f"Skipping {entry['email']}: failed resume classification — {reason}")
-                continue
-            is_parsable, reason = await is_ats_friendly(extraction.text)
-            if not is_parsable:
-                print(f"Skipping {entry['email']}: failed ATS-parsability check — {reason}")
-                continue
-
-            object_key = store.put_resume(data, entry["filename"], DOCX_CONTENT_TYPE)
-            try:
-                await svc.apply_as_new_candidate(
-                    vacancy_id=vacancy.vacancy_id,
-                    cv_object_key=object_key,
-                    first_name=entry["first"],
-                    last_name=entry["last"],
-                    email=entry["email"],
-                    phone=entry["phone"],
-                    password="applicant123",
-                )
-            except ValueError as err:
-                print(f"Skipping {entry['email']}: {err}")
-                continue
-            created += 1
-
+    await init_db()
+    async with async_session_factory() as session:
+        svc = RecruitmentService(session)
+        created = 0
+        for entry in SAMPLE_APPLICATIONS:
+            if await _seed_single_application(session, svc, store, entry):
+                created += 1
         print(f"Seeded {created} real application(s) with generated resumes.")
         return created
 
 
 if __name__ == "__main__":
     asyncio.run(seed_sample_applications())
-

@@ -10,7 +10,16 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.passwords import hash_password
+from app.db.seed_sample_applications import (
+    SAMPLE_APPLICATIONS,
+    seed_sample_applications,
+)
 from app.db.session import async_session_factory, init_db
+from app.domain.conversation import (
+    Conversation,
+    ConversationMessage,
+    ConversationWorkflowState,
+)
 from app.domain.identity import (
     ApplicationUser,
     Candidate,
@@ -20,7 +29,7 @@ from app.domain.identity import (
     Person,
 )
 from app.domain.leave import LeaveBalance, LeaveRequest, LeaveType
-from app.domain.recruitment import Vacancy
+from app.domain.recruitment import Application, ApplicationEvaluation, Vacancy
 from app.shared.clock import get_clock
 
 # ---------------------------------------------------------------------------
@@ -946,9 +955,60 @@ async def _clean_stale_data(db: AsyncSession, allowed_emails: set[str]) -> None:
         await db.execute(delete(LeaveRequest).where(LeaveRequest.employee_id.in_(stale_emp_ids)))
         await db.execute(delete(Employee).where(Employee.person_id.in_(stale_person_ids)))
 
-    # Delete candidates, application_users, persons
-    await db.execute(delete(Candidate).where(Candidate.person_id.in_(stale_person_ids)))
-    await db.execute(delete(ApplicationUser).where(ApplicationUser.person_id.in_(stale_person_ids)))
+    # Clean candidate applications and evaluations
+    stale_candidates = (
+        await db.scalars(select(Candidate).where(Candidate.person_id.in_(stale_person_ids)))
+    ).all()
+    stale_candidate_ids = [c.candidate_id for c in stale_candidates]
+    if stale_candidate_ids:
+        stale_apps = (
+            await db.scalars(
+                select(Application).where(Application.candidate_id.in_(stale_candidate_ids))
+            )
+        ).all()
+        stale_app_ids = [a.application_id for a in stale_apps]
+        if stale_app_ids:
+            await db.execute(
+                delete(ApplicationEvaluation).where(
+                    ApplicationEvaluation.application_id.in_(stale_app_ids)
+                )
+            )
+            await db.execute(
+                delete(Application).where(Application.application_id.in_(stale_app_ids))
+            )
+        await db.execute(delete(Candidate).where(Candidate.candidate_id.in_(stale_candidate_ids)))
+
+    # Clean conversation states and messages of stale users
+    stale_users = (
+        await db.scalars(select(ApplicationUser).where(ApplicationUser.person_id.in_(stale_person_ids)))
+    ).all()
+    stale_user_ids = [u.user_id for u in stale_users]
+    if stale_user_ids:
+        await db.execute(
+            delete(ConversationWorkflowState).where(
+                ConversationWorkflowState.actor_user_id.in_(stale_user_ids)
+            )
+        )
+        stale_convs = (
+            await db.scalars(
+                select(Conversation).where(Conversation.user_id.in_(stale_user_ids))
+            )
+        ).all()
+        stale_conv_ids = [c.conversation_id for c in stale_convs]
+        if stale_conv_ids:
+            await db.execute(
+                delete(ConversationMessage).where(
+                    ConversationMessage.conversation_id.in_(stale_conv_ids)
+                )
+            )
+            await db.execute(
+                delete(Conversation).where(Conversation.conversation_id.in_(stale_conv_ids))
+            )
+        await db.execute(
+            delete(ApplicationUser).where(ApplicationUser.user_id.in_(stale_user_ids))
+        )
+
+    # Delete persons
     await db.execute(delete(Person).where(Person.person_id.in_(stale_person_ids)))
     await db.commit()
 
@@ -966,7 +1026,12 @@ async def seed() -> None:
 
         # 1. Allowed emails set for cleanup
         all_emp_defs = DEMO_EMPLOYEES + SAMPLE_NEPALI_EMPLOYEES
-        allowed_emails = {d["email"] for d in all_emp_defs} | {"candidate@example.com"}
+        sample_applicant_emails = {entry["email"] for entry in SAMPLE_APPLICATIONS}
+        allowed_emails = (
+            {d["email"] for d in all_emp_defs}
+            | {"candidate@example.com"}
+            | sample_applicant_emails
+        )
 
         # 2. Clean stale/legacy records
         await _clean_stale_data(db, allowed_emails)
@@ -1103,10 +1168,14 @@ async def seed() -> None:
                 vac_created += 1
             await db.commit()
 
+        # 11. Seed Sample Applications (5 matching, 5 non-matching with real DOCX resumes)
+        apps_created = await seed_sample_applications(db)
+
         print(
             f"✅ Seed complete: {len(dept_map)} departments, "
             f"{len(desig_map)} designations, {len(emp_by_code)} employees seeded with "
-            f"realistic Nepali data & demo accounts, {vac_created} new vacancy(ies) added."
+            f"realistic Nepali data & demo accounts, {vac_created} new vacancy(ies) added, "
+            f"{apps_created} sample application(s) submitted through the recruitment pipeline."
         )
 
 
