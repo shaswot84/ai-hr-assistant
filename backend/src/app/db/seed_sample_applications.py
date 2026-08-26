@@ -453,11 +453,11 @@ async def seed_sample_applications() -> int:
 
             data = _build_resume_docx(entry["lines"])
             extraction = extract_text(data, entry["filename"], DOCX_CONTENT_TYPE)
-            is_resume, reason = looks_like_resume(extraction.text)
+            is_resume, reason = await looks_like_resume(extraction.text)
             if not is_resume:
                 print(f"Skipping {entry['email']}: failed resume classification — {reason}")
                 continue
-            is_parsable, reason = is_ats_friendly(extraction.text)
+            is_parsable, reason = await is_ats_friendly(extraction.text)
             if not is_parsable:
                 print(f"Skipping {entry['email']}: failed ATS-parsability check — {reason}")
                 continue
