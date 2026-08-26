@@ -94,7 +94,7 @@ _STAGED_RE = re.compile(
     r"STAGED ACTION AWAITING CONFIRMATION:\ntool: (\w+)\nargs: (\{.*\})\n",
     re.DOTALL,
 )
-_EMPLOYEE_MSG_RE = re.compile(r"EMPLOYEE'S NEW MESSAGE:\n(.*)$", re.DOTALL)
+_EMPLOYEE_MSG_RE = re.compile(r"(?:EMPLOYEE'S|USER'S) NEW MESSAGE:\n(.*)$", re.DOTALL)
 
 _TYPE_HINTS = {
     "annual": "Annual Leave",
@@ -676,7 +676,7 @@ async def test_hr_employee_balance_tool(db, manager_context, employee_context):
     harness = LeaveChatE2E(db, manager_context)
 
     state = await harness.turn("what's the balance for EMP-TEST-001")
-    assert harness.provider.calls == 1
+    assert harness.provider.calls == 0  # deterministic employee lookup
     assert "Annual Leave" in state["answer"]
     assert "20.0 of 20.0 days remaining" in state["answer"]
 

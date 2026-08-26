@@ -9,7 +9,8 @@ from openinference.semconv.trace import SpanAttributes
 
 from app.config.settings import get_settings
 from app.model_gateway.provider import ChatProvider, ChatProviderError
-from app.observability import trace_llm_call
+from app.observability import set_llm_token_counts, trace_llm_call
+
 
 
 class OllamaChatProvider(ChatProvider):
@@ -100,7 +101,15 @@ class OllamaChatProvider(ChatProvider):
                 raise ChatProviderError(
                     f"Ollama API error ({res.status_code}): {res.text[:300]}"
                 )
-            content = (res.json().get("choices") or [{}])[0].get("message", {}).get("content")
+            res_data = res.json()
+            usage = res_data.get("usage") or {}
+            set_llm_token_counts(
+                span,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
+            content = (res_data.get("choices") or [{}])[0].get("message", {}).get("content")
             if not content:
                 raise ChatProviderError("Ollama API returned an empty response.")
 

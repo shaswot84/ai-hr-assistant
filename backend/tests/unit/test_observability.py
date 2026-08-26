@@ -9,13 +9,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from openinference.semconv.trace import (
     DocumentAttributes,
+    EmbeddingAttributes,
     MessageAttributes,
+    OpenInferenceMimeTypeValues,
     OpenInferenceSpanKindValues,
+    RerankerAttributes,
     SpanAttributes,
 )
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
 from app.config.settings import ObservabilitySettings
 from app.knowledge.contracts import RetrievedChunk
@@ -23,9 +27,13 @@ from app.knowledge.models import DocumentCategory
 from app.observability import (
     async_trace_span,
     init_observability,
+    set_embedding_details,
+    set_llm_token_counts,
+    set_reranker_details,
     set_retrieval_documents,
     shutdown_observability,
     trace_agent_turn,
+    trace_chat_turn,
     trace_llm_call,
     trace_span,
     trace_tool_call,
@@ -171,6 +179,72 @@ def test_set_retrieval_documents_with_parent_expansion(memory_exporter):
     assert meta["page"] == 5
 
 
+def test_set_embedding_details(memory_exporter):
+    exporter, provider = memory_exporter
+    with (
+        patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")),
+        trace_span("rag.embedding", span_kind=OpenInferenceSpanKindValues.EMBEDDING) as span,
+    ):
+        set_embedding_details(
+            span,
+            text="what is the leave policy?",
+            vector=[0.1, 0.2, 0.3],
+            model_name="BAAI/bge-m3",
+        )
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "EMBEDDING"
+    assert s.attributes[SpanAttributes.EMBEDDING_MODEL_NAME] == "BAAI/bge-m3"
+    assert s.attributes[SpanAttributes.INPUT_VALUE] == "what is the leave policy?"
+    assert s.attributes[SpanAttributes.INPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.TEXT.value
+    assert s.attributes[f"{SpanAttributes.EMBEDDING_EMBEDDINGS}.0.{EmbeddingAttributes.EMBEDDING_TEXT}"] == "what is the leave policy?"
+    assert s.attributes[SpanAttributes.OUTPUT_VALUE] == "Embedding vector (dim=3)"
+    assert s.attributes["rag.embedding_dim"] == 3
+
+
+def test_set_reranker_details(memory_exporter):
+    exporter, provider = memory_exporter
+    chunk_id = uuid.uuid4()
+    chunk = RetrievedChunk(
+        chunk_id=chunk_id,
+        document_id=uuid.uuid4(),
+        document_version_id=uuid.uuid4(),
+        version_number=1,
+        document_title="Leave Policy",
+        category=DocumentCategory.POLICY,
+        mime_type="application/pdf",
+        text="Sick leave is 10 days.",
+        reranker_score=0.95,
+    )
+
+    with (
+        patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")),
+        trace_span("rag.reranker", span_kind=OpenInferenceSpanKindValues.RERANKER) as span,
+    ):
+        set_reranker_details(
+            span,
+            query="how many sick days?",
+            model_name="bge-reranker-v2-m3",
+            top_k=5,
+            input_chunks=[chunk],
+            output_chunks=[chunk],
+        )
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "RERANKER"
+    assert s.attributes[RerankerAttributes.RERANKER_QUERY] == "how many sick days?"
+    assert s.attributes[RerankerAttributes.RERANKER_MODEL_NAME] == "bge-reranker-v2-m3"
+    assert s.attributes[RerankerAttributes.RERANKER_TOP_K] == 5
+    assert s.attributes[f"{RerankerAttributes.RERANKER_INPUT_DOCUMENTS}.0.{DocumentAttributes.DOCUMENT_ID}"] == str(chunk_id)
+    assert s.attributes[f"{RerankerAttributes.RERANKER_OUTPUT_DOCUMENTS}.0.{DocumentAttributes.DOCUMENT_ID}"] == str(chunk_id)
+    assert s.attributes[f"{RerankerAttributes.RERANKER_OUTPUT_DOCUMENTS}.0.{DocumentAttributes.DOCUMENT_SCORE}"] == 0.95
+    assert s.attributes[SpanAttributes.OUTPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.JSON.value
+
+
 @pytest.mark.asyncio
 async def test_trace_agent_turn(memory_exporter):
     exporter, provider = memory_exporter
@@ -298,11 +372,142 @@ async def test_rag_pipeline_spans(memory_exporter):
     assert "rag.grounding" in span_names
     assert "rag.retrieve" in span_names
 
-    # Verify top retriever span has OpenInference RETRIEVAL_DOCUMENTS
+    # 1. Verify rag.retrieve (RETRIEVER) span
     retriever_span = next(s for s in spans if s.name == "rag.retrieve")
     assert retriever_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "RETRIEVER"
     assert retriever_span.attributes[SpanAttributes.INPUT_VALUE] == "can I work from home?"
+    assert retriever_span.attributes[SpanAttributes.INPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.TEXT.value
+    assert retriever_span.attributes[SpanAttributes.OUTPUT_VALUE] == result.grounded_context
+    assert retriever_span.attributes[SpanAttributes.OUTPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.TEXT.value
     assert f"{SpanAttributes.RETRIEVAL_DOCUMENTS}.0.{DocumentAttributes.DOCUMENT_ID}" in retriever_span.attributes
+    assert retriever_span.attributes["rag.status"] == "success"
+    assert retriever_span.attributes["rag.citation_count"] == 1
+
+    # 2. Verify rag.embedding (EMBEDDING) span
+    embedding_span = next(s for s in spans if s.name == "rag.embedding")
+    assert embedding_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "EMBEDDING"
+    assert SpanAttributes.EMBEDDING_MODEL_NAME in embedding_span.attributes
+    assert embedding_span.attributes[SpanAttributes.INPUT_VALUE] == "can I work from home?"
+    assert embedding_span.attributes[SpanAttributes.INPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.TEXT.value
+    assert embedding_span.attributes[SpanAttributes.OUTPUT_VALUE] == "Embedding vector (dim=768)"
+    assert embedding_span.attributes[f"{SpanAttributes.EMBEDDING_EMBEDDINGS}.0.{EmbeddingAttributes.EMBEDDING_TEXT}"] == "can I work from home?"
+    assert embedding_span.attributes["rag.embedding_dim"] == 768
+
+    # 3. Verify rag.search.bm25 (RETRIEVER) span
+    bm25_span = next(s for s in spans if s.name == "rag.search.bm25")
+    assert bm25_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "RETRIEVER"
+    assert bm25_span.attributes[SpanAttributes.INPUT_VALUE] == "can I work from home?"
+    assert bm25_span.attributes[SpanAttributes.INPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.TEXT.value
+    assert bm25_span.attributes[SpanAttributes.OUTPUT_VALUE] == "Found 1 BM25 keyword hits"
+    assert f"{SpanAttributes.RETRIEVAL_DOCUMENTS}.0.{DocumentAttributes.DOCUMENT_ID}" in bm25_span.attributes
+    assert bm25_span.attributes["rag.hits_count"] == 1
+
+    # 4. Verify rag.search.vector (RETRIEVER) span
+    vector_span = next(s for s in spans if s.name == "rag.search.vector")
+    assert vector_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "RETRIEVER"
+    assert vector_span.attributes[SpanAttributes.INPUT_VALUE] == "can I work from home?"
+    assert vector_span.attributes[SpanAttributes.INPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.TEXT.value
+    assert vector_span.attributes[SpanAttributes.OUTPUT_VALUE] == "Found 1 dense vector hits"
+    assert f"{SpanAttributes.RETRIEVAL_DOCUMENTS}.0.{DocumentAttributes.DOCUMENT_ID}" in vector_span.attributes
+    assert vector_span.attributes["rag.hits_count"] == 1
+
+    # 5. Verify rag.ranking.rrf (RERANKER) span
+    rrf_span = next(s for s in spans if s.name == "rag.ranking.rrf")
+    assert rrf_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "RERANKER"
+    assert rrf_span.attributes[RerankerAttributes.RERANKER_QUERY] == "can I work from home?"
+    assert rrf_span.attributes[RerankerAttributes.RERANKER_MODEL_NAME] == "reciprocal_rank_fusion"
+    assert f"{RerankerAttributes.RERANKER_OUTPUT_DOCUMENTS}.0.{DocumentAttributes.DOCUMENT_ID}" in rrf_span.attributes
+    assert rrf_span.attributes[SpanAttributes.OUTPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.JSON.value
+
+    # 6. Verify rag.reranker (RERANKER) span
+    reranker_span = next(s for s in spans if s.name == "rag.reranker")
+    assert reranker_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "RERANKER"
+    assert reranker_span.attributes[RerankerAttributes.RERANKER_QUERY] == "can I work from home?"
+    assert f"{RerankerAttributes.RERANKER_OUTPUT_DOCUMENTS}.0.{DocumentAttributes.DOCUMENT_ID}" in reranker_span.attributes
+    assert reranker_span.attributes["rag.candidates_in_count"] == 1
+    assert reranker_span.attributes["rag.candidates_out_count"] == 1
+    assert "rag.rerank_score_top" in reranker_span.attributes
+    assert "rag.rank_shift" in reranker_span.attributes
+    assert reranker_span.attributes[SpanAttributes.OUTPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.JSON.value
+
+    # 7. Verify rag.parent_expansion (CHAIN) span
+    expand_span = next(s for s in spans if s.name == "rag.parent_expansion")
+    assert expand_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "CHAIN"
+    assert expand_span.attributes[SpanAttributes.INPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.JSON.value
+    assert expand_span.attributes[SpanAttributes.OUTPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.JSON.value
+    assert expand_span.attributes["rag.candidates_in"] == 1
+    assert expand_span.attributes["rag.expanded_chunks_count"] == 1
+    assert expand_span.attributes["rag.parent_expansion_ratio"] > 1.0
+
+    # 8. Verify rag.confidence (GUARDRAIL) span
+    conf_span = next(s for s in spans if s.name == "rag.confidence")
+    assert conf_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "GUARDRAIL"
+    assert conf_span.attributes[SpanAttributes.INPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.JSON.value
+    assert conf_span.attributes[SpanAttributes.OUTPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.JSON.value
+    assert conf_span.attributes["rag.guardrail_verdict"] == "PASS"
+    assert "rag.confidence" in conf_span.attributes
+
+    # 9. Verify rag.grounding (CHAIN) span
+    ground_span = next(s for s in spans if s.name == "rag.grounding")
+    assert ground_span.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "CHAIN"
+    assert ground_span.attributes[SpanAttributes.INPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.JSON.value
+    assert ground_span.attributes[SpanAttributes.OUTPUT_VALUE] == result.grounded_context
+    assert ground_span.attributes[SpanAttributes.OUTPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.TEXT.value
+    assert ground_span.attributes["rag.citation_count"] == 1
+
+    # Ensure EVERY span has a valid OpenInference kind (no "UNKNOWN" in Phoenix) and status is OK (not "UNSET")
+    for s in spans:
+        kind = s.attributes.get(SpanAttributes.OPENINFERENCE_SPAN_KIND)
+        assert kind is not None, f"Span {s.name} is missing OpenInference span kind"
+        assert kind != "UNKNOWN", f"Span {s.name} has UNKNOWN span kind"
+        assert s.status.status_code == StatusCode.OK, f"Span {s.name} status is {s.status.status_code}, expected StatusCode.OK"
+
+
+@pytest.mark.asyncio
+async def test_rag_pipeline_refusal_spans(memory_exporter):
+    exporter, provider = memory_exporter
+    from app.knowledge.service import KnowledgeService
+
+    mock_repo = AsyncMock()
+    mock_repo.has_indexed_documents.return_value = False
+    mock_embedder = AsyncMock()
+
+    service = KnowledgeService(repository=mock_repo, embedder=mock_embedder)
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        result = await service.retrieve("can I work from home?")
+
+    assert result.empty_knowledge_base is True
+    spans = exporter.get_finished_spans()
+    retriever_span = next(s for s in spans if s.name == "rag.retrieve")
+    assert retriever_span.attributes["rag.status"] == "refused"
+    assert retriever_span.attributes["rag.refusal_reason"] == "empty_kb"
+    assert retriever_span.attributes[SpanAttributes.OUTPUT_VALUE] == "Knowledge base is empty (no indexed documents)."
+    assert retriever_span.attributes[SpanAttributes.OUTPUT_MIME_TYPE] == OpenInferenceMimeTypeValues.TEXT.value
+
+
+@pytest.mark.asyncio
+async def test_rag_pipeline_embedding_failure_spans(memory_exporter):
+    exporter, provider = memory_exporter
+    from app.knowledge.service import KnowledgeService
+
+    mock_repo = AsyncMock()
+    mock_repo.has_indexed_documents.return_value = True
+    mock_embedder = AsyncMock()
+    mock_embedder.embed.side_effect = RuntimeError("Embedding service unavailable")
+
+    service = KnowledgeService(repository=mock_repo, embedder=mock_embedder)
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        result = await service.retrieve("can I work from home?")
+
+    assert result.low_confidence is True
+    spans = exporter.get_finished_spans()
+    retriever_span = next(s for s in spans if s.name == "rag.retrieve")
+    assert retriever_span.attributes["rag.status"] == "refused"
+    assert retriever_span.attributes["rag.refusal_reason"] == "embedding_failed"
+    assert retriever_span.attributes[SpanAttributes.OUTPUT_VALUE] == "Query embedding failed."
+
 
 
 @pytest.mark.asyncio
@@ -321,3 +526,186 @@ async def test_supervisor_route_intent_tracing(memory_exporter):
     assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "CHAIN"
     assert s.attributes["agent.route"] == "leave"
     assert s.attributes[SpanAttributes.INPUT_VALUE] == "how much annual leave do I have?"
+
+
+@pytest.mark.asyncio
+async def test_trace_chat_turn(memory_exporter):
+    exporter, provider = memory_exporter
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        async with trace_chat_turn(
+            query="What is the bereavement leave policy?",
+            conversation_id="conv-abc-123",
+            user_id="usr-789",
+            actor_role="EMPLOYEE",
+        ) as span:
+            span.set_attribute(SpanAttributes.OUTPUT_VALUE, "Bereavement leave is 5 days.")
+            span.set_attribute("agent.name", "knowledge")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.name == "chat.turn"
+    assert s.attributes[SpanAttributes.OPENINFERENCE_SPAN_KIND] == "CHAIN"
+    assert s.attributes[SpanAttributes.INPUT_VALUE] == "What is the bereavement leave policy?"
+    assert s.attributes[SpanAttributes.SESSION_ID] == "conv-abc-123"
+    assert s.attributes[SpanAttributes.USER_ID] == "usr-789"
+    assert s.attributes["actor.role"] == "EMPLOYEE"
+    assert s.attributes[SpanAttributes.OUTPUT_VALUE] == "Bereavement leave is 5 days."
+    assert s.attributes["agent.name"] == "knowledge"
+
+
+def test_set_llm_token_counts(memory_exporter):
+    exporter, provider = memory_exporter
+    with (
+        patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")),
+        trace_span("test.llm", span_kind=OpenInferenceSpanKindValues.LLM) as span,
+    ):
+        set_llm_token_counts(span, prompt_tokens=42, completion_tokens=18)
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_PROMPT] == 42
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_COMPLETION] == 18
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_TOTAL] == 60
+
+
+@pytest.mark.asyncio
+async def test_ollama_cloud_llm_token_tracking_complete(memory_exporter):
+    exporter, provider = memory_exporter
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    from app.model_gateway.llm import OllamaCloudLLM
+
+    fake_response = {
+        "model": "test-model",
+        "message": {"role": "assistant", "content": "Hello world"},
+        "prompt_eval_count": 25,
+        "eval_count": 10,
+    }
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_post_res = MagicMock(spec=httpx.Response)
+    mock_post_res.status_code = 200
+    mock_post_res.json.return_value = fake_response
+    mock_post_res.raise_for_status.return_value = None
+    mock_client.post.return_value = mock_post_res
+
+    llm = OllamaCloudLLM(
+        base_url="https://api.ollama.com",
+        api_key="secret-key",
+        model="test-model",
+        client=mock_client,
+    )
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        result = await llm.complete("system", "user")
+
+    assert result == "Hello world"
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_PROMPT] == 25
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_COMPLETION] == 10
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_TOTAL] == 35
+
+
+@pytest.mark.asyncio
+async def test_ollama_cloud_llm_token_tracking_stream(memory_exporter):
+    exporter, provider = memory_exporter
+    from contextlib import asynccontextmanager
+
+    import httpx
+
+    from app.model_gateway.llm import OllamaCloudLLM
+
+    lines = [
+        json.dumps({"message": {"content": "Hello"}}),
+        json.dumps({"message": {"content": " world"}}),
+        json.dumps({"done": True, "prompt_eval_count": 30, "eval_count": 12}),
+    ]
+
+    class FakeStreamResponse:
+        def raise_for_status(self):
+            pass
+
+        async def aiter_lines(self):
+            for line in lines:
+                yield line
+
+    @asynccontextmanager
+    async def fake_stream(*args, **kwargs):
+        yield FakeStreamResponse()
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.stream = fake_stream
+
+    llm = OllamaCloudLLM(
+        base_url="https://api.ollama.com",
+        api_key="secret-key",
+        model="test-model",
+        client=mock_client,
+    )
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        tokens = [t async for t in llm.stream("system", "user")]
+
+    assert "".join(tokens) == "Hello world"
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_PROMPT] == 30
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_COMPLETION] == 12
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_TOTAL] == 42
+
+
+@pytest.mark.asyncio
+async def test_ollama_chat_provider_token_tracking(memory_exporter):
+    exporter, provider = memory_exporter
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    from app.model_gateway.ollama import OllamaChatProvider
+
+    fake_response = {
+        "choices": [{"message": {"content": json.dumps({"status": "ok"})}}],
+        "usage": {
+            "prompt_tokens": 50,
+            "completion_tokens": 20,
+            "total_tokens": 70,
+        },
+    }
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.__aenter__.return_value = mock_client
+    mock_post_res = MagicMock(spec=httpx.Response)
+    mock_post_res.status_code = 200
+    mock_post_res.json.return_value = fake_response
+    mock_post_res.raise_for_status.return_value = None
+    mock_client.post.return_value = mock_post_res
+
+    chat_provider = OllamaChatProvider(
+        api_base="https://api.ollama.com",
+        model="test-model",
+        api_key="real-key-12345",
+        client=mock_client,
+    )
+
+    with patch("app.observability.tracing.get_tracer", return_value=provider.get_tracer("test")):
+        res = await chat_provider.complete_json(
+            system_prompt="system",
+            user_prompt="user",
+        )
+
+    assert res == {"status": "ok"}
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    s = spans[0]
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_PROMPT] == 50
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_COMPLETION] == 20
+    assert s.attributes[SpanAttributes.LLM_TOKEN_COUNT_TOTAL] == 70
+
+

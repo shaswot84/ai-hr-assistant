@@ -5,12 +5,17 @@ It never touches pgvector/FTS/MinIO directly — it only talks to the
 repository (PostgreSQL) and the Model Gateway (embedding + reranking).
 """
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from uuid import UUID
 
-from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
+from openinference.semconv.trace import (
+    OpenInferenceMimeTypeValues,
+    OpenInferenceSpanKindValues,
+    SpanAttributes,
+)
 
 from app.config.settings import RetrievalSettings
 from app.knowledge.confidence import ConfidenceEstimator, LowConfidenceDetector
@@ -22,7 +27,13 @@ from app.knowledge.ranking import reciprocal_rank_fusion
 from app.knowledge.repository import HybridRetrievalRepository, RetrievalHit
 from app.knowledge.reranker import PassThroughReranker
 from app.model_gateway.interfaces import LLM, Embedder, Reranker
-from app.observability import async_trace_span, set_retrieval_documents, trace_span
+from app.observability import (
+    async_trace_span,
+    set_embedding_details,
+    set_reranker_details,
+    set_retrieval_documents,
+    trace_span,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,13 +105,18 @@ class KnowledgeService:
             span_kind=OpenInferenceSpanKindValues.RETRIEVER,
             attributes={
                 SpanAttributes.INPUT_VALUE: query,
+                SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.TEXT.value,
                 "rag.category": str(category) if category else None,
                 "rag.top_k": top_k,
                 "rag.access_roles": access_roles,
             },
         ) as span:
             if not await self._repository.has_indexed_documents():
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, "Knowledge base is empty (no indexed documents).")
+                span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, OpenInferenceMimeTypeValues.TEXT.value)
                 span.set_attribute("rag.empty_knowledge_base", True)
+                span.set_attribute("rag.status", "refused")
+                span.set_attribute("rag.refusal_reason", "empty_kb")
                 return KnowledgeResult(grounded_context="", empty_knowledge_base=True)
 
             try:
@@ -108,13 +124,34 @@ class KnowledgeService:
                     "rag.embedding",
                     span_kind=OpenInferenceSpanKindValues.EMBEDDING,
                     attributes={"rag.query": query},
-                ):
+                ) as emb_span:
+                    emb_model = getattr(self._embedder, "model_name", None) or getattr(
+                        self._settings, "embedding_model", "unknown"
+                    )
                     query_embedding = (await self._embedder.embed([query], prefix="search_query: "))[0]
+                    set_embedding_details(
+                        emb_span,
+                        text=query,
+                        vector=query_embedding,
+                        model_name=emb_model,
+                    )
             except Exception:
                 logger.warning("query embedding failed; serving an empty result", exc_info=True)
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, "Query embedding failed.")
+                span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, OpenInferenceMimeTypeValues.TEXT.value)
+                span.set_attribute("rag.status", "refused")
+                span.set_attribute("rag.refusal_reason", "embedding_failed")
                 return KnowledgeResult(grounded_context="", low_confidence=True)
 
-            with trace_span("rag.search.bm25", attributes={"rag.top_k": top_k}):
+            with trace_span(
+                "rag.search.bm25",
+                span_kind=OpenInferenceSpanKindValues.RETRIEVER,
+                attributes={
+                    SpanAttributes.INPUT_VALUE: query,
+                    SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.TEXT.value,
+                    "rag.top_k": top_k,
+                },
+            ) as bm25_span:
                 bm25_hits = await self._repository.bm25_search(
                     query,
                     top_k,
@@ -122,8 +159,26 @@ class KnowledgeService:
                     category=category,
                     access_roles=access_roles,
                 )
+                set_retrieval_documents(bm25_span, bm25_hits)
+                bm25_span.set_attribute(
+                    SpanAttributes.OUTPUT_VALUE,
+                    f"Found {len(bm25_hits)} BM25 keyword hits",
+                )
+                bm25_span.set_attribute(
+                    SpanAttributes.OUTPUT_MIME_TYPE,
+                    OpenInferenceMimeTypeValues.TEXT.value,
+                )
+                bm25_span.set_attribute("rag.hits_count", len(bm25_hits))
 
-            with trace_span("rag.search.vector", attributes={"rag.top_k": top_k}):
+            with trace_span(
+                "rag.search.vector",
+                span_kind=OpenInferenceSpanKindValues.RETRIEVER,
+                attributes={
+                    SpanAttributes.INPUT_VALUE: query,
+                    SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.TEXT.value,
+                    "rag.top_k": top_k,
+                },
+            ) as vec_span:
                 vector_hits = await self._repository.vector_search(
                     query_embedding,
                     top_k,
@@ -131,14 +186,28 @@ class KnowledgeService:
                     category=category,
                     access_roles=access_roles,
                 )
+                set_retrieval_documents(vec_span, vector_hits)
+                vec_span.set_attribute(
+                    SpanAttributes.OUTPUT_VALUE,
+                    f"Found {len(vector_hits)} dense vector hits",
+                )
+                vec_span.set_attribute(
+                    SpanAttributes.OUTPUT_MIME_TYPE,
+                    OpenInferenceMimeTypeValues.TEXT.value,
+                )
+                vec_span.set_attribute("rag.hits_count", len(vector_hits))
 
             # De-duplicate by chunk id so a chunk present in both legs is one row.
             hits_by_id = {hit.chunk_id: hit for hit in (*bm25_hits, *vector_hits)}
 
             with trace_span(
                 "rag.ranking.rrf",
-                attributes={"rag.bm25_hits": len(bm25_hits), "rag.vector_hits": len(vector_hits)},
-            ):
+                span_kind=OpenInferenceSpanKindValues.RERANKER,
+                attributes={
+                    "rag.bm25_hits": len(bm25_hits),
+                    "rag.vector_hits": len(vector_hits),
+                },
+            ) as rrf_span:
                 fused = reciprocal_rank_fusion(
                     [h.key for h in bm25_hits],
                     [h.key for h in vector_hits],
@@ -149,34 +218,178 @@ class KnowledgeService:
                     ],
                 )
                 fused_chunks = self._to_retrieved_chunks(fused, hits_by_id)
+                set_reranker_details(
+                    rrf_span,
+                    query=query,
+                    model_name="reciprocal_rank_fusion",
+                    top_k=top_k,
+                    input_chunks=list(hits_by_id.values()),
+                    output_chunks=fused_chunks,
+                )
+                rrf_span.set_attribute("rag.fused_count", len(fused_chunks))
 
             # True semantic signal from the vector leg (cosine similarity)
             vector_scores = {hit.chunk_id: hit.score for hit in vector_hits}
 
+            reranker_model = getattr(self._reranker, "model", None) or getattr(
+                self._settings, "reranker_model", "pass-through"
+            )
             with trace_span(
                 "rag.reranker",
                 span_kind=OpenInferenceSpanKindValues.RERANKER,
                 attributes={
-                    "rag.reranker_model": getattr(self._reranker, "model", "unknown"),
-                    "rag.candidates_in": len(fused_chunks),
+                    "rag.reranker_model": reranker_model,
+                    "rag.candidates_in_count": len(fused_chunks),
                 },
-            ):
+            ) as rerank_span:
                 reranked = await self._rerank(query, fused_chunks, vector_scores)
                 final = reranked[: self._settings.rerank_top_n]
+                rerank_span.set_attribute("rag.candidates_out_count", len(final))
+                if final:
+                    top_score = (
+                        final[0].reranker_score
+                        if final[0].reranker_score is not None
+                        else final[0].retrieval_score
+                    )
+                    if top_score is not None:
+                        rerank_span.set_attribute("rag.rerank_score_top", float(top_score))
+                    rank_shift = bool(fused_chunks and fused_chunks[0].chunk_id != final[0].chunk_id)
+                    rerank_span.set_attribute("rag.rank_shift", rank_shift)
+                set_reranker_details(
+                    rerank_span,
+                    query=query,
+                    model_name=reranker_model,
+                    top_k=self._settings.rerank_top_n,
+                    input_chunks=fused_chunks,
+                    output_chunks=final,
+                )
 
             # Small-to-big parent context expansion
+            base_chars = sum(len(c.text) for c in final)
+            candidates_in_preview = [
+                {
+                    "chunk_id": str(c.chunk_id),
+                    "document_title": c.document_title,
+                    "section_title": c.section_title,
+                    "page": c.page,
+                    "char_length": len(c.text),
+                    "text_preview": c.text[:150] if len(c.text) > 150 else c.text,
+                }
+                for c in final
+            ]
             with trace_span(
                 "rag.parent_expansion",
-                attributes={"rag.candidates_in": len(final)},
-            ):
+                span_kind=OpenInferenceSpanKindValues.CHAIN,
+                attributes={
+                    SpanAttributes.INPUT_VALUE: json.dumps(candidates_in_preview),
+                    SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
+                    "rag.candidates_in": len(final),
+                },
+            ) as expand_span:
                 final = await self._expand(final)
+                expanded_chars = sum(len(c.parent_context or "") + len(c.text) for c in final)
+                expanded_count = sum(1 for c in final if c.parent_context)
+                ratio = round(expanded_chars / max(base_chars, 1), 2)
+                expand_span.set_attribute("rag.parent_expansion_ratio", ratio)
+                expand_span.set_attribute("rag.expanded_chunks_count", expanded_count)
+                candidates_out_preview = [
+                    {
+                        "chunk_id": str(c.chunk_id),
+                        "document_title": c.document_title,
+                        "section_title": c.section_title,
+                        "page": c.page,
+                        "expanded": bool(c.parent_context),
+                        "parent_context_length": len(c.parent_context or ""),
+                        "total_char_length": len(c.parent_context or "") + len(c.text),
+                        "content_preview": (
+                            f"[Context: {c.section_title or ''}]\n{c.parent_context}\n\n{c.text}"
+                            if c.parent_context
+                            else c.text
+                        )[:250],
+                    }
+                    for c in final
+                ]
+                expand_span.set_attribute(
+                    SpanAttributes.OUTPUT_VALUE,
+                    json.dumps(candidates_out_preview),
+                )
+                expand_span.set_attribute(
+                    SpanAttributes.OUTPUT_MIME_TYPE,
+                    OpenInferenceMimeTypeValues.JSON.value,
+                )
 
-            with trace_span("rag.confidence"):
+            conf_input = [
+                {
+                    "chunk_id": str(c.chunk_id),
+                    "document_title": c.document_title,
+                    "section_title": c.section_title,
+                    "retrieval_score": round(float(c.retrieval_score), 4)
+                    if c.retrieval_score is not None
+                    else None,
+                    "reranker_score": round(float(c.reranker_score), 4)
+                    if c.reranker_score is not None
+                    else None,
+                }
+                for c in final
+            ]
+            with trace_span(
+                "rag.confidence",
+                span_kind=OpenInferenceSpanKindValues.GUARDRAIL,
+                attributes={
+                    SpanAttributes.INPUT_VALUE: json.dumps(conf_input),
+                    SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
+                },
+            ) as conf_span:
                 confidence = self._confidence.estimate(final)
                 low_confidence = self._low_confidence.is_low(confidence, len(final))
+                verdict = "REJECT" if low_confidence else "PASS"
+                conf_span.set_attribute(
+                    SpanAttributes.OUTPUT_VALUE,
+                    json.dumps(
+                        {
+                            "confidence": float(confidence),
+                            "low_confidence": bool(low_confidence),
+                            "verdict": verdict,
+                            "candidate_count": len(final),
+                        }
+                    ),
+                )
+                conf_span.set_attribute(
+                    SpanAttributes.OUTPUT_MIME_TYPE,
+                    OpenInferenceMimeTypeValues.JSON.value,
+                )
+                conf_span.set_attribute("rag.confidence", float(confidence))
+                conf_span.set_attribute("rag.low_confidence", bool(low_confidence))
+                conf_span.set_attribute("rag.guardrail_verdict", verdict)
 
-            with trace_span("rag.grounding"):
+            grounding_input = [
+                {
+                    "marker": i + 1,
+                    "chunk_id": str(c.chunk_id),
+                    "document_title": c.document_title,
+                    "page": c.page,
+                    "section_title": c.section_title,
+                    "char_length": len(c.parent_context or "") + len(c.text),
+                    "text_preview": c.text[:200] if len(c.text) > 200 else c.text,
+                }
+                for i, c in enumerate(final)
+            ]
+            with trace_span(
+                "rag.grounding",
+                span_kind=OpenInferenceSpanKindValues.CHAIN,
+                attributes={
+                    SpanAttributes.INPUT_VALUE: json.dumps(grounding_input),
+                    SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
+                },
+            ) as ground_span:
                 grounded_context, citations = self._grounding.build(final)
+                ground_span.set_attribute(SpanAttributes.OUTPUT_VALUE, grounded_context)
+                ground_span.set_attribute(
+                    SpanAttributes.OUTPUT_MIME_TYPE,
+                    OpenInferenceMimeTypeValues.TEXT.value,
+                )
+                ground_span.set_attribute("rag.citation_count", len(citations))
+                ground_span.set_attribute("rag.grounded_length", len(grounded_context))
 
             restricted: list[RestrictedDocument] = []
             if access_roles is not None and not citations:
@@ -186,10 +399,25 @@ class KnowledgeService:
 
             # Set OpenInference RETRIEVAL_DOCUMENTS on the retriever span
             set_retrieval_documents(span, final)
+            span.set_attribute(SpanAttributes.INPUT_MIME_TYPE, OpenInferenceMimeTypeValues.TEXT.value)
             span.set_attribute(SpanAttributes.OUTPUT_VALUE, grounded_context)
+            span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, OpenInferenceMimeTypeValues.TEXT.value)
             span.set_attribute("rag.confidence", float(confidence))
             span.set_attribute("rag.low_confidence", bool(low_confidence))
             span.set_attribute("rag.citation_count", len(citations))
+
+            if restricted:
+                span.set_attribute("rag.status", "refused")
+                span.set_attribute("rag.refusal_reason", "restricted")
+                span.set_attribute("rag.restricted_count", len(restricted))
+            elif low_confidence or not citations:
+                span.set_attribute("rag.status", "refused")
+                span.set_attribute(
+                    "rag.refusal_reason",
+                    "low_confidence" if low_confidence else "no_citations",
+                )
+            else:
+                span.set_attribute("rag.status", "success")
 
             return KnowledgeResult(
                 grounded_context=grounded_context,

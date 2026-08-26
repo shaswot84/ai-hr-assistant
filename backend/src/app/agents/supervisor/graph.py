@@ -37,6 +37,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import StreamWriter
 
+from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
+
 from app.agents.knowledge_agent.agent import balance_relevant, stream_knowledge_turn
 from app.agents.leave_agent.node import make_leave_node
 from app.agents.leave_agent.state import SessionStore
@@ -52,6 +54,7 @@ from app.db.session import async_session_factory
 from app.knowledge.service import KnowledgeService
 from app.model_gateway.interfaces import LLM
 from app.model_gateway.provider import ChatProvider
+from app.observability import async_trace_span
 from app.safety.interfaces import ResponseGuard
 
 ROUTE_TO_NODE = {
@@ -80,7 +83,17 @@ def make_route_node(llm: LLM | None):
     async def route_node(state: SupervisorState) -> dict:
         deterministic = route_history_question(state["current_query"])
         if deterministic is not None:
-            return {"route": deterministic}
+            async with async_trace_span(
+                "supervisor.route_intent",
+                span_kind=OpenInferenceSpanKindValues.CHAIN,
+                attributes={
+                    SpanAttributes.INPUT_VALUE: state["current_query"],
+                    "agent.route": deterministic,
+                    SpanAttributes.OUTPUT_VALUE: deterministic,
+                    "agent.strategy": "deterministic_history",
+                },
+            ):
+                return {"route": deterministic}
         route = await route_intent(
             llm, state["current_query"], state.get("messages", [])
         )

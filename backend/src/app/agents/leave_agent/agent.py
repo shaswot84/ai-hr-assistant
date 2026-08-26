@@ -883,6 +883,7 @@ async def _intercept_draft_turn(
                     tool_called="get_employee_leave_balance",
                 )
 
+
     start, end = extract_dates(user_message, today)
     is_half, period = extract_half_day_info(user_message)
 
@@ -938,6 +939,11 @@ async def _intercept_draft_turn(
     ui_widget: dict[str, Any] | None = None
     if draft.leave_type_name is None:
         parts.append("Which leave type would you like to take?")
+        try:
+            types_result = await list_leave_types(service, actor)
+            ui_widget = _leave_types_widget(types_result)
+        except Exception:
+            ui_widget = None
     elif draft.start_date is None:
         parts.append("From which date would you like to start?")
         ui_widget = _leave_date_picker_widget(draft, today=today)

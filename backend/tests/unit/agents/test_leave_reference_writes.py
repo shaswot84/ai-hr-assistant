@@ -1011,3 +1011,56 @@ async def test_candidate_blocked_from_all_leave_tools(db, candidate_context):
     )
     assert "employees" in cancel.reply
     assert state.pending_confirmation is None
+
+
+@pytest.mark.asyncio
+async def test_draft_missing_type_attaches_leave_types_widget(db, manager_context, employee_context):
+    """When an employee initiates a leave request with dates but no type,
+    the deterministic turn attaches the leave_types_list UI widget."""
+    svc = LeaveService(db)
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Sick Leave")
+    state = _state(employee_context)
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=FakeChatProvider({}),
+        user_message="i want to take leave tomorrow",
+    )
+
+    assert "Which leave type would you like to take?" in result.reply
+    assert result.ui_widget is not None
+    assert result.ui_widget["type"] == "leave_types_list"
+    assert len(result.ui_widget["types"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_request_intent_list_leave_types_attaches_widget(db, manager_context, employee_context):
+    """When an employee asks to apply for leave without a type, the model's
+    list_leave_types tool call attaches the leave_types_list UI widget."""
+    svc = LeaveService(db)
+    await _create_leave_type(svc, manager_context, name="Annual Leave")
+    await _create_leave_type(svc, manager_context, name="Sick Leave")
+    state = _state(employee_context)
+
+    result = await handle_turn(
+        actor=employee_context,
+        state=state,
+        service=svc,
+        chat_provider=FakeChatProvider(
+            {
+                "reply": "Let me pull up the leave types.",
+                "action": "call_tool",
+                "tool": "list_leave_types",
+                "args": {},
+            }
+        ),
+        user_message="i want to apply for leave",
+    )
+
+    assert "Which leave type would you like to take?" in result.reply
+    assert result.ui_widget is not None
+    assert result.ui_widget["type"] == "leave_types_list"
+    assert len(result.ui_widget["types"]) == 2
