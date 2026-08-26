@@ -2109,7 +2109,6 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
         const res = await api.apply(vacancyId, file);
         setSubmitted(true);
         setAppId(res.application_id);
-        onAction?.(`I applied for ${vacancyTitle} with my resume (${file.name})`);
       } else {
         // Visitor setup -> evolve to registered candidate flow
         if (form.password.length < 8) {
@@ -2141,9 +2140,6 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 
         setSubmitted(true);
         setAppId(res.application_id);
-        onAction?.(
-          `I registered as ${form.first_name} ${form.last_name} and applied for ${vacancyTitle} with my resume (${file.name})`
-        );
       }
     } catch (err) {
       if (err instanceof ApiError) {
