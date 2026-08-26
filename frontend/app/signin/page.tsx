@@ -9,7 +9,7 @@ import { useToast } from "@/components/toast";
 
 const ROLE_HOME: Record<string, string> = {
   HR_ADMIN: "/manager",
-  CANDIDATE: "/candidate",
+  CANDIDATE: "/candidate/chatbot",
   EMPLOYEE: "/employee",
 };
 

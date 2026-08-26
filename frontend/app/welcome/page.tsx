@@ -12,7 +12,7 @@ import { ChatWidgetRenderer } from "@/components/chat-widgets";
 
 const ROLE_HOME: Record<string, string> = {
   HR_ADMIN: "/manager",
-  CANDIDATE: "/candidate",
+  CANDIDATE: "/candidate/chatbot",
   EMPLOYEE: "/employee",
 };
 
@@ -394,7 +394,7 @@ export default function WelcomePage() {
     api
       .me()
       .then((res) => {
-        if (!cancelled) router.replace(ROLE_HOME[res.user.coarse_role] ?? "/candidate");
+        if (!cancelled) router.replace(ROLE_HOME[res.user.coarse_role] ?? "/candidate/chatbot");
       })
       .catch(() => {
         if (!cancelled) setCheckingSession(false);

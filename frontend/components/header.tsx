@@ -24,7 +24,7 @@ export function Header({
     user.coarse_role === "HR_ADMIN"
       ? "/manager"
       : user.coarse_role === "CANDIDATE"
-        ? "/candidate"
+        ? "/candidate/chatbot"
         : "/employee/chatbot";
 
   const { collapsed, toggle } = useSidebar();
