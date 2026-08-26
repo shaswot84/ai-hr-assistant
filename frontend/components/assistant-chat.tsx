@@ -687,9 +687,20 @@ export function AssistantChat() {
     queueMicrotask(() => setInput(draft));
   }, [draftKey]);
 
-  const scrollToBottom = useCallback(() => {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight });
+    if (!el) return;
+    if (behavior === "smooth") {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
+    requestAnimationFrame(() => {
+      const container = scrollRef.current;
+      if (container && behavior !== "smooth") {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
   }, []);
 
   const isNearBottom = useCallback(() => {
@@ -698,22 +709,24 @@ export function AssistantChat() {
     return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }, []);
 
-  // Keep the newest content in view while tokens stream in (and settle at the
-  // bottom after history loads) — but never fight the user who scrolled up to
-  // re-read an earlier message.
+  // When a message is generating/streaming, automatically trigger scroll to latest
+  // and take the user to the end of the chat (even if they were at the top or middle).
+  // When idle, only auto-scroll if already near the bottom.
   useEffect(() => {
-    if (isNearBottom()) scrollToBottom();
+    if (streaming || isNearBottom()) {
+      scrollToBottom();
+    }
   }, [messages, streaming, scrollToBottom, isNearBottom]);
 
-  // When a new answer starts generating, snap straight to it even if the user
-  // was reading at the top or middle of the thread (ChatGPT-style follow).
+  // When a new answer starts generating/streaming, smoothly snap straight to it
+  // to immediately take user to the new generating response.
   useEffect(() => {
-    if (streaming) scrollToBottom();
+    if (streaming) {
+      scrollToBottom("smooth");
+    }
   }, [streaming, scrollToBottom]);
 
-  // Track whether the user is at the bottom of the thread. Content growth is
-  // covered by the follow effect above (its scroll fires this handler), so the
-  // chip only appears when the user actually scrolled up mid-stream.
+  // Track whether the user is at the bottom of the thread.
   const handleScroll = useCallback(() => {
     setAtBottom(isNearBottom());
   }, [isNearBottom]);
@@ -1463,7 +1476,7 @@ export function AssistantChat() {
             <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center">
               <button
                 type="button"
-                onClick={scrollToBottom}
+                onClick={() => scrollToBottom("smooth")}
                 className="animate-slide-up pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50 hover:text-zinc-900"
                 aria-label="Scroll to latest message"
                 title="Scroll to latest message"
