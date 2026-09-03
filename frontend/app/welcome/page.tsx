@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, ApiError, publicChatStream } from "@/lib/api";
-import { getAuthToken } from "@/lib/auth";
+import { getAuthToken, clearAuthToken } from "@/lib/auth";
 import type { ChatCitation } from "@/lib/types";
 import { ChatWidgetRenderer } from "@/components/chat-widgets";
 
@@ -397,6 +397,8 @@ export default function WelcomePage() {
         if (!cancelled) router.replace(ROLE_HOME[res.user.coarse_role] ?? "/candidate/chatbot");
       })
       .catch(() => {
+        // Token was invalid, expired, or rejected — clear it so visitor mode stays pure
+        clearAuthToken();
         if (!cancelled) setCheckingSession(false);
       });
     return () => {

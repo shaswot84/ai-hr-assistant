@@ -4,7 +4,7 @@ import React, { useState, useMemo } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
-import { getAuthToken, setAuthToken } from "@/lib/auth";
+import { getAuthToken, setAuthToken, clearAuthToken } from "@/lib/auth";
 import { GenUIIframeWidget } from "@/components/genui-iframe-widget";
 
 // Inline SVG Icons
@@ -2035,7 +2035,14 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const vacancyId = widget.vacancy_id;
   const vacancyTitle = widget.vacancy_title || "Position";
 
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => !!getAuthToken());
+  // In visitor sections (/welcome or public routes), default to false so visitor sees the registration form.
+  // Only assume candidate login immediately if on an authenticated candidate route with an existing token.
+  const isCandidateRoute =
+    pathname?.startsWith("/candidate/chatbot") ||
+    pathname?.startsWith("/candidate/applications");
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() =>
+    Boolean(isCandidateRoute && getAuthToken())
+  );
   const [userRole, setUserRole] = useState<string | null>(null);
   const [form, setForm] = useState({
     first_name: "",
@@ -2051,17 +2058,29 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
   const [appId, setAppId] = useState<string | null>(null);
 
   React.useEffect(() => {
-    if (getAuthToken()) {
-      api
-        .me()
-        .then((res) => {
-          setUserRole(res.user.coarse_role);
-          if (res.user.coarse_role === "CANDIDATE") {
-            setIsLoggedIn(true);
-          }
-        })
-        .catch(() => {});
+    const token = getAuthToken();
+    if (!token) {
+      setIsLoggedIn(false);
+      setUserRole(null);
+      return;
     }
+    api
+      .me()
+      .then((res) => {
+        setUserRole(res.user.coarse_role);
+        if (res.user.coarse_role === "CANDIDATE") {
+          setIsLoggedIn(true);
+        } else {
+          setIsLoggedIn(false);
+        }
+      })
+      .catch((err) => {
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          clearAuthToken();
+        }
+        setIsLoggedIn(false);
+        setUserRole(null);
+      });
   }, []);
 
   const isEmployeeOrManager =
@@ -2366,7 +2385,7 @@ function ApplyVacancyWidget({ widget, onAction, disabled }: ChatWidgetProps) {
 
         <div className="flex items-center justify-between gap-2 pt-1 border-t border-zinc-100">
           <p className="text-[11px] text-zinc-400">
-            {isLoggedIn ? "Applied with your candidate account" : "Creates your login & submits application"}
+            {isLoggedIn ? "Applies with your candidate account" : "Creates your login & submits application"}
           </p>
           <button
             type="submit"
