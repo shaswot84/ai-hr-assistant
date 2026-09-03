@@ -105,7 +105,7 @@ async def handle_turn(
             return AgentTurnResult(reply=reply, ui_widget=widget)
 
         if "candidate" in lowered or "who applied" in lowered or "review application" in lowered:
-            matched_v = await find_matched_vacancy(service, user_message)
+            matched_v = await find_matched_vacancy(service, user_message, actor=actor)
             v_title = matched_v.title if matched_v else None
             try:
                 apps = await list_manager_applications_tool(service, actor, v_title)
@@ -128,7 +128,7 @@ async def handle_turn(
                 state.add_turn("agent", reply, clock=clock)
             return AgentTurnResult(reply=reply)
 
-        matched_v = await find_matched_vacancy(service, user_message)
+        matched_v = await find_matched_vacancy(service, user_message, actor=actor)
         v_title = matched_v.title if matched_v else None
         try:
             app = await withdraw_application_tool(service, actor, vacancy_title=v_title)
@@ -165,7 +165,7 @@ async def handle_turn(
 
     # 4. Apply for vacancies path
     if any(word in lowered for word in _APPLY_WORDS):
-        matched_v = await find_matched_vacancy(service, user_message)
+        matched_v = await find_matched_vacancy(service, user_message, actor=actor)
         all_open = await list_vacancies_tool(service, actor)
         if not can_apply:
             if matched_v is not None:
@@ -194,7 +194,7 @@ async def handle_turn(
         return AgentTurnResult(reply=reply, ui_widget=widget)
 
     # 5. Specific Vacancy Detail
-    matched_v = await find_matched_vacancy(service, user_message)
+    matched_v = await find_matched_vacancy(service, user_message, actor=actor)
     if matched_v is not None:
         reply = format_vacancy_detail_reply(matched_v, can_apply=can_apply)
         widget = apply_vacancy_widget(matched_v) if can_apply else vacancy_detail_widget(matched_v, can_apply=False)

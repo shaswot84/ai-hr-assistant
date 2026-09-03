@@ -1896,9 +1896,20 @@ function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
             >
               <div>
                 <div className="flex items-start justify-between gap-1.5">
-                  <h4 className="text-sm font-semibold text-zinc-900 leading-tight">
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() =>
+                      onAction?.(
+                        itemCanApply
+                          ? `I want to apply for ${v.title}${v.department_name ? ` in ${v.department_name}` : ""}`
+                          : `Tell me about the ${v.title} vacancy${v.department_name ? ` in ${v.department_name}` : ""}`
+                      )
+                    }
+                    className="text-left text-sm font-semibold text-zinc-900 leading-tight hover:text-blue-600 transition-colors"
+                  >
                     {v.title}
-                  </h4>
+                  </button>
                   <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">
                     {(v.employment_type || "").replaceAll("_", " ")}
                   </span>
@@ -1923,7 +1934,11 @@ function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
                 <button
                   type="button"
                   disabled={disabled}
-                  onClick={() => onAction?.(`Tell me about the ${v.title} vacancy`)}
+                  onClick={() =>
+                    onAction?.(
+                      `Tell me about the ${v.title} vacancy${v.department_name ? ` in ${v.department_name}` : ""}`
+                    )
+                  }
                   className={`rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors ${
                     itemCanApply ? "flex-1" : "w-full"
                   }`}
@@ -1934,7 +1949,11 @@ function VacanciesListWidget({ widget, onAction, disabled }: ChatWidgetProps) {
                   <button
                     type="button"
                     disabled={disabled}
-                    onClick={() => onAction?.(`I want to apply for ${v.title}`)}
+                    onClick={() =>
+                      onAction?.(
+                        `I want to apply for ${v.title}${v.department_name ? ` in ${v.department_name}` : ""}`
+                      )
+                    }
                     className="flex-1 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
                   >
                     Apply in Chat
@@ -2012,7 +2031,11 @@ function VacancyDetailWidget({ widget, onAction, disabled }: ChatWidgetProps) {
           <button
             type="button"
             disabled={disabled}
-            onClick={() => onAction?.(`I want to apply for ${vacancy.title}`)}
+            onClick={() =>
+              onAction?.(
+                `I want to apply for ${vacancy.title}${vacancy.department_name ? ` in ${vacancy.department_name}` : ""}`
+              )
+            }
             className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 shadow-sm transition-colors"
           >
             Apply for this Role

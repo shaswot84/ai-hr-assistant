@@ -27,12 +27,15 @@ class _Vacancy:
         closing_date=None,
         description: str | None = None,
         status: str = "OPEN",
+        department_name: str | None = None,
     ) -> None:
         self.title = title
         self.employment_type = employment_type
         self.closing_date = closing_date
         self.description = description
         self.status = status
+        self.department_name = department_name
+        self.department = type("D", (), {"name": department_name})() if department_name else None
         self.vacancy_id = uuid.uuid4()
 
 
@@ -315,4 +318,89 @@ async def test_employee_asks_to_apply_receives_internal_transfer_guidance():
     assert state["ui_widget"] is not None
     assert state["ui_widget"]["type"] == "vacancy_detail"
     assert state["ui_widget"]["can_apply"] is False
+
+
+@pytest.mark.asyncio
+async def test_click_parentheses_vacancy_title_with_closed_and_open_roles():
+    closed_role = _Vacancy(
+        "SITE RELIABILITY ENGINEER (SRE)",
+        status="CLOSED",
+        department_name="Engineer",
+        description="Maintain infrastructure reliability.",
+    )
+    open_role = _Vacancy(
+        "SITE RELIABILITY ENGINEER (SRE)",
+        status="OPEN",
+        department_name="Engineering",
+        description="Scale global infrastructure and reliability.",
+    )
+    service = FakeRecruitmentService([closed_role, open_role])
+    state, events = await _run(None, service, "Tell me about the SITE RELIABILITY ENGINEER (SRE) vacancy")
+
+    assert state["agent"] == "recruitment"
+    assert "SITE RELIABILITY ENGINEER (SRE)" in state["answer"]
+    assert state["ui_widget"] is not None
+    # For visitors/candidates, it should return apply_vacancy widget for the OPEN role, not loop back to vacancies_list
+    assert state["ui_widget"]["type"] == "apply_vacancy"
+    assert state["ui_widget"]["vacancy_title"] == "SITE RELIABILITY ENGINEER (SRE)"
+    assert state["ui_widget"]["vacancy_id"] == str(open_role.vacancy_id)
+
+
+@pytest.mark.asyncio
+async def test_apply_parentheses_vacancy_in_chat():
+    closed_role = _Vacancy(
+        "SITE RELIABILITY ENGINEER (SRE)",
+        status="CLOSED",
+        department_name="Engineer",
+    )
+    open_role = _Vacancy(
+        "SITE RELIABILITY ENGINEER (SRE)",
+        status="OPEN",
+        department_name="Engineering",
+    )
+    service = FakeRecruitmentService([closed_role, open_role])
+    state, events = await _run(_candidate(), service, "I want to apply for SITE RELIABILITY ENGINEER (SRE)")
+
+    assert state["ui_widget"] is not None
+    assert state["ui_widget"]["type"] == "apply_vacancy"
+    assert state["ui_widget"]["vacancy_id"] == str(open_role.vacancy_id)
+    assert "upload your resume" in state["answer"].lower()
+
+
+@pytest.mark.asyncio
+async def test_click_acronym_sre():
+    open_role = _Vacancy(
+        "SITE RELIABILITY ENGINEER (SRE)",
+        status="OPEN",
+        department_name="Engineering",
+    )
+    service = FakeRecruitmentService([open_role])
+    state, events = await _run(None, service, "Tell me about the SRE vacancy")
+
+    assert state["ui_widget"] is not None
+    assert state["ui_widget"]["type"] == "apply_vacancy"
+    assert state["ui_widget"]["vacancy_title"] == "SITE RELIABILITY ENGINEER (SRE)"
+
+
+@pytest.mark.asyncio
+async def test_manager_department_disambiguation_for_duplicate_titles():
+    closed_role = _Vacancy(
+        "SITE RELIABILITY ENGINEER (SRE)",
+        status="CLOSED",
+        department_name="Engineer",
+    )
+    open_role = _Vacancy(
+        "SITE RELIABILITY ENGINEER (SRE)",
+        status="OPEN",
+        department_name="Engineering",
+    )
+    app_closed = _Application(closed_role, status="APPLIED")
+    app_open = _Application(open_role, status="APPLIED")
+    service = FakeRecruitmentService([closed_role, open_role], [app_closed, app_open])
+
+    # Manager queries about closed role in Engineer
+    state, events = await _run(
+        _hr(), service, "Who applied for the closed SITE RELIABILITY ENGINEER (SRE) role in Engineer?"
+    )
+    assert "SITE RELIABILITY ENGINEER (SRE)" in state["answer"]
 

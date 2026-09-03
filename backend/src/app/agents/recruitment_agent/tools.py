@@ -20,6 +20,13 @@ class ToolError(Exception):
     """A tool-level failure meant to be relayed to the user in plain language."""
 
 
+def _normalize(text: str | None) -> str:
+    """Normalize text by replacing non-alphanumeric chars with space, lowercasing, and collapsing whitespace."""
+    if not text:
+        return ""
+    return " ".join(re.sub(r"[^a-zA-Z0-9]+", " ", str(text)).lower().split())
+
+
 async def _call_service(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     tool_name = getattr(fn, "__name__", "recruitment_tool")
     async with trace_tool_call(tool_name, parameters=kwargs) as span:
@@ -74,10 +81,33 @@ async def list_vacancies_tool(service: RecruitmentService, actor: UserContext | 
 async def get_vacancy_detail_tool(
     service: RecruitmentService, actor: UserContext | None, title: str
 ) -> Vacancy | None:
+    norm_title = _normalize(title)
+    if not norm_title:
+        return None
     vacancies = await list_vacancies_tool(service, actor)
-    normalized = re.sub(r"[^a-z0-9 ]", "", title.lower())
-    for v in vacancies:
-        if v.title.lower() in normalized or normalized in v.title.lower():
+    is_cand = actor is None or getattr(actor, "coarse_role", None) == "CANDIDATE"
+    pool = [v for v in vacancies if getattr(v, "status", "") == "OPEN"] if is_cand else list(vacancies)
+
+    # 1. Exact normalized match
+    for v in pool:
+        if _normalize(getattr(v, "title", "")) == norm_title:
+            return v
+    # 2. Substring match
+    for v in pool:
+        v_norm = _normalize(getattr(v, "title", ""))
+        if v_norm and (v_norm in norm_title or norm_title in v_norm):
+            return v
+    # 3. Parenthetical acronym match
+    for v in pool:
+        parens = re.findall(r"\(([^)]+)\)", getattr(v, "title", ""))
+        for p in parens:
+            if _normalize(p) == norm_title:
+                return v
+    # 4. Token match
+    tokens = set(norm_title.split())
+    for v in pool:
+        v_tokens = set(_normalize(getattr(v, "title", "")).split())
+        if tokens and (tokens.issubset(v_tokens) or v_tokens.issubset(tokens)):
             return v
     return None
 
@@ -110,14 +140,14 @@ async def withdraw_application_tool(
     withdrawable = [a for a in apps if a.application_status in ("APPLIED", "SHORTLISTED")]
 
     if vacancy_title:
-        normalized = re.sub(r"[^a-z0-9 ]", "", vacancy_title.lower())
+        normalized = _normalize(vacancy_title)
         matched = [
             a
             for a in withdrawable
             if a.vacancy
             and (
-                re.sub(r"[^a-z0-9 ]", "", a.vacancy.title.lower()) in normalized
-                or normalized in re.sub(r"[^a-z0-9 ]", "", a.vacancy.title.lower())
+                _normalize(a.vacancy.title) in normalized
+                or normalized in _normalize(a.vacancy.title)
             )
         ]
         if not matched:
@@ -146,7 +176,13 @@ async def list_manager_applications_tool(
         raise ToolError("Only managers can review applications.")
     if vacancy_title:
         vacancies = await _call_service(service.list_vacancies, actor)
-        matched = next((v for v in vacancies if v.title.lower() == vacancy_title.lower()), None)
+        norm_target = _normalize(vacancy_title)
+        matched = next((v for v in vacancies if _normalize(v.title) == norm_target), None)
+        if matched is None:
+            matched = next(
+                (v for v in vacancies if norm_target in _normalize(v.title) or _normalize(v.title) in norm_target),
+                None,
+            )
         if matched is None:
             raise ToolError(f"I couldn't find a vacancy called {vacancy_title!r}.")
         return await _call_service(service.list_vacancy_applications, actor, matched.vacancy_id)
@@ -349,16 +385,106 @@ def format_help_reply(vacancies: list[Vacancy], *, can_apply: bool = True) -> st
 # ---- Matching Helpers ----------------------------------------------------
 
 
-async def find_matched_vacancy(service: RecruitmentService, user_message: str) -> Vacancy | None:
-    lowered = user_message.lower()
-    normalized = re.sub(r"[^a-z0-9 ]", "", lowered)
-    vacancies = await service.list_vacancies(None)
-    matches = [v for v in vacancies if v.title.lower() in normalized]
-    if len(matches) == 1:
-        return matches[0]
-    # Try partial token overlap
-    for v in vacancies:
-        tokens = [t for t in v.title.lower().split() if len(t) > 2]
-        if tokens and all(t in normalized for t in tokens):
+async def find_matched_vacancy(
+    service: RecruitmentService,
+    user_message: str,
+    actor: UserContext | None = None,
+) -> Vacancy | None:
+    if not user_message:
+        return None
+    norm_msg = _normalize(user_message)
+    if not norm_msg:
+        return None
+    msg_words = set(norm_msg.split())
+
+    # Candidates and anonymous visitors must only match OPEN vacancies.
+    is_candidate_or_visitor = actor is None or getattr(actor, "coarse_role", None) == "CANDIDATE"
+    vacancies = await service.list_vacancies(actor)
+    pool = (
+        [v for v in vacancies if getattr(v, "status", "") == "OPEN"]
+        if is_candidate_or_visitor
+        else list(vacancies)
+    )
+    if not pool:
+        return None
+
+    def matches_dept(v: Vacancy) -> bool:
+        dept_name = getattr(v, "department_name", "") or getattr(
+            getattr(v, "department", None), "name", ""
+        )
+        if dept_name:
+            norm_dept = _normalize(dept_name)
+            if norm_dept and (norm_dept in norm_msg or set(norm_dept.split()).issubset(msg_words)):
+                return True
+        return False
+
+    def select_best(candidates: list[Vacancy]) -> Vacancy:
+        # 1. Disambiguate by department if mentioned in query
+        dept_candidates = [v for v in candidates if matches_dept(v)]
+        if dept_candidates:
+            candidates = dept_candidates
+        # 2. Prefer OPEN vacancies over CLOSED unless query explicitly asks for closed/archived
+        if not any(w in norm_msg for w in ("closed", "archived")):
+            open_candidates = [v for v in candidates if getattr(v, "status", "") == "OPEN"]
+            if open_candidates:
+                candidates = open_candidates
+        # 3. First / newest
+        return candidates[0]
+
+    # Direct UUID check
+    for v in pool:
+        v_id_str = str(getattr(v, "vacancy_id", "")).lower()
+        if v_id_str and v_id_str in norm_msg:
             return v
+
+    # 1. Exact normalized title match (or title in message / message in title)
+    exact_matches = [
+        v
+        for v in pool
+        if _normalize(getattr(v, "title", ""))
+        and (
+            _normalize(getattr(v, "title", "")) in norm_msg
+            or norm_msg in _normalize(getattr(v, "title", ""))
+        )
+    ]
+    if exact_matches:
+        return select_best(exact_matches)
+
+    # 2. Parenthetical acronym match (e.g. '(SRE)' -> 'sre')
+    acronym_matches = []
+    for v in pool:
+        parens = re.findall(r"\(([^)]+)\)", getattr(v, "title", ""))
+        for p in parens:
+            p_norm = _normalize(p)
+            if p_norm and p_norm in msg_words:
+                acronym_matches.append(v)
+                break
+    if acronym_matches:
+        return select_best(acronym_matches)
+
+    # 3. Token overlap match
+    scored: list[tuple[float, Vacancy]] = []
+    for v in pool:
+        v_norm = _normalize(getattr(v, "title", ""))
+        v_tokens = [
+            t
+            for t in v_norm.split()
+            if len(t) > 2 or t in ("qa", "hr", "it", "ai", "ml", "ui", "ux")
+        ]
+        if not v_tokens:
+            continue
+        matching_tokens = [t for t in v_tokens if t in norm_msg]
+        ratio = len(matching_tokens) / len(v_tokens)
+        if ratio >= 0.5 or all(t in norm_msg for t in v_tokens):
+            score = ratio
+            if matches_dept(v):
+                score += 0.5
+            if getattr(v, "status", "") == "OPEN":
+                score += 0.2
+            scored.append((score, v))
+
+    if scored:
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored[0][1]
+
     return None
